@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "agent-notifications",
+  "description": "Capability for trusted windows that may request Android system notifications.",
+  "windows": ["main"],
+  "permissions": ["vcp-mobile:allow-show-system-notification"]
+}

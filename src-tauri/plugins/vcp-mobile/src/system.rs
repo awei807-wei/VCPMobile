@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri::{AppHandle, Runtime};
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemNotificationDelivery {
+    pub attempted: bool,
+    pub delivered: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct PermissionStatus {
     pub notification: bool,
@@ -418,6 +426,73 @@ pub fn cancel_download_notification<R: Runtime>(app: AppHandle<R>) -> Result<(),
         let _ = app;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn show_system_notification<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let delivery = dispatch_system_notification(app, title, body);
+    if delivery.delivered {
+        Ok(())
+    } else {
+        Err(delivery
+            .error
+            .unwrap_or_else(|| "Android system notification delivery failed".to_string()))
+    }
+}
+
+pub fn dispatch_system_notification<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+) -> SystemNotificationDelivery {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        match state.plugin_handle.lock() {
+            Ok(handle) => match handle.as_ref() {
+                Some(plugin_handle) => match plugin_handle.run_mobile_plugin::<serde_json::Value>(
+                    "showSystemNotification",
+                    serde_json::json!({ "title": title, "body": body }),
+                ) {
+                    Ok(_) => SystemNotificationDelivery {
+                        attempted: true,
+                        delivered: true,
+                        error: None,
+                    },
+                    Err(error) => SystemNotificationDelivery {
+                        attempted: true,
+                        delivered: false,
+                        error: Some(format!("run_mobile_plugin failed: {}", error)),
+                    },
+                },
+                None => SystemNotificationDelivery {
+                    attempted: true,
+                    delivered: false,
+                    error: Some("Plugin handle not initialized".to_string()),
+                },
+            },
+            Err(error) => SystemNotificationDelivery {
+                attempted: true,
+                delivered: false,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let _ = title;
+        let _ = body;
+        SystemNotificationDelivery {
+            attempted: false,
+            delivered: false,
+            error: Some("show_system_notification is only supported on Android".to_string()),
+        }
+    }
 }
 
 #[tauri::command]

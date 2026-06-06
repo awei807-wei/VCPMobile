@@ -1,5 +1,5 @@
 # Logs
-logs
+/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -40,6 +40,9 @@ VCPMobile.code-workspace
 
 # Large Assets & Scripts
 scripts/
+qa/*
+!qa/
+!qa/*.sh
 plans/Archive_Assets/
 # Local Release Artifacts
 releases/
@@ -60,4 +63,3 @@ src-tauri/gen/android/app/src/main/assets/
 # Android plugin build artifacts
 src-tauri/plugins/**/android/build/
 src-tauri/plugins/**/android/.tauri/
-

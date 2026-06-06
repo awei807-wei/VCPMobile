@@ -5,6 +5,7 @@
 
 import { ref, onMounted, onUnmounted } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
 interface ToolUiRequest {
   tool: string;
@@ -12,8 +13,52 @@ interface ToolUiRequest {
   args?: Record<string, any>;
 }
 
+interface DistributedNotificationPayload {
+  title?: unknown;
+  body?: unknown;
+  androidNotification?: {
+    attempted?: boolean;
+    delivered?: boolean;
+    error?: string | null;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 const activeRequest = ref<ToolUiRequest | null>(null);
 let unlisten: UnlistenFn | null = null;
+
+const toNotificationText = (value: unknown, fallback = ""): string => {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
+const normalizeDistributedNotification = (payload: unknown) => {
+  const record = isRecord(payload) ? payload : {};
+  const androidNotification = isRecord(record.androidNotification)
+    ? record.androidNotification
+    : {};
+  const title = toNotificationText(record.title, "VCP Notification").trim() || "VCP Notification";
+  const body = toNotificationText(record.body);
+
+  return {
+    title,
+    body,
+    androidAttempted: androidNotification.attempted === true,
+    androidSkipped: androidNotification.attempted === false,
+    delivered: androidNotification.delivered === true,
+  };
+};
+
+const showBrowserNotificationFallback = (title: string, body: string) => {
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification(title, { body });
+  }
+};
 
 onMounted(async () => {
   // Listen for tool UI requests from the Rust backend
@@ -30,17 +75,27 @@ onUnmounted(() => {
 let unlistenNotification: UnlistenFn | null = null;
 
 onMounted(async () => {
-  unlistenNotification = await listen<{ title: string; body: string }>(
+  unlistenNotification = await listen<DistributedNotificationPayload>(
     "distributed-notification",
-    (event) => {
-      // Use browser Notification API or fallback
-      if ("Notification" in window && Notification.permission === "granted") {
-        new Notification(event.payload.title, { body: event.payload.body });
-      } else {
-        console.log(
-          `[Distributed Notification] ${event.payload.title}: ${event.payload.body}`,
-        );
+    async (event) => {
+      const notification = normalizeDistributedNotification(event.payload);
+      const canRetryNative = !notification.delivered && !notification.androidSkipped;
+      if (canRetryNative) {
+        try {
+          await invoke("plugin:vcp-mobile|show_system_notification", {
+            title: notification.title,
+            body: notification.body,
+          });
+        } catch (error) {
+          console.warn("[Distributed Notification] Native notification failed:", error);
+          showBrowserNotificationFallback(notification.title, notification.body);
+        }
+      } else if (!notification.delivered) {
+        showBrowserNotificationFallback(notification.title, notification.body);
       }
+      console.log(
+        `[Distributed Notification] delivered=${notification.delivered} androidAttempted=${notification.androidAttempted} titleLength=${notification.title.length} bodyLength=${notification.body.length}`,
+      );
     },
   );
 });

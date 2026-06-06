@@ -37,6 +37,7 @@ body:「始」通知内容「末」\n\
                     example: "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MobileNotification「末」\ntitle:「始」任务完成「末」\nbody:「始」您请求的文件已处理完毕，请查收。「末」\n<<<[END_TOOL_REQUEST]>>>".to_string(),
                 },
             ],
+            web_socket_push: None,
         }
     }
 
@@ -52,17 +53,46 @@ body:「始」通知内容「末」\n\
             .unwrap_or("")
             .to_string();
 
-        // Emit to Vue frontend to show the notification via system API.
-        // The frontend listens for "distributed-notification" and calls the native notification API.
-        app.emit(
-            "distributed-notification",
-            json!({ "title": title, "body": body }),
-        )
-        .map_err(|e| format!("Failed to emit notification event: {}", e))?;
+        let notification_delivery = tauri_plugin_vcp_mobile::system::dispatch_system_notification(
+            app.clone(),
+            title.clone(),
+            body.clone(),
+        );
+        if let Some(error) = &notification_delivery.error {
+            log::warn!("[MobileNotification] Android notification push failed: {error}");
+        }
+
+        // Keep the frontend event for in-app UI/diagnostics. Android delivery is
+        // handled here so it does not depend on WebView Notification support.
+        let event_payload = json!({
+            "title": title,
+            "body": body,
+            "androidNotification": notification_delivery.clone(),
+        });
+        let event_emit_error = app
+            .emit("distributed-notification", event_payload)
+            .err()
+            .map(|e| e.to_string());
+        if let Some(error) = &event_emit_error {
+            log::warn!(
+                "[MobileNotification] Frontend notification event emit failed after notification dispatch: {error}"
+            );
+        }
+
+        let message = if notification_delivery.delivered {
+            format!("Notification sent: {}", title)
+        } else {
+            format!(
+                "Notification requested but Android delivery failed: {}",
+                title
+            )
+        };
 
         Ok(json!({
             "status": "success",
-            "message": format!("Notification sent: {}", title)
+            "message": message,
+            "androidNotification": notification_delivery,
+            "eventEmitError": event_emit_error
         }))
     }
 }

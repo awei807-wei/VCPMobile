@@ -400,7 +400,7 @@ async fn run_sync_session(
                                     ),
                                 )
                                 .await;
-                                emit_sync_log(&handle_clone, "error", "请前往 https://github.com/MRiecy/VCPMobile/releases 下载最新同步插件");
+                                emit_sync_log(&handle_clone, "error", "请前往 https://github.com/awei807-wei/VCPMobile/releases 下载最新同步插件");
                                 break;
                             }
                         }

@@ -4,9 +4,10 @@ use std::time::Duration;
 use tauri::{ipc::Channel, AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 
-const GITHUB_API_LATEST_URL: &str = "https://api.github.com/repos/MRiecy/VCPMobile/releases/latest";
+const GITHUB_API_LATEST_URL: &str =
+    "https://api.github.com/repos/awei807-wei/VCPMobile/releases/latest";
 const GITHUB_API_LIST_URL: &str =
-    "https://api.github.com/repos/MRiecy/VCPMobile/releases?per_page=1";
+    "https://api.github.com/repos/awei807-wei/VCPMobile/releases?per_page=1";
 const APK_ASSET_SUFFIX: &str = "arm64-v8a.apk";
 const APK_FILENAME: &str = "update.apk";
 

@@ -134,6 +134,9 @@ require_pattern "attempted: false" src-tauri/plugins/vcp-mobile/src/system.rs
 reject_pattern "Failed to emit agent message event" src-tauri/src/distributed/tools/agent_message.rs
 reject_pattern 'title=\$title' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern 'bodyLength=\$\{body.length\}' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern 'AGENT_MESSAGE_CHANNEL_ID = "agent_message_alerts_v2"' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "setSound\\(agentMessageSoundUri, soundAttributes\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "enableVibration\\(true\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "schema_version: u32" src-tauri/src/distributed/tool_registry.rs
 require_pattern "Unsupported disabled tools schemaVersion" src-tauri/src/distributed/tool_registry.rs
 require_pattern "MAX_CHECK_NEW_TOPICS_DAYS" src-tauri/src/distributed/tools/topic_sponsor.rs

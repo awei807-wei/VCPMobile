@@ -13,6 +13,26 @@ val tauriProperties = Properties().apply {
         propFile.inputStream().use { load(it) }
     }
 }
+fun readJsonStringProperty(file: File, property: String): String? {
+    if (!file.exists()) {
+        return null
+    }
+    val pattern = Regex("\"${Regex.escape(property)}\"\\s*:\\s*\"([^\"]+)\"")
+    return pattern.find(file.readText())?.groupValues?.get(1)
+}
+
+fun androidVersionCodeFrom(versionName: String): String? {
+    val match = Regex("""^(\d+)\.(\d+)\.(\d+)""").find(versionName) ?: return null
+    val (major, minor, patch) = match.destructured
+    return (major.toLong() * 1_000_000L + minor.toLong() * 1_000L + patch.toLong()).toString()
+}
+
+val tauriAndroidVersionName = System.getenv("TAURI_ANDROID_VERSION_NAME")
+    ?: readJsonStringProperty(file("../../../tauri.conf.json"), "version")
+    ?: tauriProperties.getProperty("tauri.android.versionName", "1.0.0")
+val tauriAndroidVersionCode = System.getenv("TAURI_ANDROID_VERSION_CODE")
+    ?: androidVersionCodeFrom(tauriAndroidVersionName)
+    ?: tauriProperties.getProperty("tauri.android.versionCode", "1")
 
 val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
@@ -52,8 +72,8 @@ android {
         applicationId = "com.vcp.avatar"
         minSdk = 26
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0.0")
+        versionCode = tauriAndroidVersionCode.toInt()
+        versionName = tauriAndroidVersionName
     }
     buildTypes {
         getByName("debug") {

@@ -19,6 +19,8 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.content.FileProvider
 import android.webkit.MimeTypeMap
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.PowerManager
 import android.net.Uri
 import android.provider.Settings
@@ -1685,7 +1687,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     private var downloadNotificationBuilder: androidx.core.app.NotificationCompat.Builder? = null
     private val DOWNLOAD_NOTIF_ID = 0x53545209
     private val DOWNLOAD_CHANNEL_ID = "apk_download"
-    private val AGENT_MESSAGE_CHANNEL_ID = "agent_message"
+    private val AGENT_MESSAGE_CHANNEL_ID = "agent_message_alerts_v2"
     private val AGENT_MESSAGE_NOTIF_BASE_ID = 0x41474D00
     private val AGENT_MESSAGE_NOTIF_SEQUENCE_MASK = 0x3FFFFFFF
     private val agentNotificationDedupLock = Any()
@@ -1723,11 +1725,19 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
     private fun createAgentMessageNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = "Agent 消息"
+            val name = "Agent 消息提醒"
             val descriptionText = "显示分布式 AgentMessage 插件推送的消息"
+            val agentMessageSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val soundAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
             val importance = android.app.NotificationManager.IMPORTANCE_HIGH
             val channel = android.app.NotificationChannel(AGENT_MESSAGE_CHANNEL_ID, name, importance).apply {
                 description = descriptionText
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 180, 80, 180)
+                setSound(agentMessageSoundUri, soundAttributes)
             }
             val notificationManager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             notificationManager.createNotificationChannel(channel)
@@ -1825,6 +1835,8 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 .setContentText(body)
                 .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(body))
                 .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(androidx.core.app.NotificationCompat.DEFAULT_SOUND or androidx.core.app.NotificationCompat.DEFAULT_VIBRATE)
+                .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
                 .setCategory(androidx.core.app.NotificationCompat.CATEGORY_MESSAGE)
                 .setVisibility(androidx.core.app.NotificationCompat.VISIBILITY_PRIVATE)
                 .setAutoCancel(true)

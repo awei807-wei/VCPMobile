@@ -50,6 +50,12 @@ rg -q "nextAgentMessageNotificationId" src-tauri/plugins/vcp-mobile/android/src/
   || fail "Android AgentMessage 通知 ID 生成函数缺失"
 rg -q "showSystemNotification posted id=.*bodyLength=" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
   || fail "Android 系统通知日志必须保留非内容元数据"
+rg -q 'AGENT_MESSAGE_CHANNEL_ID = "agent_message_alerts_v2"' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  || fail "Android AgentMessage 必须使用新的独立有声通知通道"
+rg -q "setSound\\(agentMessageSoundUri, soundAttributes\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  || fail "Android AgentMessage 通知通道必须显式设置默认铃声"
+rg -q "enableVibration\\(true\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  || fail "Android AgentMessage 通知通道必须显式启用振动"
 if rg -q 'title=\$title' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
   fail "Android 系统通知日志不应输出通知标题内容"
 fi

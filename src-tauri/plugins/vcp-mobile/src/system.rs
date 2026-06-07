@@ -452,7 +452,7 @@ pub fn dispatch_system_notification<R: Runtime>(
     #[cfg(target_os = "android")]
     {
         let state = app.state::<VcpMobileState<R>>();
-        match state.plugin_handle.lock() {
+        let delivery = match state.plugin_handle.lock() {
             Ok(handle) => match handle.as_ref() {
                 Some(plugin_handle) => match plugin_handle.run_mobile_plugin::<serde_json::Value>(
                     "showSystemNotification",
@@ -480,7 +480,8 @@ pub fn dispatch_system_notification<R: Runtime>(
                 delivered: false,
                 error: Some(error.to_string()),
             },
-        }
+        };
+        delivery
     }
     #[cfg(not(target_os = "android"))]
     {

@@ -353,7 +353,7 @@ VCPMobile/
 | CI | `.github/workflows/ci.yml` | push / PR 到 main | `vue-tsc --noEmit` + `cargo fmt --check` + `cargo clippy -- -D warnings` |
 | Release | `.github/workflows/release.yml` | GitHub Release published | 构建 `aarch64` Release APK 并上传 |
 
-Release 工作流环境：Node 22, pnpm 10, Java 17 (temurin), Android NDK `29.0.13846066`。APK 自动重命名为 `VCPMobile_v{VERSION}_arm64-v8a.apk`。
+Release 工作流环境：Node 22, pnpm 10, Java 17 (temurin), Android NDK `29.0.13846066`。发布时从 Release tag 同步 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 Android `tauri.properties` 版本，APK 自动重命名为 `VCPMobile_v{VERSION}_arm64-v8a.apk`。
 
 ---
 
@@ -433,7 +433,7 @@ Release 工作流环境：Node 22, pnpm 10, Java 17 (temurin), Android NDK `29.0
 
 ### 7.1 用户安装（普通用户）
 
-1. 前往 [Releases](https://github.com/MRiecy/VCPMobile/releases) 下载最新 `VCPMobile_v1.0.3_arm64-v8a.apk`
+1. 前往 [Releases](https://github.com/awei807-wei/VCPMobile/releases) 下载最新 `VCPMobile_v{VERSION}_arm64-v8a.apk`
 2. 安装到 Android 设备（minSdk 26，推荐 Android 10+）
 3. 启动应用，完成权限引导（通知、存储、电池优化白名单）
 4. 配置 VCP 服务器地址与 API Key

@@ -64,7 +64,26 @@ fn parse_log_url(url: &str, key: &str) -> Result<Url, String> {
         format!("{}VCP_Key={}", base_url, key)
     };
 
-    Url::parse(&url_with_key).map_err(|e| format!("Invalid URL: {}", e))
+    let mut parsed = Url::parse(&url_with_key).map_err(|e| format!("Invalid URL: {}", e))?;
+    match parsed.scheme() {
+        "ws" | "wss" => {}
+        // 外网线路常把同一域名同时用于 HTTPS API 和 WSS 反代。
+        // 用户粘贴 https/http 地址时自动转成 WebSocket scheme，避免模型接口可用但实时日志通道误报配置错误。
+        "http" => parsed
+            .set_scheme("ws")
+            .map_err(|_| "Invalid VCPLog URL scheme: http".to_string())?,
+        "https" => parsed
+            .set_scheme("wss")
+            .map_err(|_| "Invalid VCPLog URL scheme: https".to_string())?,
+        scheme => {
+            return Err(format!(
+                "Unsupported VCPLog URL scheme: {}. Use ws:// or wss://",
+                scheme
+            ))
+        }
+    }
+
+    Ok(parsed)
 }
 
 #[tauri::command]
@@ -83,7 +102,19 @@ pub async fn init_vcp_log_connection_internal<R: tauri::Runtime>(
 ) -> Result<(), String> {
     // 如果 URL 或 Key 为空，发送 None 以停止现有连接并进入静默等待
     if url.trim().is_empty() || key.trim().is_empty() {
+        {
+            *CURRENT_LOG_STATUS.write().await = "ready".to_string();
+        }
         let _ = WS_URL_CHANNEL.0.send(None);
+        let _ = app.emit(
+            "vcp-system-event",
+            serde_json::json!({
+                "type": "vcp-log-status",
+                "status": "ready",
+                "message": "实时日志未配置",
+                "source": "VCPLog"
+            }),
+        );
         return Ok(());
     }
 
@@ -169,7 +200,7 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                     serde_json::json!({
                         "type": "vcp-log-status",
                         "status": "error",
-                        "message": "连接错误",
+                        "message": "实时日志配置错误",
                         "source": "VCPLog"
                     }),
                 );
@@ -183,7 +214,7 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                             "id": "vcp_log_connection_status",
                             "status": "error",
                             "tool_name": "VCPLog 请求异常",
-                            "content": format!("❌ 无法构造请求: {}\n\n提示：请检查配置的 URL 格式是否正确。", e),
+                            "content": format!("❌ 无法构造实时日志请求: {}\n\n这只影响 VCPLog 实时通知与工具日志，不代表 VCP HTTP 模型接口不可用。\n请检查 VCPLog URL 是否为 ws:// 或 wss://，或使用可反代到 WebSocket 的 http(s) 地址。", e),
                             "source": "VCPLog"
                         }
                     }),
@@ -392,7 +423,7 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                         serde_json::json!({
                             "type": "vcp-log-status",
                             "status": "error",
-                            "message": "连接错误",
+                            "message": "实时日志连接异常",
                             "source": "VCPLog"
                         }),
                     );
@@ -405,8 +436,8 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                             "data": {
                                 "id": "vcp_log_connection_status",
                                 "status": "error",
-                                "tool_name": "VCPLog 连接失败",                                
-                                "content": format!("❌ 连接错误: {}\n\n提示：\n1. 请检查桌面端 VCP 是否已开启且 VCPLog 服务正常。\n2. 检查 VCP API 地址和 Key 配置是否正确。", e),
+                                "tool_name": "VCPLog 实时日志未连接",
+                                "content": format!("❌ 实时日志通道连接失败: {}\n\n这只影响 VCPLog 实时通知与工具日志，不影响 VCP HTTP 模型列表和聊天请求。\n外网线路请确认已开放或反代 VCPLog WebSocket 端点，并为该线路单独配置可访问的 VCPLog URL/Key。", e),
                                 "source": "VCPLog"
                             }
                         }),
@@ -425,7 +456,7 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                     serde_json::json!({
                         "type": "vcp-log-status",
                         "status": "error",
-                        "message": "连接错误",
+                        "message": "实时日志连接超时",
                         "source": "VCPLog"
                     }),
                 );
@@ -438,8 +469,8 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                         "data": {
                             "id": "vcp_log_connection_status",
                             "status": "error",
-                            "tool_name": "VCPLog 连接超时",
-                            "content": "❌ 连接 VCPLog 超时 (10s)。\n\n提示：\n1. 请检查桌面端是否处于运行状态。\n2. 确认手机与电脑是否处于同一局域网。",
+                            "tool_name": "VCPLog 实时日志超时",
+                            "content": "❌ 实时日志通道连接超时 (10s)。\n\n这只影响 VCPLog 实时通知与工具日志，不影响 VCP HTTP 模型列表和聊天请求。\n外网线路请确认 VCPLog WebSocket 端点可从模拟器/手机访问。",
                             "source": "VCPLog"
                         }
                     }),
@@ -806,6 +837,24 @@ fn summarize_agent_message_payload(value: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn parse_log_url_converts_http_scheme_to_websocket() {
+        let url = parse_log_url("https://example.com", "secret").unwrap();
+        assert_eq!(url.as_str(), "wss://example.com/VCPlog/VCP_Key=secret");
+
+        let url = parse_log_url("http://example.com:6005", "secret").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "ws://example.com:6005/VCPlog/VCP_Key=secret"
+        );
+    }
+
+    #[test]
+    fn parse_log_url_rejects_non_websocket_compatible_scheme() {
+        let err = parse_log_url("ftp://example.com", "secret").unwrap_err();
+        assert!(err.contains("Unsupported VCPLog URL scheme"));
+    }
 
     #[test]
     fn extracts_agent_message_from_vcp_log_payload() {

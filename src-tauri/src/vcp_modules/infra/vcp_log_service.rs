@@ -844,10 +844,7 @@ mod tests {
         assert_eq!(url.as_str(), "wss://example.com/VCPlog/VCP_Key=secret");
 
         let url = parse_log_url("http://example.com:6005", "secret").unwrap();
-        assert_eq!(
-            url.as_str(),
-            "ws://example.com:6005/VCPlog/VCP_Key=secret"
-        );
+        assert_eq!(url.as_str(), "ws://example.com:6005/VCPlog/VCP_Key=secret");
     }
 
     #[test]

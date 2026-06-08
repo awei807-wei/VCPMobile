@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, watch, ref } from 'vue';
-import { X, Trash2, Bug, RefreshCw } from 'lucide-vue-next';
-import { useNotificationStore } from '../../core/stores/notification';
-import { useNotificationProcessor } from '../../core/composables/useNotificationProcessor';
-import { useSidebarSwipe } from '../../core/composables/useSidebarSwipe';
-import NotificationStatusBar from '../../features/notification/NotificationStatusBar.vue';
-import NotificationList from '../../features/notification/NotificationList.vue';
-import { useOverlayStore } from '../../core/stores/overlay';
-import { useChatStreamStore } from '../../core/stores/chatStreamStore';
-import { useConnectionProfilesStore } from '../../core/stores/connectionProfiles';
+import { computed, watch, ref } from "vue";
+import { X, Trash2, Bug, RefreshCw } from "lucide-vue-next";
+import { useNotificationStore } from "../../core/stores/notification";
+import { useNotificationProcessor } from "../../core/composables/useNotificationProcessor";
+import { useSidebarSwipe } from "../../core/composables/useSidebarSwipe";
+import NotificationStatusBar from "../../features/notification/NotificationStatusBar.vue";
+import NotificationList from "../../features/notification/NotificationList.vue";
+import { useOverlayStore } from "../../core/stores/overlay";
+import { useChatStreamStore } from "../../core/stores/chatStreamStore";
+import { useConnectionProfilesStore } from "../../core/stores/connectionProfiles";
 
 const props = defineProps<{ isOpen: boolean }>();
 
@@ -27,8 +27,13 @@ const openDistributedView = () => {
 };
 
 const connectionSwitchTitle = computed(() => {
-  if (chatStreamStore.hasActiveStreams) return '输出中不可切换';
-  if (connectionProfilesStore.switching) return '正在切换线路';
+  if (chatStreamStore.hasActiveStreams) return "输出中不可切换";
+  if (connectionProfilesStore.hasFloatingAssistantGenerating)
+    return "划词助手输出中不可切换";
+  if (connectionProfilesStore.hasActiveSyncSession) return "数据同步中不可切换";
+  if (connectionProfilesStore.hasModelRefreshInFlight)
+    return "模型刷新中不可切换";
+  if (connectionProfilesStore.switching) return "正在切换线路";
   return `切换到${connectionProfilesStore.targetProfileName}`;
 });
 
@@ -37,7 +42,7 @@ const switchConnectionProfile = () => {
 };
 
 const sidebarRef = ref<HTMLElement | null>(null);
-useSidebarSwipe(sidebarRef, { type: 'right' });
+useSidebarSwipe(sidebarRef, { type: "right" });
 
 const triggerDebugNotifications = () => {
   const randomSuffix = () => Math.random().toString(36).substring(2, 5);
@@ -46,78 +51,82 @@ const triggerDebugNotifications = () => {
   const debugPayloads = [
     // 1. DailyNote 成功 (vcp_log)
     {
-      type: 'vcp_log',
+      type: "vcp_log",
       data: {
-        tool_name: 'DailyNote',
-        status: 'success',
+        tool_name: "DailyNote",
+        status: "success",
         content: JSON.stringify({
-          MaidName: '[Nova]Nova',
-          timestamp: '2026-05-26T21:49:09.295+08:00'
-        })
-      }
+          MaidName: "[Nova]Nova",
+          timestamp: "2026-05-26T21:49:09.295+08:00",
+        }),
+      },
     },
     // 2. 普通工具成功 (vcp_log)
     {
-      type: 'vcp_log',
+      type: "vcp_log",
       data: {
-        tool_name: 'PowerShellExecutor',
-        status: 'success',
-        source: 'VCPLog',
+        tool_name: "PowerShellExecutor",
+        status: "success",
+        source: "VCPLog",
         content: JSON.stringify({
-          MaidName: '艾米莉亚',
-          timestamp: '2026-05-26T21:38:00',
+          MaidName: "艾米莉亚",
+          timestamp: "2026-05-26T21:38:00",
           original_plugin_output: {
-            status: 'success',
-            stdout: 'G:\\VCPMobile\\src\\components\\ui> ls\n\n    Directory: G:\\VCPMobile\\src\\components\\ui\n\nMode                 LastWriteTime         Length Name\n----                 -------------         ------ ----\n-a----        2026/05/26     21:38           1520 ToastItem.vue\n'
-          }
-        })
-      }
+            status: "success",
+            stdout:
+              "G:\\VCPMobile\\src\\components\\ui> ls\n\n    Directory: G:\\VCPMobile\\src\\components\\ui\n\nMode                 LastWriteTime         Length Name\n----                 -------------         ------ ----\n-a----        2026/05/26     21:38           1520 ToastItem.vue\n",
+          },
+        }),
+      },
     },
     // 3. 工具错误 (vcp_log)
     {
-      type: 'vcp_log',
+      type: "vcp_log",
       data: {
-        tool_name: 'AdbBridge',
-        status: 'error',
-        source: 'VCPLog',
-        content: '执行错误: {"plugin_error": "device \'emulator-5554\' not found."}'
-      }
+        tool_name: "AdbBridge",
+        status: "error",
+        source: "VCPLog",
+        content:
+          '执行错误: {"plugin_error": "device \'emulator-5554\' not found."}',
+      },
     },
     // 4. DistPluginManager 消息 (vcp_log)
     {
-      type: 'vcp_log',
+      type: "vcp_log",
       data: {
-        source: 'DistPluginManager',
-        content: '已成功同步 3 个分布式计算节点状态，物理核心 CPU 综合占用率 14%。'
-      }
+        source: "DistPluginManager",
+        content:
+          "已成功同步 3 个分布式计算节点状态，物理核心 CPU 综合占用率 14%。",
+      },
     },
     // 5. 视频生成状态
     {
-      type: 'video_generation_status',
+      type: "video_generation_status",
       data: {
-        status: 'Succeed',
-        timestamp: '2026-05-26T21:38:00',
+        status: "Succeed",
+        timestamp: "2026-05-26T21:38:00",
         original_plugin_output: {
-          message: '视频已生成，URL: https://cdn.vcpchat.com/generations/vid_77189b.mp4'
-        }
-      }
+          message:
+            "视频已生成，URL: https://cdn.vcpchat.com/generations/vid_77189b.mp4",
+        },
+      },
     },
     // 6. 工具审核请求（duration=0，含 actions）
     {
-      type: 'tool_approval_request',
+      type: "tool_approval_request",
       data: {
-        requestId: 'debug_req_' + randomSuffix(),
-        toolName: 'PowerShellExecutor',
-        maid: '艾米莉亚',
-        args: { command: 'cargo check --workspace' },
-        timestamp: '2026-05-26 21:38:00'
-      }
+        requestId: "debug_req_" + randomSuffix(),
+        toolName: "PowerShellExecutor",
+        maid: "艾米莉亚",
+        args: { command: "cargo check --workspace" },
+        timestamp: "2026-05-26 21:38:00",
+      },
     },
     // 7. 连接确认（默认回退逻辑）
     {
-      type: 'connection_ack',
-      message: 'VCPLog 连接成功！'
-    }
+      type: "connection_ack",
+      message: "VCPLog 连接成功！",
+    },
   ];
 
   debugPayloads.forEach((payload) => {
@@ -137,63 +146,92 @@ watch(
       store.markAllRead();
     }
   },
-  { immediate: true }
+  { immediate: true },
 );
 </script>
 
 <template>
-  <aside ref="sidebarRef" class="vcp-drawer vcp-drawer-right pt-safe flex flex-col" :class="{ 'is-open': props.isOpen }">
-    <div class="px-5 py-4 border-b border-black/5 dark:border-white/5 flex justify-between items-center shrink-0">
+  <aside
+    ref="sidebarRef"
+    class="vcp-drawer vcp-drawer-right pt-safe flex flex-col"
+    :class="{ 'is-open': props.isOpen }"
+  >
+    <div
+      class="px-5 py-4 border-b border-black/5 dark:border-white/5 flex justify-between items-center shrink-0"
+    >
       <div class="flex items-center gap-2">
-        <h3 class="font-black text-[11px] uppercase tracking-[0.2em] opacity-70 text-primary-text">Notifications</h3>
-        <span v-if="store.unreadCount > 0"
-          class="px-1.5 py-0.5 bg-blue-500 text-[9px] font-black rounded-full text-white animate-pulse">
+        <h3
+          class="font-black text-[11px] uppercase tracking-[0.2em] opacity-70 text-primary-text"
+        >
+          Notifications
+        </h3>
+        <span
+          v-if="store.unreadCount > 0"
+          class="px-1.5 py-0.5 bg-blue-500 text-[9px] font-black rounded-full text-white animate-pulse"
+        >
           {{ store.unreadCount }}
         </span>
       </div>
       <div class="flex items-center -mr-2">
-        <button @click="triggerDebugNotifications"
+        <button
+          @click="triggerDebugNotifications"
           class="w-10 h-10 flex items-center justify-center opacity-40 hover:opacity-100 hover:text-amber-500 transition-all text-primary-text active:scale-90"
-          title="Push debug notifications">
+          title="Push debug notifications"
+        >
           <Bug :size="16" />
         </button>
-        <button @click="store.clearHistory"
+        <button
+          @click="store.clearHistory"
           class="w-10 h-10 flex items-center justify-center opacity-40 hover:opacity-100 hover:text-red-400 transition-all text-primary-text active:scale-90"
-          title="Clear all">
+          title="Clear all"
+        >
           <Trash2 :size="16" />
         </button>
-        <button @click="emit('close')" 
+        <button
+          @click="emit('close')"
           class="w-10 h-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity text-primary-text active:scale-90"
-          title="Close">
+          title="Close"
+        >
           <X :size="20" />
         </button>
       </div>
     </div>
 
     <NotificationStatusBar />
-    
+
     <NotificationList :items="store.historyList" />
 
     <!-- 底部：工具按钮 2x2 网格区 -->
-    <div class="p-4 border-t border-black/5 dark:border-white/5 glass-panel shrink-0 pb-[calc(var(--vcp-safe-bottom,16px)+8px)]">
+    <div
+      class="p-4 border-t border-black/5 dark:border-white/5 glass-panel shrink-0 pb-[calc(var(--vcp-safe-bottom,16px)+8px)]"
+    >
       <div class="grid grid-cols-2 gap-2">
         <button
           class="col-span-1 py-3 px-4 rounded-full transition-all text-white flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 shadow-md border border-black/5 dark:border-white/5"
           style="background-color: var(--highlight-text)"
           @click="openDistributedView"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
             <polyline points="2 17 12 22 22 17"></polyline>
             <polyline points="2 12 12 17 22 12"></polyline>
           </svg>
           <span class="font-bold text-[11px] leading-none">插件中心</span>
         </button>
-        
+
         <button
           class="col-span-1 min-h-[42px] py-3 px-3 rounded-full transition-all flex items-center justify-center gap-2 shadow-sm border border-black/5 dark:border-white/5 text-primary-text bg-black/5 dark:bg-white/10 active:scale-95 disabled:opacity-35 disabled:active:scale-100 disabled:cursor-not-allowed"
           :title="connectionSwitchTitle"
-          :disabled="chatStreamStore.hasActiveStreams || connectionProfilesStore.switching"
+          :disabled="!connectionProfilesStore.canSwitch"
           @click="switchConnectionProfile"
         >
           <RefreshCw
@@ -205,10 +243,14 @@ watch(
             线路：{{ connectionProfilesStore.activeProfileName }}
           </span>
         </button>
-        <div class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3">
+        <div
+          class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3"
+        >
           <span>待开发</span>
         </div>
-        <div class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3">
+        <div
+          class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3"
+        >
           <span>待开发</span>
         </div>
       </div>

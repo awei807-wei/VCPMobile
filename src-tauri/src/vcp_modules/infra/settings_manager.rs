@@ -12,6 +12,37 @@ fn default_sync_log_level() -> String {
     "INFO".to_string()
 }
 
+fn default_active_connection_profile_id() -> String {
+    "lan".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionProfile {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub vcp_server_url: String,
+    #[serde(default)]
+    pub vcp_api_key: String,
+    #[serde(default)]
+    pub vcp_log_url: String,
+    #[serde(default)]
+    pub vcp_log_key: String,
+    #[serde(default)]
+    pub sync_server_url: String,
+    #[serde(default)]
+    pub sync_http_url: String,
+    #[serde(default)]
+    pub sync_token: String,
+    #[serde(default)]
+    pub distributed_ws_url: String,
+    #[serde(default)]
+    pub distributed_vcp_key: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -83,6 +114,12 @@ pub struct Settings {
     #[serde(default)]
     pub assistant_agent_id: String,
 
+    #[serde(default)]
+    pub connection_profiles: Vec<ConnectionProfile>,
+
+    #[serde(default = "default_active_connection_profile_id")]
+    pub active_connection_profile_id: String,
+
     /// 仅保留此字段用于前端未来扩展的透参
     #[serde(flatten)]
     #[serde(default)]
@@ -125,6 +162,8 @@ pub fn create_default_settings() -> Settings {
         sync_prerender_enabled: false,
         enable_assistant: false,
         assistant_agent_id: "".to_string(),
+        connection_profiles: vec![],
+        active_connection_profile_id: default_active_connection_profile_id(),
         agent_order: vec![],
         group_order: vec![],
         current_theme_mode: Some("dark".to_string()),

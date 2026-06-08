@@ -109,6 +109,10 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     return streams ? streams.length > 0 : false;
   });
 
+  const hasActiveStreams = computed(() =>
+    Object.values(sessionActiveStreams.value).some((streams) => streams.length > 0),
+  );
+
   // 全局流消息池上限，防止极端场景下 OOM
   const MAX_STREAM_MESSAGES = 100;
 
@@ -493,6 +497,7 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     activeStreamMessages,
     activeStreamingIds,
     isGroupGenerating,
+    hasActiveStreams,
     computeShell,
     addSessionStream,
     removeSessionStream,
@@ -501,5 +506,4 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     stopGroupTurn,
   };
 });
-
 

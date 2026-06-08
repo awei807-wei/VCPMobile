@@ -17,6 +17,7 @@ export const useModelStore = defineStore('model', () => {
   const favorites = ref<string[]>([]);
   const isLoading = ref(false);
   const lastRefreshed = ref(0);
+  const forceNextRefresh = ref(false);
   
   const notificationStore = useNotificationStore();
 
@@ -44,7 +45,9 @@ export const useModelStore = defineStore('model', () => {
   const fetchModels = async (force = false) => {
     if (isLoading.value) return; // 锁频防护，防止并发刷请求
 
-    if (!force && models.value.length > 0 && Date.now() - lastRefreshed.value < 1000 * 60 * 10) {
+    const shouldRefresh = force || forceNextRefresh.value;
+
+    if (!shouldRefresh && models.value.length > 0 && Date.now() - lastRefreshed.value < 1000 * 60 * 10) {
       return;
     }
 
@@ -52,14 +55,15 @@ export const useModelStore = defineStore('model', () => {
     isLoading.value = true;
     try {
       // 先尝试获取缓存
-      if (models.value.length === 0) {
+      if (!shouldRefresh && models.value.length === 0) {
         models.value = await invoke<ModelInfo[]>('get_cached_models');
       }
 
       // 只有在明确要求或没缓存时才刷新
-      if (force || models.value.length === 0) {
+      if (shouldRefresh || models.value.length === 0) {
         models.value = await invoke<ModelInfo[]>('refresh_models');
         lastRefreshed.value = Date.now();
+        forceNextRefresh.value = false;
 
         if (force) {
           notificationStore.addNotification({
@@ -137,6 +141,12 @@ export const useModelStore = defineStore('model', () => {
     }
   };
 
+  const markModelsStale = () => {
+    models.value = [];
+    lastRefreshed.value = 0;
+    forceNextRefresh.value = true;
+  };
+
   return {
     models,
     hotModels,
@@ -150,5 +160,6 @@ export const useModelStore = defineStore('model', () => {
     fetchFavorites,
     toggleFavorite,
     recordUsage,
+    markModelsStale,
   };
 });

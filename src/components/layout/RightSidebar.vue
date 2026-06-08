@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { watch, ref } from 'vue';
-import { X, Trash2, Bug } from 'lucide-vue-next';
+import { computed, watch, ref } from 'vue';
+import { X, Trash2, Bug, RefreshCw } from 'lucide-vue-next';
 import { useNotificationStore } from '../../core/stores/notification';
 import { useNotificationProcessor } from '../../core/composables/useNotificationProcessor';
 import { useSidebarSwipe } from '../../core/composables/useSidebarSwipe';
 import NotificationStatusBar from '../../features/notification/NotificationStatusBar.vue';
 import NotificationList from '../../features/notification/NotificationList.vue';
 import { useOverlayStore } from '../../core/stores/overlay';
+import { useChatStreamStore } from '../../core/stores/chatStreamStore';
+import { useConnectionProfilesStore } from '../../core/stores/connectionProfiles';
 
 const props = defineProps<{ isOpen: boolean }>();
 
@@ -17,9 +19,21 @@ const emit = defineEmits<{
 const store = useNotificationStore();
 const { processPayload } = useNotificationProcessor();
 const overlayStore = useOverlayStore();
+const chatStreamStore = useChatStreamStore();
+const connectionProfilesStore = useConnectionProfilesStore();
 
 const openDistributedView = () => {
   overlayStore.openDistributed();
+};
+
+const connectionSwitchTitle = computed(() => {
+  if (chatStreamStore.hasActiveStreams) return '输出中不可切换';
+  if (connectionProfilesStore.switching) return '正在切换线路';
+  return `切换到${connectionProfilesStore.targetProfileName}`;
+});
+
+const switchConnectionProfile = () => {
+  connectionProfilesStore.switchToTarget().catch(() => {});
 };
 
 const sidebarRef = ref<HTMLElement | null>(null);
@@ -176,9 +190,21 @@ watch(
           <span class="font-bold text-[11px] leading-none">插件中心</span>
         </button>
         
-        <div class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3">
-          <span>待开发</span>
-        </div>
+        <button
+          class="col-span-1 min-h-[42px] py-3 px-3 rounded-full transition-all flex items-center justify-center gap-2 shadow-sm border border-black/5 dark:border-white/5 text-primary-text bg-black/5 dark:bg-white/10 active:scale-95 disabled:opacity-35 disabled:active:scale-100 disabled:cursor-not-allowed"
+          :title="connectionSwitchTitle"
+          :disabled="chatStreamStore.hasActiveStreams || connectionProfilesStore.switching"
+          @click="switchConnectionProfile"
+        >
+          <RefreshCw
+            :size="14"
+            class="shrink-0"
+            :class="{ 'animate-spin': connectionProfilesStore.switching }"
+          />
+          <span class="font-bold text-[11px] leading-none truncate">
+            线路：{{ connectionProfilesStore.activeProfileName }}
+          </span>
+        </button>
         <div class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3">
           <span>待开发</span>
         </div>

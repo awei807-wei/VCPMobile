@@ -19,6 +19,7 @@ const DISABLED_CONFIG_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_DISABLED_ON_LEGACY_CONFIG: &[&str] =
     &["TopicMemo", "TopicSponsor", "MobileTopicSponsor"];
 const DISABLED_TOOL_RENAME_ALIASES: &[(&str, &str)] = &[("TopicSponsor", "MobileTopicSponsor")];
+const EXECUTION_TOOL_RENAME_ALIASES: &[(&str, &str)] = &[("TopicSponsor", "MobileTopicSponsor")];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -175,7 +176,10 @@ impl ToolRegistry {
     /// Sync disabled tools list from frontend. Returns true if the set changed.
     pub fn update_disabled(&self, names: Vec<String>) -> bool {
         if let Ok(mut guard) = self.disabled_names.write() {
-            let new_set: HashSet<String> = names.into_iter().collect();
+            let new_set: HashSet<String> = names
+                .into_iter()
+                .map(|name| self.resolve_tool_name(&name).unwrap_or(&name).to_string())
+                .collect();
             if *guard != new_set {
                 *guard = new_set;
                 true
@@ -189,11 +193,27 @@ impl ToolRegistry {
 
     /// Check if a tool is enabled.
     pub fn is_enabled(&self, name: &str) -> bool {
+        let resolved_name = self.resolve_tool_name(name).unwrap_or(name);
         if let Ok(guard) = self.disabled_names.read() {
-            !guard.contains(name)
+            !guard.contains(resolved_name)
         } else {
             true
         }
+    }
+
+    fn resolve_tool_name<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        if self.tools.contains_key(name) {
+            return Some(name);
+        }
+        EXECUTION_TOOL_RENAME_ALIASES
+            .iter()
+            .find_map(|&(old_name, new_name)| {
+                if name == old_name && self.tools.contains_key(new_name) {
+                    Some(new_name)
+                } else {
+                    None
+                }
+            })
     }
 
     /// Register a OneShot tool.
@@ -234,7 +254,8 @@ impl ToolRegistry {
         if !self.is_enabled(name) {
             return None;
         }
-        self.tools.get(name).map(ToolEntry::manifest)
+        let resolved_name = self.resolve_tool_name(name)?;
+        self.tools.get(resolved_name).map(ToolEntry::manifest)
     }
 
     /// Get all tool metadata with categories and placeholders for the frontend config.
@@ -298,10 +319,11 @@ impl ToolRegistry {
                 tool_name
             ));
         }
+        let resolved_name = self.resolve_tool_name(tool_name).unwrap_or(tool_name);
 
         let entry = self
             .tools
-            .get(tool_name)
+            .get(resolved_name)
             .ok_or_else(|| format!("Tool '{}' not found in registry.", tool_name))?;
 
         match entry {
@@ -456,6 +478,33 @@ mod tests {
     }
 
     #[test]
+    fn old_topic_sponsor_name_resolves_to_mobile_execution_alias() {
+        let mut registry = ToolRegistry::new();
+        registry.register_oneshot(NoopTool("MobileTopicSponsor"));
+
+        assert_eq!(
+            registry.resolve_tool_name("TopicSponsor"),
+            Some("MobileTopicSponsor")
+        );
+        assert!(registry.get_manifest("TopicSponsor").is_some());
+        assert_eq!(registry.get_all_manifests().len(), 1);
+        assert_eq!(registry.get_all_manifests()[0].name, "MobileTopicSponsor");
+    }
+
+    #[test]
+    fn update_disabled_normalizes_old_topic_sponsor_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register_oneshot(NoopTool("MobileTopicSponsor"));
+
+        assert!(registry.update_disabled(vec!["TopicSponsor".to_string()]));
+        assert!(!registry.is_enabled("TopicSponsor"));
+        assert!(!registry.is_enabled("MobileTopicSponsor"));
+        assert!(registry.get_manifest("TopicSponsor").is_none());
+        assert!(registry.get_all_manifests().is_empty());
+        assert!(!registry.update_disabled(vec!["MobileTopicSponsor".to_string()]));
+    }
+
+    #[test]
     fn schema_disabled_config_preserves_explicit_topic_enablement() {
         let loaded =
             parse_disabled_config(r#"{"schemaVersion":1,"disabledNames":["MobileDeviceInfo"]}"#)
@@ -475,5 +524,25 @@ mod tests {
     #[test]
     fn schema_disabled_config_rejects_missing_version() {
         assert!(parse_disabled_config(r#"{"disabledNames":[]}"#).is_err());
+    }
+
+    struct NoopTool(&'static str);
+
+    #[async_trait]
+    impl OneShotTool for NoopTool {
+        fn manifest(&self) -> ToolManifest {
+            ToolManifest {
+                name: self.0.to_string(),
+                display_name: self.0.to_string(),
+                description: String::new(),
+                placeholder: None,
+                invocation_commands: Vec::new(),
+                web_socket_push: None,
+            }
+        }
+
+        async fn execute(&self, _args: Value, _app: &AppHandle) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
     }
 }

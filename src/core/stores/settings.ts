@@ -90,7 +90,7 @@ export type ConnectionProfileRuntimeField =
 const createConnectionProfileFromSettings = (
   settings: Partial<AppSettings> | null | undefined,
   id: ConnectionProfileId,
-): ConnectionProfile => ({
+): ConnectionProfile => mirrorRealtimeAliases({
   ...createEmptyConnectionProfile(id),
   vcpServerUrl: settings?.vcpServerUrl || "",
   vcpApiKey: settings?.vcpApiKey || "",
@@ -99,9 +99,28 @@ const createConnectionProfileFromSettings = (
   syncServerUrl: settings?.syncServerUrl || "",
   syncHttpUrl: settings?.syncHttpUrl || "",
   syncToken: settings?.syncToken || "",
-  distributedWsUrl: settings?.distributedWsUrl || settings?.vcpLogUrl || "",
-  distributedVcpKey: settings?.distributedVcpKey || settings?.vcpLogKey || "",
+  distributedWsUrl: settings?.distributedWsUrl || "",
+  distributedVcpKey: settings?.distributedVcpKey || "",
 });
+
+const mirrorRealtimeAliases = <
+  T extends {
+    vcpLogUrl?: string;
+    vcpLogKey?: string;
+    distributedWsUrl?: string;
+    distributedVcpKey?: string;
+  },
+>(
+  target: T,
+): T => {
+  const wsUrl = target.vcpLogUrl || "";
+  const key = target.vcpLogKey || "";
+  target.vcpLogUrl = wsUrl;
+  target.vcpLogKey = key;
+  target.distributedWsUrl = wsUrl;
+  target.distributedVcpKey = key;
+  return target;
+};
 
 export const normalizeConnectionProfiles = (
   settings: Partial<AppSettings> | null | undefined,
@@ -113,12 +132,12 @@ export const normalizeConnectionProfiles = (
   return CONNECTION_PROFILE_IDS.map((id) => {
     const profile = existing?.find((item) => item?.id === id);
     if (profile) {
-      return {
+      return mirrorRealtimeAliases({
         ...createEmptyConnectionProfile(id),
         ...profile,
         id,
         name: profile.name || getDefaultConnectionProfileName(id),
-      };
+      });
     }
 
     return id === "lan"
@@ -139,23 +158,28 @@ export const copySettingsToConnectionProfile = (
   settings: AppSettings,
   profile: ConnectionProfile,
 ) => {
+  mirrorRealtimeAliases(settings);
   CONNECTION_PROFILE_RUNTIME_FIELDS.forEach((field) => {
     profile[field] = (settings[field] as string | undefined) || "";
   });
+  mirrorRealtimeAliases(profile);
 };
 
 export const copyConnectionProfileToSettings = (
   settings: AppSettings,
   profile: ConnectionProfile,
 ) => {
+  mirrorRealtimeAliases(profile);
   CONNECTION_PROFILE_RUNTIME_FIELDS.forEach((field) => {
     settings[field] = profile[field] || "";
   });
+  mirrorRealtimeAliases(settings);
 };
 
 export const syncActiveConnectionProfileFromSettings = (
   settings: AppSettings,
 ) => {
+  mirrorRealtimeAliases(settings);
   const profiles = ensureConnectionProfiles(settings);
   const activeProfileId = normalizeConnectionProfileId(
     settings.activeConnectionProfileId,
@@ -221,12 +245,22 @@ export const useSettingsStore = defineStore("settings", () => {
     error.value = null;
     try {
       const preparedUpdates = { ...updates };
-      if (settings.value) {
+      const explicitlyTouchesProfile = [
+        "connectionProfiles",
+        "activeConnectionProfileId",
+        ...CONNECTION_PROFILE_RUNTIME_FIELDS,
+      ].some((field) => Object.prototype.hasOwnProperty.call(updates, field));
+
+      if (settings.value && explicitlyTouchesProfile) {
         const mergedSettings = JSON.parse(JSON.stringify({
           ...settings.value,
           ...updates,
         })) as AppSettings;
         syncActiveConnectionProfileFromSettings(mergedSettings);
+        preparedUpdates.vcpLogUrl = mergedSettings.vcpLogUrl;
+        preparedUpdates.vcpLogKey = mergedSettings.vcpLogKey;
+        preparedUpdates.distributedWsUrl = mergedSettings.distributedWsUrl;
+        preparedUpdates.distributedVcpKey = mergedSettings.distributedVcpKey;
         preparedUpdates.connectionProfiles = mergedSettings.connectionProfiles;
         preparedUpdates.activeConnectionProfileId =
           mergedSettings.activeConnectionProfileId;

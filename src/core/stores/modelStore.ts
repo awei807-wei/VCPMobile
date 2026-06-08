@@ -1,7 +1,8 @@
-import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { useNotificationStore } from './notification';
+import { defineStore } from "pinia";
+import { ref, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { useNotificationStore } from "./notification";
+import { useConnectionSwitchGuardStore } from "./connectionSwitchGuard";
 
 export interface ModelInfo {
   id: string;
@@ -10,7 +11,7 @@ export interface ModelInfo {
   owned_by: string;
 }
 
-export const useModelStore = defineStore('model', () => {
+export const useModelStore = defineStore("model", () => {
   // --- State ---
   const models = ref<ModelInfo[]>([]);
   const hotModels = ref<string[]>([]);
@@ -18,8 +19,10 @@ export const useModelStore = defineStore('model', () => {
   const isLoading = ref(false);
   const lastRefreshed = ref(0);
   const forceNextRefresh = ref(false);
-  
+  const cacheGeneration = ref(0);
+
   const notificationStore = useNotificationStore();
+  const switchGuardStore = useConnectionSwitchGuardStore();
 
   // --- Getters ---
   const sortedModels = computed(() => {
@@ -39,53 +42,63 @@ export const useModelStore = defineStore('model', () => {
     });
   });
 
-  const isFavorite = computed(() => (modelId: string) => favorites.value.includes(modelId));
+  const isFavorite = computed(
+    () => (modelId: string) => favorites.value.includes(modelId),
+  );
 
   // --- Actions ---
   const fetchModels = async (force = false) => {
+    if (switchGuardStore.switching) return;
     if (isLoading.value) return; // 锁频防护，防止并发刷请求
 
     const shouldRefresh = force || forceNextRefresh.value;
 
-    if (!shouldRefresh && models.value.length > 0 && Date.now() - lastRefreshed.value < 1000 * 60 * 10) {
+    if (
+      !shouldRefresh &&
+      models.value.length > 0 &&
+      Date.now() - lastRefreshed.value < 1000 * 60 * 10
+    ) {
       return;
     }
 
     const startTime = Date.now();
+    const generationAtStart = cacheGeneration.value;
     isLoading.value = true;
     try {
       // 先尝试获取缓存
       if (!shouldRefresh && models.value.length === 0) {
-        models.value = await invoke<ModelInfo[]>('get_cached_models');
+        const cachedModels = await invoke<ModelInfo[]>("get_cached_models");
+        if (generationAtStart !== cacheGeneration.value) return;
+        models.value = cachedModels;
       }
 
       // 只有在明确要求或没缓存时才刷新
       if (shouldRefresh || models.value.length === 0) {
-        models.value = await invoke<ModelInfo[]>('refresh_models');
+        const refreshedModels = await invoke<ModelInfo[]>("refresh_models");
+        if (generationAtStart !== cacheGeneration.value) return;
+        models.value = refreshedModels;
         lastRefreshed.value = Date.now();
         forceNextRefresh.value = false;
 
         if (force) {
           notificationStore.addNotification({
-            type: 'success',
-            title: '模型同步成功',
+            type: "success",
+            title: "模型同步成功",
             message: `已成功同步最新模型列表，共 ${models.value.length} 个可用模型`,
             toastOnly: true,
           });
         }
       }
 
-      await Promise.all([
-        fetchHotModels(),
-        fetchFavorites(),
-      ]);
+      await Promise.all([fetchHotModels(), fetchFavorites()]);
     } catch (error: any) {
-      console.error('Failed to fetch models:', error);
+      console.error("Failed to fetch models:", error);
       if (force) {
         notificationStore.addNotification({
-          type: 'error',
-          title: '模型同步失败',
-          message: error?.toString() || '请检查网络连接、API 服务器或 API 密钥配置',
+          type: "error",
+          title: "模型同步失败",
+          message:
+            error?.toString() || "请检查网络连接、API 服务器或 API 密钥配置",
           toastOnly: true,
         });
       }
@@ -95,7 +108,9 @@ export const useModelStore = defineStore('model', () => {
         const elapsed = Date.now() - startTime;
         const minDuration = 800; // 最低转圈时长保证 800ms
         if (elapsed < minDuration) {
-          await new Promise((resolve) => setTimeout(resolve, minDuration - elapsed));
+          await new Promise((resolve) =>
+            setTimeout(resolve, minDuration - elapsed),
+          );
         }
       }
       isLoading.value = false;
@@ -104,47 +119,53 @@ export const useModelStore = defineStore('model', () => {
 
   const fetchHotModels = async () => {
     try {
-      hotModels.value = await invoke<string[]>('get_hot_models', { limit: 10 });
+      hotModels.value = await invoke<string[]>("get_hot_models", { limit: 10 });
     } catch (error) {
-      console.error('Failed to fetch hot models:', error);
+      console.error("Failed to fetch hot models:", error);
     }
   };
 
   const fetchFavorites = async () => {
     try {
-      favorites.value = await invoke<string[]>('get_favorite_models');
+      favorites.value = await invoke<string[]>("get_favorite_models");
     } catch (error) {
-      console.error('Failed to fetch favorite models:', error);
+      console.error("Failed to fetch favorite models:", error);
     }
   };
 
   const toggleFavorite = async (modelId: string) => {
     try {
-      const isFav = await invoke<boolean>('toggle_favorite_model', { modelId });
+      const isFav = await invoke<boolean>("toggle_favorite_model", { modelId });
       if (isFav) {
         if (!favorites.value.includes(modelId)) favorites.value.push(modelId);
       } else {
-        favorites.value = favorites.value.filter(id => id !== modelId);
+        favorites.value = favorites.value.filter((id) => id !== modelId);
       }
     } catch (error) {
-      console.error('Failed to toggle favorite:', error);
+      console.error("Failed to toggle favorite:", error);
     }
   };
 
   const recordUsage = async (modelId: string) => {
     try {
-      await invoke('record_model_usage', { modelId });
+      await invoke("record_model_usage", { modelId });
       // 更新本地热门列表（可选，或者等待下次 fetch）
       fetchHotModels();
     } catch (error) {
-      console.error('Failed to record usage:', error);
+      console.error("Failed to record usage:", error);
     }
   };
 
   const markModelsStale = () => {
+    cacheGeneration.value += 1;
     models.value = [];
     lastRefreshed.value = 0;
     forceNextRefresh.value = true;
+  };
+
+  const invalidatePersistedCache = async () => {
+    markModelsStale();
+    await invoke("invalidate_model_cache");
   };
 
   return {
@@ -161,5 +182,6 @@ export const useModelStore = defineStore('model', () => {
     toggleFavorite,
     recordUsage,
     markModelsStale,
+    invalidatePersistedCache,
   };
 });

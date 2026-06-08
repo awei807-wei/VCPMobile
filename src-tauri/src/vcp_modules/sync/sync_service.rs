@@ -1193,10 +1193,19 @@ pub async fn get_sync_status(state: State<'_, SyncState>) -> Result<String, Stri
 }
 
 #[tauri::command]
+pub async fn is_sync_active(state: State<'_, SyncState>) -> Result<bool, String> {
+    Ok(state.is_syncing.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+#[tauri::command]
 pub async fn start_manual_sync(
     handle: AppHandle,
     state: State<'_, SyncState>,
 ) -> Result<(), String> {
+    if crate::vcp_modules::settings_manager::is_connection_profile_switching(&handle) {
+        return Err("正在切换线路，请稍后重试".to_string());
+    }
+
     if state
         .is_syncing
         .swap(true, std::sync::atomic::Ordering::SeqCst)

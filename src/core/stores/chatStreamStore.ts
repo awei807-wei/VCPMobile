@@ -14,6 +14,7 @@ export const useChatStreamStore = defineStore("chatStream", () => {
   // 核心：记录每个会话（itemId + topicId）是否处于活动流状态
   // 格式: "itemId:topicId" -> [messageId1, messageId2, ...]
   const sessionActiveStreams = ref<Record<string, string[]>>({});
+  const pendingGenerationRequests = ref<Record<string, string[]>>({});
 
   // 全局活跃流消息池：存储所有正在生成的响应对象 (messageId -> Reactive<ChatMessage>)
   // 无论是在前台还是后台，流式消息都从此池中获取，保证响应式链路不断裂
@@ -94,7 +95,10 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     if (!sessionStore.currentSelectedItem?.id || !sessionStore.currentTopicId)
       return new Set<string>();
     const key = `${sessionStore.currentSelectedItem.id}:${sessionStore.currentTopicId}`;
-    return new Set(sessionActiveStreams.value[key] || []);
+    return new Set([
+      ...(sessionActiveStreams.value[key] || []),
+      ...(pendingGenerationRequests.value[key] || []),
+    ]);
   });
 
   const isGroupGenerating = computed(() => {
@@ -106,11 +110,24 @@ export const useChatStreamStore = defineStore("chatStream", () => {
       return false;
     const key = `${sessionStore.currentSelectedItem.id}:${sessionStore.currentTopicId}`;
     const streams = sessionActiveStreams.value[key];
-    return streams ? streams.length > 0 : false;
+    const pending = pendingGenerationRequests.value[key];
+    return !!streams?.length || !!pending?.length;
   });
 
+  const hasAnySessionActiveStreams = () =>
+    Object.values(sessionActiveStreams.value).some((streams) => streams.length > 0);
+
+  const hasAnyPendingGenerations = () =>
+    Object.values(pendingGenerationRequests.value).some((requests) => requests.length > 0);
+
+  const releaseScreenKeepIfIdle = () => {
+    if (!hasAnySessionActiveStreams() && !hasAnyPendingGenerations()) {
+      releaseScreenKeep();
+    }
+  };
+
   const hasActiveStreams = computed(() =>
-    Object.values(sessionActiveStreams.value).some((streams) => streams.length > 0),
+    hasAnySessionActiveStreams() || hasAnyPendingGenerations(),
   );
 
   // 全局流消息池上限，防止极端场景下 OOM
@@ -146,6 +163,40 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     enforceStreamPoolLimit();
   };
 
+  const addPendingGeneration = (
+    ownerId: string,
+    topicId: string,
+    requestId: string,
+  ) => {
+    const key = `${ownerId}:${topicId}`;
+    if (!pendingGenerationRequests.value[key]) {
+      pendingGenerationRequests.value[key] = [];
+    }
+    if (!pendingGenerationRequests.value[key].includes(requestId)) {
+      pendingGenerationRequests.value[key].push(requestId);
+    }
+  };
+
+  const removePendingGeneration = (
+    ownerId: string,
+    topicId: string,
+    requestId: string,
+  ) => {
+    const key = `${ownerId}:${topicId}`;
+    const requests = pendingGenerationRequests.value[key];
+    if (!requests) return;
+
+    const index = requests.indexOf(requestId);
+    if (index !== -1) {
+      requests.splice(index, 1);
+    }
+    if (requests.length === 0) {
+      delete pendingGenerationRequests.value[key];
+    }
+
+    releaseScreenKeepIfIdle();
+  };
+
   const removeSessionStream = (
     ownerId: string,
     topicId: string,
@@ -164,8 +215,8 @@ export const useChatStreamStore = defineStore("chatStream", () => {
         delete sessionActiveStreams.value[key];
       }
     }
-    if (didRemove && Object.keys(sessionActiveStreams.value).length === 0) {
-      releaseScreenKeep();
+    if (didRemove) {
+      releaseScreenKeepIfIdle();
     }
     // 同时从全局池中移除 (延迟移除，确保 finalizeStream 能拿到对象)
     const cleanupTimer = setTimeout(() => {
@@ -483,6 +534,7 @@ export const useChatStreamStore = defineStore("chatStream", () => {
   onScopeDispose(() => {
     cleanupTimers.forEach(clearTimeout);
     cleanupTimers.clear();
+    pendingGenerationRequests.value = {};
     rAFPendingUpdates.forEach((up) => {
       if (up.animationFrameId !== null) {
         cancelAnimationFrame(up.animationFrameId);
@@ -494,11 +546,14 @@ export const useChatStreamStore = defineStore("chatStream", () => {
   return {
     streamingMessageId,
     sessionActiveStreams,
+    pendingGenerationRequests,
     activeStreamMessages,
     activeStreamingIds,
     isGroupGenerating,
     hasActiveStreams,
     computeShell,
+    addPendingGeneration,
+    removePendingGeneration,
     addSessionStream,
     removeSessionStream,
     processStreamEvent,
@@ -506,4 +561,3 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     stopGroupTurn,
   };
 });
-

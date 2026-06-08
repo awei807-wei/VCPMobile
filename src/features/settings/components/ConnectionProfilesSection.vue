@@ -155,21 +155,16 @@ const updateProfileField = (
         <div class="text-[10px] uppercase font-black opacity-35 px-1">
           分布式
         </div>
-        <SettingsTextField
-          :model-value="profile.distributedWsUrl"
-          label="分布式 WS URL"
-          placeholder="ws://localhost:6005"
-          mono
-          @update:model-value="updateProfileField(profile, 'distributedWsUrl', $event)"
-        />
-        <SettingsTextField
-          :model-value="profile.distributedVcpKey"
-          is-secure
-          label="分布式 VCP Key"
-          placeholder="输入分布式 Key"
-          mono
-          @update:model-value="updateProfileField(profile, 'distributedVcpKey', $event)"
-        />
+        <div class="rounded-2xl bg-black/5 dark:bg-white/5 px-3 py-2 text-[11px] leading-relaxed text-primary-text">
+          <div class="opacity-60">
+            分布式节点复用上方 VCPLog 的 WebSocket 基地址和 Key，连接时会自动切换到
+            <span class="font-mono">/vcp-distributed-server</span>
+            通道。
+          </div>
+          <div class="mt-1 font-mono opacity-40">
+            WS: {{ profile.vcpLogUrl || "未配置" }}
+          </div>
+        </div>
       </div>
     </section>
   </div>

@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime, State};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use url::Url;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -19,12 +19,16 @@ pub struct ModelInfo {
 
 pub struct ModelManagerState {
     pub cached_models: Arc<RwLock<Vec<ModelInfo>>>,
+    refresh_lock: Arc<Mutex<()>>,
+    cache_generation: Arc<RwLock<u64>>,
 }
 
 impl ModelManagerState {
     pub fn new() -> Self {
         Self {
             cached_models: Arc::new(RwLock::new(Vec::new())),
+            refresh_lock: Arc::new(Mutex::new(())),
+            cache_generation: Arc::new(RwLock::new(0)),
         }
     }
 }
@@ -34,6 +38,10 @@ pub async fn get_cached_models<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, ModelManagerState>,
 ) -> Result<Vec<ModelInfo>, String> {
+    if crate::vcp_modules::settings_manager::is_connection_profile_switching(&app) {
+        return Err("正在切换线路，请稍后重试".to_string());
+    }
+
     // 1. 优先尝试内存缓存
     let mem_cached = state.cached_models.read().await.clone();
     if !mem_cached.is_empty() {
@@ -68,6 +76,12 @@ pub async fn refresh_models<R: Runtime>(
     state: State<'_, ModelManagerState>,
     settings_state: State<'_, SettingsState>,
 ) -> Result<Vec<ModelInfo>, String> {
+    if crate::vcp_modules::settings_manager::is_connection_profile_switching(&app) {
+        return Err("正在切换线路，请稍后重试".to_string());
+    }
+
+    let _refresh_guard = state.refresh_lock.lock().await;
+    let generation_at_start = *state.cache_generation.read().await;
     let settings = read_settings(app.clone(), settings_state).await?;
     let vcp_url = settings.vcp_server_url;
     let vcp_api_key = settings.vcp_api_key;
@@ -117,6 +131,10 @@ pub async fn refresh_models<R: Runtime>(
                 .filter_map(|m| serde_json::from_value(m.clone()).ok())
                 .collect();
 
+            if generation_at_start != *state.cache_generation.read().await {
+                return Ok(state.cached_models.read().await.clone());
+            }
+
             // 1. 更新内存缓存
             *state.cached_models.write().await = models.clone();
 
@@ -142,6 +160,25 @@ pub async fn refresh_models<R: Runtime>(
         let text = res.text().await.unwrap_or_default();
         Err(format!("获取模型失败 ({}): {}", status.as_u16(), text))
     }
+}
+
+#[tauri::command]
+pub async fn invalidate_model_cache<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, ModelManagerState>,
+) -> Result<(), String> {
+    let _refresh_guard = state.refresh_lock.lock().await;
+    *state.cache_generation.write().await += 1;
+    *state.cached_models.write().await = Vec::new();
+
+    let db_state = app.state::<DbState>();
+    let pool = &db_state.pool;
+    sqlx::query("DELETE FROM settings WHERE key = 'cached_models'")
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 #[tauri::command]

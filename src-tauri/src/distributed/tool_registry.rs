@@ -16,7 +16,10 @@ use tauri::{AppHandle, Manager};
 use super::types::ToolManifest;
 
 const DISABLED_CONFIG_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_DISABLED_ON_LEGACY_CONFIG: &[&str] = &["TopicMemo", "TopicSponsor"];
+const DEFAULT_DISABLED_ON_LEGACY_CONFIG: &[&str] =
+    &["TopicMemo", "TopicSponsor", "MobileTopicSponsor"];
+const DISABLED_TOOL_RENAME_ALIASES: &[(&str, &str)] = &[("TopicSponsor", "MobileTopicSponsor")];
+const EXECUTION_TOOL_RENAME_ALIASES: &[(&str, &str)] = &[("TopicSponsor", "MobileTopicSponsor")];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,6 +139,22 @@ fn migrate_legacy_disabled_names(
     disabled_set
 }
 
+fn migrate_disabled_name_aliases(
+    disabled_set: &mut HashSet<String>,
+    registered_names: &[&str],
+) -> bool {
+    let mut changed = false;
+    for &(old_name, new_name) in DISABLED_TOOL_RENAME_ALIASES {
+        if disabled_set.contains(old_name)
+            && registered_names.contains(&new_name)
+            && disabled_set.insert(new_name.to_string())
+        {
+            changed = true;
+        }
+    }
+    changed
+}
+
 // ============================================================
 // ToolRegistry — the central tool manager
 // Mirrors Plugin.js: loadPlugins(), getAllPluginManifests(), processToolCall()
@@ -157,7 +176,10 @@ impl ToolRegistry {
     /// Sync disabled tools list from frontend. Returns true if the set changed.
     pub fn update_disabled(&self, names: Vec<String>) -> bool {
         if let Ok(mut guard) = self.disabled_names.write() {
-            let new_set: HashSet<String> = names.into_iter().collect();
+            let new_set: HashSet<String> = names
+                .into_iter()
+                .map(|name| self.resolve_tool_name(&name).unwrap_or(&name).to_string())
+                .collect();
             if *guard != new_set {
                 *guard = new_set;
                 true
@@ -171,11 +193,27 @@ impl ToolRegistry {
 
     /// Check if a tool is enabled.
     pub fn is_enabled(&self, name: &str) -> bool {
+        let resolved_name = self.resolve_tool_name(name).unwrap_or(name);
         if let Ok(guard) = self.disabled_names.read() {
-            !guard.contains(name)
+            !guard.contains(resolved_name)
         } else {
             true
         }
+    }
+
+    fn resolve_tool_name<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        if self.tools.contains_key(name) {
+            return Some(name);
+        }
+        EXECUTION_TOOL_RENAME_ALIASES
+            .iter()
+            .find_map(|&(old_name, new_name)| {
+                if name == old_name && self.tools.contains_key(new_name) {
+                    Some(new_name)
+                } else {
+                    None
+                }
+            })
     }
 
     /// Register a OneShot tool.
@@ -216,7 +254,8 @@ impl ToolRegistry {
         if !self.is_enabled(name) {
             return None;
         }
-        self.tools.get(name).map(ToolEntry::manifest)
+        let resolved_name = self.resolve_tool_name(name)?;
+        self.tools.get(resolved_name).map(ToolEntry::manifest)
     }
 
     /// Get all tool metadata with categories and placeholders for the frontend config.
@@ -280,10 +319,11 @@ impl ToolRegistry {
                 tool_name
             ));
         }
+        let resolved_name = self.resolve_tool_name(tool_name).unwrap_or(tool_name);
 
         let entry = self
             .tools
-            .get(tool_name)
+            .get(resolved_name)
             .ok_or_else(|| format!("Tool '{}' not found in registry.", tool_name))?;
 
         match entry {
@@ -314,7 +354,7 @@ impl ToolRegistry {
                                 let registered_names: Vec<&str> =
                                     self.tools.keys().map(String::as_str).collect();
                                 let migrated_from_legacy = config.migrated_from_legacy_array;
-                                let disabled_names = if migrated_from_legacy {
+                                let mut disabled_names = if migrated_from_legacy {
                                     migrate_legacy_disabled_names(
                                         config.disabled_names,
                                         &registered_names,
@@ -322,6 +362,10 @@ impl ToolRegistry {
                                 } else {
                                     config.disabled_names.into_iter().collect()
                                 };
+                                let migrated_renamed_aliases = migrate_disabled_name_aliases(
+                                    &mut disabled_names,
+                                    &registered_names,
+                                );
                                 if let Ok(mut guard) = self.disabled_names.write() {
                                     *guard = disabled_names;
                                     log::info!(
@@ -329,7 +373,7 @@ impl ToolRegistry {
                                         guard
                                     );
                                 }
-                                if migrated_from_legacy {
+                                if migrated_from_legacy || migrated_renamed_aliases {
                                     if let Err(err) = self.save_disabled_config(app) {
                                         log::warn!(
                                             "[Distributed] Failed to migrate disabled tools config: {}",
@@ -414,12 +458,50 @@ mod tests {
 
         let disabled = migrate_legacy_disabled_names(
             loaded.disabled_names,
-            &["MobileDeviceInfo", "TopicMemo", "TopicSponsor"],
+            &["MobileDeviceInfo", "TopicMemo", "MobileTopicSponsor"],
         );
 
         assert!(disabled.contains("MobileDeviceInfo"));
         assert!(disabled.contains("TopicMemo"));
+        assert!(disabled.contains("MobileTopicSponsor"));
+    }
+
+    #[test]
+    fn disabled_config_migrates_old_topic_sponsor_name_to_mobile_name() {
+        let mut disabled: HashSet<String> = ["TopicSponsor".to_string()].into_iter().collect();
+        let changed =
+            migrate_disabled_name_aliases(&mut disabled, &["TopicMemo", "MobileTopicSponsor"]);
+
+        assert!(changed);
         assert!(disabled.contains("TopicSponsor"));
+        assert!(disabled.contains("MobileTopicSponsor"));
+    }
+
+    #[test]
+    fn old_topic_sponsor_name_resolves_to_mobile_execution_alias() {
+        let mut registry = ToolRegistry::new();
+        registry.register_oneshot(NoopTool("MobileTopicSponsor"));
+
+        assert_eq!(
+            registry.resolve_tool_name("TopicSponsor"),
+            Some("MobileTopicSponsor")
+        );
+        assert!(registry.get_manifest("TopicSponsor").is_some());
+        assert_eq!(registry.get_all_manifests().len(), 1);
+        assert_eq!(registry.get_all_manifests()[0].name, "MobileTopicSponsor");
+    }
+
+    #[test]
+    fn update_disabled_normalizes_old_topic_sponsor_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register_oneshot(NoopTool("MobileTopicSponsor"));
+
+        assert!(registry.update_disabled(vec!["TopicSponsor".to_string()]));
+        assert!(!registry.is_enabled("TopicSponsor"));
+        assert!(!registry.is_enabled("MobileTopicSponsor"));
+        assert!(registry.get_manifest("TopicSponsor").is_none());
+        assert!(registry.get_all_manifests().is_empty());
+        assert!(!registry.update_disabled(vec!["MobileTopicSponsor".to_string()]));
     }
 
     #[test]
@@ -442,5 +524,25 @@ mod tests {
     #[test]
     fn schema_disabled_config_rejects_missing_version() {
         assert!(parse_disabled_config(r#"{"disabledNames":[]}"#).is_err());
+    }
+
+    struct NoopTool(&'static str);
+
+    #[async_trait]
+    impl OneShotTool for NoopTool {
+        fn manifest(&self) -> ToolManifest {
+            ToolManifest {
+                name: self.0.to_string(),
+                display_name: self.0.to_string(),
+                description: String::new(),
+                placeholder: None,
+                invocation_commands: Vec::new(),
+                web_socket_push: None,
+            }
+        }
+
+        async fn execute(&self, _args: Value, _app: &AppHandle) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
     }
 }

@@ -54,7 +54,7 @@ print_feature_map() {
 - 设置: VCP 核心连接、模型缓存/收藏/使用记录、用户资料、主题、AI 逻辑、维护、更新。
 - 同步: 手动同步、停止同步、同步状态、同步日志浏览与清理。
 - 分布式节点: 连接/断开/重连、工具元数据、禁用工具同步、WebSocket 工具执行。
-- 分布式工具: MobileDeviceInfo、MobileNotification、MobileClipboard、AgentMessage、MobileAgentMessage、TopicMemo、TopicSponsor。
+- 分布式工具: MobileDeviceInfo、MobileNotification、MobileClipboard、AgentMessage、MobileAgentMessage、TopicMemo、MobileTopicSponsor。
 - 设备遥测: 电池、内存、CPU、GPU、网络、存储、定位、运动、环境传感器、设备状态摘要。
 - Android 原生能力: 权限、悬浮球、息屏保持、WakeLock、前台保活、传感器采集、网络监控、Root 检查/命令。
 - 插件与后端互通: Tauri 主后端注册 `tauri-plugin-vcp-mobile`，Rust 插件 wrapper 通过 `run_mobile_plugin` 调 Android Kotlin 插件，分布式通知/AgentMessage 后端工具可直达系统通知。
@@ -97,6 +97,7 @@ require_pattern "show_system_notification" src-tauri/plugins/vcp-mobile/src/lib.
 require_pattern "!qa/\\*.sh" .gitignore
 require_pattern "register_oneshot\\(agent_message::MobileAgentMessageTool\\)" src-tauri/src/distributed/tools/mod.rs
 require_pattern "register_oneshot\\(topic_sponsor::TopicSponsorTool\\)" src-tauri/src/distributed/tools/mod.rs
+require_pattern "MobileTopicSponsor" src-tauri/src/distributed/tools/topic_sponsor.rs
 require_pattern "register_streaming\\(device_status_summary::DeviceStatusSummaryTool\\)" src-tauri/src/distributed/tools/mod.rs
 
 log "插件与后端互通静态回归"

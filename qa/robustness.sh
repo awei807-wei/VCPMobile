@@ -83,9 +83,9 @@ rg -q "Unsupported disabled tools schemaVersion" src-tauri/src/distributed/tool_
 rg -q "disable_all_tools" src-tauri/src/distributed/tool_registry.rs \
   || fail "禁用工具配置解析失败必须失败关闭"
 rg -q "MAX_CHECK_NEW_TOPICS_DAYS" src-tauri/src/distributed/tools/topic_sponsor.rs \
-  || fail "TopicSponsor CheckNewTopics days 必须设置上限"
+  || fail "MobileTopicSponsor CheckNewTopics days 必须设置上限"
 rg -q "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor.rs \
-  || fail "TopicSponsor CheckNewTopics cutoff 必须使用饱和计算"
+  || fail "MobileTopicSponsor CheckNewTopics cutoff 必须使用饱和计算"
 
 log "Tauri command 注册一致性"
 for command in \

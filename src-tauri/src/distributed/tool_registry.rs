@@ -16,7 +16,9 @@ use tauri::{AppHandle, Manager};
 use super::types::ToolManifest;
 
 const DISABLED_CONFIG_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_DISABLED_ON_LEGACY_CONFIG: &[&str] = &["TopicMemo", "TopicSponsor"];
+const DEFAULT_DISABLED_ON_LEGACY_CONFIG: &[&str] =
+    &["TopicMemo", "TopicSponsor", "MobileTopicSponsor"];
+const DISABLED_TOOL_RENAME_ALIASES: &[(&str, &str)] = &[("TopicSponsor", "MobileTopicSponsor")];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +136,22 @@ fn migrate_legacy_disabled_names(
         }
     }
     disabled_set
+}
+
+fn migrate_disabled_name_aliases(
+    disabled_set: &mut HashSet<String>,
+    registered_names: &[&str],
+) -> bool {
+    let mut changed = false;
+    for &(old_name, new_name) in DISABLED_TOOL_RENAME_ALIASES {
+        if disabled_set.contains(old_name)
+            && registered_names.contains(&new_name)
+            && disabled_set.insert(new_name.to_string())
+        {
+            changed = true;
+        }
+    }
+    changed
 }
 
 // ============================================================
@@ -314,7 +332,7 @@ impl ToolRegistry {
                                 let registered_names: Vec<&str> =
                                     self.tools.keys().map(String::as_str).collect();
                                 let migrated_from_legacy = config.migrated_from_legacy_array;
-                                let disabled_names = if migrated_from_legacy {
+                                let mut disabled_names = if migrated_from_legacy {
                                     migrate_legacy_disabled_names(
                                         config.disabled_names,
                                         &registered_names,
@@ -322,6 +340,10 @@ impl ToolRegistry {
                                 } else {
                                     config.disabled_names.into_iter().collect()
                                 };
+                                let migrated_renamed_aliases = migrate_disabled_name_aliases(
+                                    &mut disabled_names,
+                                    &registered_names,
+                                );
                                 if let Ok(mut guard) = self.disabled_names.write() {
                                     *guard = disabled_names;
                                     log::info!(
@@ -329,7 +351,7 @@ impl ToolRegistry {
                                         guard
                                     );
                                 }
-                                if migrated_from_legacy {
+                                if migrated_from_legacy || migrated_renamed_aliases {
                                     if let Err(err) = self.save_disabled_config(app) {
                                         log::warn!(
                                             "[Distributed] Failed to migrate disabled tools config: {}",
@@ -414,12 +436,23 @@ mod tests {
 
         let disabled = migrate_legacy_disabled_names(
             loaded.disabled_names,
-            &["MobileDeviceInfo", "TopicMemo", "TopicSponsor"],
+            &["MobileDeviceInfo", "TopicMemo", "MobileTopicSponsor"],
         );
 
         assert!(disabled.contains("MobileDeviceInfo"));
         assert!(disabled.contains("TopicMemo"));
+        assert!(disabled.contains("MobileTopicSponsor"));
+    }
+
+    #[test]
+    fn disabled_config_migrates_old_topic_sponsor_name_to_mobile_name() {
+        let mut disabled: HashSet<String> = ["TopicSponsor".to_string()].into_iter().collect();
+        let changed =
+            migrate_disabled_name_aliases(&mut disabled, &["TopicMemo", "MobileTopicSponsor"]);
+
+        assert!(changed);
         assert!(disabled.contains("TopicSponsor"));
+        assert!(disabled.contains("MobileTopicSponsor"));
     }
 
     #[test]

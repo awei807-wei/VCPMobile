@@ -6,7 +6,14 @@ import os from "os";
 
 // 智能探测并提取所有真实的物理局域网 IP，自动过滤 TUN/TAP 等代理虚拟网卡
 function getPhysicalIps() {
-  const interfaces = os.networkInterfaces();
+  let interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
+  try {
+    interfaces = os.networkInterfaces();
+  } catch (error) {
+    console.warn("[vite] 无法读取系统网卡信息，已回退到默认监听地址", error);
+    return [];
+  }
+
   const physicalIps: string[] = [];
   for (const name of Object.keys(interfaces)) {
     const lowerName = name.toLowerCase();

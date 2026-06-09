@@ -100,6 +100,34 @@ require_pattern "register_oneshot\\(topic_sponsor::TopicSponsorTool\\)" src-taur
 require_pattern "MobileTopicSponsor" src-tauri/src/distributed/tools/topic_sponsor.rs
 require_pattern "register_streaming\\(device_status_summary::DeviceStatusSummaryTool\\)" src-tauri/src/distributed/tools/mod.rs
 
+log "移动端线路切换静态回归"
+require_pattern "useConnectionProfilesStore" src/components/layout/RightSidebar.vue
+require_pattern "输出中不可切换" src/components/layout/RightSidebar.vue
+require_pattern "chatStreamStore\\.hasActiveStreams" src/components/layout/RightSidebar.vue
+require_pattern "connectionProfilesStore\\.switching" src/components/layout/RightSidebar.vue
+require_pattern "模型刷新中不可切换" src/components/layout/RightSidebar.vue
+require_pattern "activeConnectionProfileId: profileId" src/core/stores/connectionProfiles.ts
+require_pattern "vcpServerUrl: target\\.vcpServerUrl" src/core/stores/connectionProfiles.ts
+require_pattern "vcpApiKey: target\\.vcpApiKey" src/core/stores/connectionProfiles.ts
+require_pattern "vcpLogUrl: target\\.vcpLogUrl" src/core/stores/connectionProfiles.ts
+require_pattern "vcpLogKey: target\\.vcpLogKey" src/core/stores/connectionProfiles.ts
+require_pattern "syncServerUrl: target\\.syncServerUrl" src/core/stores/connectionProfiles.ts
+require_pattern "syncHttpUrl: target\\.syncHttpUrl" src/core/stores/connectionProfiles.ts
+require_pattern "syncToken: target\\.syncToken" src/core/stores/connectionProfiles.ts
+require_pattern "distributedWsUrl: target\\.distributedWsUrl" src/core/stores/connectionProfiles.ts
+require_pattern "distributedVcpKey: target\\.distributedVcpKey" src/core/stores/connectionProfiles.ts
+require_pattern "syncActiveConnectionProfileFromSettings\\(newSettings\\)" src/core/stores/settings.ts
+require_pattern "preparedUpdates\\.connectionProfiles = mergedSettings\\.connectionProfiles" src/core/stores/settings.ts
+require_pattern "copyConnectionProfileToSettings\\(props\\.settings, profile\\)" src/features/settings/components/ConnectionProfilesSection.vue
+require_pattern "syncActiveConnectionProfileFromSettings\\(settings\\)" src/core/stores/connectionProfiles.ts
+require_pattern "modelStore\\.invalidatePersistedCache\\(\\)" src/core/stores/connectionProfiles.ts
+require_pattern "modelStore\\.isLoading" src/core/stores/connectionProfiles.ts
+require_pattern "cacheGeneration" src/core/stores/modelStore.ts
+require_pattern "hasActiveStreams" src/core/stores/chatStreamStore.ts
+require_pattern "pendingGenerationRequests" src/core/stores/chatStreamStore.ts
+require_pattern "refresh_lock" src-tauri/src/vcp_modules/infra/model_manager.rs
+require_pattern "connection_profiles: Vec<ConnectionProfile>" src-tauri/src/vcp_modules/infra/settings_manager.rs
+
 log "插件与后端互通静态回归"
 require_pattern "tauri_plugin_vcp_mobile::init\\(\\)" src-tauri/src/lib.rs
 require_pattern "register_android_plugin\\(\"com.vcp.mobile\", \"VcpMobilePlugin\"\\)" src-tauri/plugins/vcp-mobile/src/lib.rs

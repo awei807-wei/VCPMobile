@@ -110,7 +110,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 "handle_assistant_chat_stream" => {
                     log::info!("[LocalServer/WS] Handling assistant chat stream...");
                     let payload_val = req["payload"].clone();
-                    let payload: crate::vcp_modules::agent_chat_application_service::AssistantChatPayload =
+                    let mut payload: crate::vcp_modules::agent_chat_application_service::AssistantChatPayload =
                         match serde_json::from_value(payload_val) {
                             Ok(p) => p,
                             Err(e) => {
@@ -118,6 +118,58 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 continue;
                             }
                         };
+
+                    if crate::vcp_modules::settings_manager::is_connection_profile_switching(
+                        &app_handle,
+                    ) {
+                        let _ = sender
+                            .send(Message::Text(
+                                json!({
+                                    "type": "error",
+                                    "error": "正在切换线路，请稍后重试",
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                        continue;
+                    }
+
+                    match crate::vcp_modules::settings_manager::read_settings(
+                        app_handle.clone(),
+                        app_handle.state(),
+                    )
+                    .await
+                    {
+                        Ok(settings) => {
+                            if settings.assistant_agent_id.trim().is_empty() {
+                                let _ = sender
+                                    .send(Message::Text(
+                                        json!({
+                                            "type": "error",
+                                            "error": "未配置助手 Agent",
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                                continue;
+                            }
+                            payload.agent_id = settings.assistant_agent_id;
+                            payload.vcp_url = settings.vcp_server_url;
+                            payload.vcp_api_key = settings.vcp_api_key;
+                        }
+                        Err(e) => {
+                            let _ = sender
+                                .send(Message::Text(
+                                    json!({
+                                        "type": "error",
+                                        "error": format!("Failed to refresh settings: {}", e),
+                                    })
+                                    .to_string(),
+                                ))
+                                .await;
+                            continue;
+                        }
+                    }
 
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                     let channel = tauri::ipc::Channel::new(move |event| {

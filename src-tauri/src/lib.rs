@@ -3,7 +3,7 @@ mod vcp_modules;
 
 use tauri::{Listener, Manager};
 use vcp_modules::agent_chat_application_service::{
-    handle_agent_chat_message, handle_assistant_chat_stream,
+    handle_agent_chat_message, handle_assistant_chat_stream, is_assistant_chat_active,
 };
 use vcp_modules::agent_service::{
     create_agent, delete_agent, get_agents, read_agent_config, save_agent_config,
@@ -19,7 +19,11 @@ use vcp_modules::context_injection::{
     save_tarven_rule, toggle_rule_enabled,
 };
 use vcp_modules::context_sanitizer::ContextSanitizer;
-use vcp_modules::settings_manager::{read_settings, set_theme, update_settings, write_settings};
+use vcp_modules::settings_manager::{
+    begin_connection_profile_switch, end_connection_profile_switch,
+    is_connection_profile_switching_command, read_settings, set_theme, update_settings,
+    write_settings,
+};
 // use vcp_modules::db_manager::DbState;
 use tauri_plugin_log::{Target, TargetKind};
 use vcp_modules::emoticon_manager::{
@@ -49,13 +53,13 @@ use vcp_modules::maintenance_manager::{
 use vcp_modules::message_repository::{process_message_content, rebuild_all_pre_renders};
 use vcp_modules::message_service::{fetch_raw_message_content, re_render_message};
 use vcp_modules::model_manager::{
-    get_cached_models, get_favorite_models, get_hot_models, record_model_usage, refresh_models,
-    toggle_favorite_model,
+    get_cached_models, get_favorite_models, get_hot_models, invalidate_model_cache,
+    record_model_usage, refresh_models, toggle_favorite_model,
 };
 
 use vcp_modules::sync_service::{
-    clear_old_sync_logs, get_sync_session_log_path, get_sync_status, list_sync_log_files,
-    read_sync_log_file, start_manual_sync, stop_sync,
+    clear_old_sync_logs, get_sync_session_log_path, get_sync_status, is_sync_active,
+    list_sync_log_files, read_sync_log_file, start_manual_sync, stop_sync,
 };
 use vcp_modules::topic_service::{
     archive_assistant_chat, create_topic, delete_topic, get_topics, get_topics_streamed,
@@ -117,6 +121,7 @@ pub fn run() {
             app.manage(app.handle().clone());
             app.manage(LifecycleState::new());
             app.manage(ActiveRequests::default());
+            app.manage(vcp_modules::agent_chat_application_service::AssistantChatActivityState::default());
             app.manage(CancelledGroupTurns::default());
             app.manage(ContextSanitizer::default());
             app.manage(distributed::DistributedState::new());
@@ -125,6 +130,7 @@ pub fn run() {
             app.manage(vcp_modules::agent_service::AgentConfigState::new());
             app.manage(vcp_modules::group_service::GroupManagerState::new());
             app.manage(vcp_modules::settings_manager::SettingsState::new());
+            app.manage(vcp_modules::settings_manager::ConnectionProfileSwitchState::default());
             app.manage(vcp_modules::model_manager::ModelManagerState::new());
             app.manage(vcp_modules::emoticon_manager::EmoticonManagerState::default());
 
@@ -223,6 +229,7 @@ pub fn run() {
             test_vcp_connection,
             handle_agent_chat_message,
             handle_assistant_chat_stream,
+            is_assistant_chat_active,
             load_chat_history,
             load_chat_history_streamed,
             append_single_message,
@@ -252,6 +259,9 @@ pub fn run() {
             read_settings,
             write_settings,
             update_settings,
+            begin_connection_profile_switch,
+            end_connection_profile_switch,
+            is_connection_profile_switching_command,
             handle_group_chat_message,
             create_agent,
             create_group,
@@ -273,6 +283,7 @@ pub fn run() {
             cleanup_single_orphaned_attachment,
             get_cached_models,
             refresh_models,
+            invalidate_model_cache,
             get_hot_models,
             get_favorite_models,
             toggle_favorite_model,
@@ -288,6 +299,7 @@ pub fn run() {
             get_core_status,
             get_last_error,
             get_sync_status,
+            is_sync_active,
             start_manual_sync,
             stop_sync,
             get_sync_session_log_path,

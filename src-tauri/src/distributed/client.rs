@@ -13,6 +13,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use super::tool_registry::ToolRegistry;
 use super::types::*;
@@ -50,6 +51,59 @@ struct ConnectionSession {
     re_register_tx: tokio::sync::mpsc::Sender<()>,
     reconnect_tx: tokio::sync::mpsc::Sender<()>,
     task_handle: tokio::task::JoinHandle<()>,
+}
+
+fn build_distributed_connection_url(raw_url: &str, key: &str) -> Result<String, String> {
+    let mut url = Url::parse(raw_url.trim_end_matches('/'))
+        .map_err(|e| format!("Invalid distributed WebSocket URL: {}", e))?;
+    match url.scheme() {
+        "ws" | "wss" => {}
+        "http" => url
+            .set_scheme("ws")
+            .map_err(|_| "Invalid distributed URL scheme: http".to_string())?,
+        "https" => url
+            .set_scheme("wss")
+            .map_err(|_| "Invalid distributed URL scheme: https".to_string())?,
+        scheme => {
+            return Err(format!(
+                "Unsupported distributed URL scheme: {}. Use ws:// or wss://",
+                scheme
+            ))
+        }
+    }
+
+    let raw_path = url.path().trim_end_matches('/');
+    let prefix = raw_path
+        .find("/vcp-distributed-server")
+        .or_else(|| raw_path.find("/VCPlog"))
+        .map(|idx| &raw_path[..idx])
+        .unwrap_or(raw_path)
+        .trim_end_matches('/');
+    let connection_path = if prefix.is_empty() || prefix == "/" {
+        format!("/vcp-distributed-server/VCP_Key={}", key)
+    } else {
+        format!("{}/vcp-distributed-server/VCP_Key={}", prefix, key)
+    };
+
+    url.set_path(&connection_path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
+fn redact_distributed_connection_url(connection_url: &str) -> String {
+    match Url::parse(connection_url) {
+        Ok(mut url) => {
+            let raw_path = url.path();
+            let redacted_path = raw_path
+                .find("/VCP_Key=")
+                .map(|idx| format!("{}/VCP_Key=***", &raw_path[..idx]))
+                .unwrap_or_else(|| raw_path.to_string());
+            url.set_path(&redacted_path);
+            url.to_string()
+        }
+        Err(_) => connection_url.to_string(),
+    }
 }
 
 /// Distributed node state, shared across async tasks.
@@ -239,16 +293,28 @@ impl DistributedClient {
                 break;
             }
 
-            // Build connection URL: ws://host:port/vcp-distributed-server/VCP_Key=<key>
-            let connection_url = format!(
-                "{}/vcp-distributed-server/VCP_Key={}",
-                config.ws_url.trim_end_matches('/'),
-                config.vcp_key
-            );
+            // Build connection URL from the same base URL used by VCPLog.
+            let connection_url =
+                match build_distributed_connection_url(&config.ws_url, &config.vcp_key) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        log::warn!("[Distributed] Invalid connection config: {}", e);
+                        {
+                            let mut s = status.write().await;
+                            s.state = ConnectionState::Disconnected;
+                            s.connected = false;
+                            s.server_id = None;
+                            s.client_id = None;
+                            s.last_error = Some(e);
+                        }
+                        Self::emit_status(&app, &status).await;
+                        break;
+                    }
+                };
 
             log::info!(
                 "[Distributed] Connecting to main server: {}",
-                connection_url.replace(&config.vcp_key, "***")
+                redact_distributed_connection_url(&connection_url)
             );
 
             // Connect with cancellation support — avoids blocking on TCP timeout during shutdown.
@@ -767,3 +833,51 @@ fn acquire_wake_lock_helper(_app: &tauri::AppHandle) {}
 
 #[cfg(not(target_os = "android"))]
 fn release_wake_lock_helper(_app: &tauri::AppHandle) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distributed_url_uses_vcp_log_base_with_distributed_path() {
+        let url = build_distributed_connection_url("ws://example.com:6005", "secret").unwrap();
+
+        assert_eq!(
+            url,
+            "ws://example.com:6005/vcp-distributed-server/VCP_Key=secret"
+        );
+    }
+
+    #[test]
+    fn distributed_url_converts_http_scheme_to_websocket() {
+        let url = build_distributed_connection_url("https://example.com/base", "secret").unwrap();
+
+        assert_eq!(
+            url,
+            "wss://example.com/base/vcp-distributed-server/VCP_Key=secret"
+        );
+    }
+
+    #[test]
+    fn distributed_url_strips_vcp_log_endpoint_before_building_path() {
+        let url =
+            build_distributed_connection_url("wss://example.com/base/VCPlog/VCP_Key=old", "new")
+                .unwrap();
+
+        assert_eq!(
+            url,
+            "wss://example.com/base/vcp-distributed-server/VCP_Key=new"
+        );
+    }
+
+    #[test]
+    fn distributed_url_redaction_masks_percent_encoded_keys() {
+        let url =
+            build_distributed_connection_url("ws://example.com:6005", "secret?# key").unwrap();
+
+        assert_eq!(
+            redact_distributed_connection_url(&url),
+            "ws://example.com:6005/vcp-distributed-server/VCP_Key=***"
+        );
+    }
+}

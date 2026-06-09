@@ -253,7 +253,7 @@ const openFeedback = () => {
             @click="showFeatures"
           >
             <template #action>
-              <div class="i-carbon-chevron-right opacity-30" />
+              <div class="i-ph-caret-right opacity-30" />
             </template>
           </SettingsRow>
           
@@ -265,7 +265,7 @@ const openFeedback = () => {
             @click="openGitHub"
           >
             <template #action>
-              <div class="i-carbon-logo-github opacity-30" />
+              <div class="i-ph-github-logo opacity-30" />
             </template>
           </SettingsRow>
           
@@ -277,7 +277,7 @@ const openFeedback = () => {
             @click="openFeedback"
           >
             <template #action>
-              <div class="i-carbon-debug opacity-30" />
+              <div class="i-ph-bug opacity-30" />
             </template>
           </SettingsRow>
         </div>
@@ -364,9 +364,9 @@ const openFeedback = () => {
 }
 
 /* 亮色操作右箭头及小图标高保真提亮 */
-.theme-light :deep(.i-carbon-chevron-right),
-.theme-light :deep(.i-carbon-logo-github),
-.theme-light :deep(.i-carbon-debug),
+.theme-light :deep(.i-ph-caret-right),
+.theme-light :deep(.i-ph-github-logo),
+.theme-light :deep(.i-ph-bug),
 .theme-light :deep(.opacity-20 svg) {
   color: #475569 !important; /* slate-600 */
   opacity: 0.65 !important;

@@ -3,13 +3,47 @@
 
 use crate::vcp_modules::db_manager::DbState;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::Mutex;
 
 fn default_sync_log_level() -> String {
     "INFO".to_string()
+}
+
+fn default_active_connection_profile_id() -> String {
+    "lan".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionProfile {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub vcp_server_url: String,
+    #[serde(default)]
+    pub vcp_api_key: String,
+    #[serde(default)]
+    pub vcp_log_url: String,
+    #[serde(default)]
+    pub vcp_log_key: String,
+    #[serde(default)]
+    pub sync_server_url: String,
+    #[serde(default)]
+    pub sync_http_url: String,
+    #[serde(default)]
+    pub sync_token: String,
+    #[serde(default)]
+    pub distributed_ws_url: String,
+    #[serde(default)]
+    pub distributed_vcp_key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -83,10 +117,65 @@ pub struct Settings {
     #[serde(default)]
     pub assistant_agent_id: String,
 
+    #[serde(default)]
+    pub connection_profiles: Vec<ConnectionProfile>,
+
+    #[serde(default = "default_active_connection_profile_id")]
+    pub active_connection_profile_id: String,
+
     /// 仅保留此字段用于前端未来扩展的透参
     #[serde(flatten)]
     #[serde(default)]
     pub extra: serde_json::Value,
+}
+
+#[derive(Default)]
+pub struct ConnectionProfileSwitchState {
+    switching: AtomicBool,
+}
+
+impl ConnectionProfileSwitchState {
+    pub fn begin(&self) {
+        self.switching.store(true, Ordering::SeqCst);
+    }
+
+    pub fn end(&self) {
+        self.switching.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_switching(&self) -> bool {
+        self.switching.load(Ordering::SeqCst)
+    }
+}
+
+pub fn is_connection_profile_switching<R: Runtime>(app_handle: &AppHandle<R>) -> bool {
+    app_handle
+        .try_state::<ConnectionProfileSwitchState>()
+        .map(|state| state.is_switching())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub async fn begin_connection_profile_switch(
+    state: State<'_, ConnectionProfileSwitchState>,
+) -> Result<(), String> {
+    state.begin();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn end_connection_profile_switch(
+    state: State<'_, ConnectionProfileSwitchState>,
+) -> Result<(), String> {
+    state.end();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn is_connection_profile_switching_command(
+    state: State<'_, ConnectionProfileSwitchState>,
+) -> Result<bool, String> {
+    Ok(state.is_switching())
 }
 
 pub struct SettingsState {
@@ -125,10 +214,52 @@ pub fn create_default_settings() -> Settings {
         sync_prerender_enabled: false,
         enable_assistant: false,
         assistant_agent_id: "".to_string(),
+        connection_profiles: vec![],
+        active_connection_profile_id: default_active_connection_profile_id(),
         agent_order: vec![],
         group_order: vec![],
         current_theme_mode: Some("dark".to_string()),
         extra: serde_json::Value::Object(serde_json::Map::new()),
+    }
+}
+
+fn migrate_realtime_profile_aliases(profile: &mut ConnectionProfile) {
+    if profile.vcp_log_url.trim().is_empty()
+        && profile.vcp_log_key.trim().is_empty()
+        && (!profile.distributed_ws_url.trim().is_empty()
+            || !profile.distributed_vcp_key.trim().is_empty())
+    {
+        profile.vcp_log_url = profile.distributed_ws_url.clone();
+        profile.vcp_log_key = profile.distributed_vcp_key.clone();
+    }
+}
+
+fn mirror_realtime_profile_aliases(profile: &mut ConnectionProfile) {
+    profile.distributed_ws_url = profile.vcp_log_url.clone();
+    profile.distributed_vcp_key = profile.vcp_log_key.clone();
+}
+
+fn migrate_realtime_aliases(settings: &mut Settings) {
+    if settings.vcp_log_url.trim().is_empty()
+        && settings.vcp_log_key.trim().is_empty()
+        && (!settings.distributed_ws_url.trim().is_empty()
+            || !settings.distributed_vcp_key.trim().is_empty())
+    {
+        settings.vcp_log_url = settings.distributed_ws_url.clone();
+        settings.vcp_log_key = settings.distributed_vcp_key.clone();
+    }
+
+    for profile in &mut settings.connection_profiles {
+        migrate_realtime_profile_aliases(profile);
+    }
+}
+
+fn mirror_realtime_aliases(settings: &mut Settings) {
+    settings.distributed_ws_url = settings.vcp_log_url.clone();
+    settings.distributed_vcp_key = settings.vcp_log_key.clone();
+
+    for profile in &mut settings.connection_profiles {
+        mirror_realtime_profile_aliases(profile);
     }
 }
 
@@ -149,7 +280,7 @@ pub async fn read_settings<R: Runtime>(
         .await
         .map_err(|e| e.to_string())?;
 
-    let settings = if let Some(row) = row_res {
+    let mut settings = if let Some(row) = row_res {
         use sqlx::Row;
         let content: String = row.get("value");
         serde_json::from_str(&content).unwrap_or_else(|_| create_default_settings())
@@ -157,6 +288,7 @@ pub async fn read_settings<R: Runtime>(
         create_default_settings()
     };
 
+    migrate_realtime_aliases(&mut settings);
     *state.cache.lock().await = Some(settings.clone());
     Ok(settings)
 }
@@ -165,9 +297,10 @@ pub async fn read_settings<R: Runtime>(
 pub async fn write_settings<R: Runtime>(
     app_handle: AppHandle<R>,
     state: State<'_, SettingsState>,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<bool, String> {
     let _lock = state.lock.lock().await;
+    mirror_realtime_aliases(&mut settings);
     internal_write_settings(&app_handle, &state, &settings).await
 }
 
@@ -190,7 +323,9 @@ pub async fn update_settings<R: Runtime>(
         }
     }
 
-    let new_settings: Settings = serde_json::from_value(current_val).map_err(|e| e.to_string())?;
+    let mut new_settings: Settings =
+        serde_json::from_value(current_val).map_err(|e| e.to_string())?;
+    mirror_realtime_aliases(&mut new_settings);
     internal_write_settings(&app_handle, &state, &new_settings).await?;
 
     Ok(new_settings)
@@ -283,4 +418,49 @@ pub async fn set_theme<R: Runtime>(
 
     update_settings(app_handle, state, updates).await?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mirror_realtime_aliases_keeps_vcp_log_as_source_of_truth() {
+        let mut settings = create_default_settings();
+        settings.vcp_log_url = "wss://example.com".to_string();
+        settings.vcp_log_key = "log-key".to_string();
+        settings.distributed_ws_url = "ws://stale.local".to_string();
+        settings.distributed_vcp_key = "stale-key".to_string();
+
+        mirror_realtime_aliases(&mut settings);
+
+        assert_eq!(settings.distributed_ws_url, "wss://example.com");
+        assert_eq!(settings.distributed_vcp_key, "log-key");
+    }
+
+    #[test]
+    fn migrate_realtime_aliases_backfills_from_legacy_distributed_fields() {
+        let mut settings = create_default_settings();
+        settings.distributed_ws_url = "ws://legacy.local:6005".to_string();
+        settings.distributed_vcp_key = "legacy-key".to_string();
+
+        migrate_realtime_aliases(&mut settings);
+
+        assert_eq!(settings.vcp_log_url, "ws://legacy.local:6005");
+        assert_eq!(settings.vcp_log_key, "legacy-key");
+    }
+
+    #[test]
+    fn mirror_realtime_aliases_preserves_explicit_clears() {
+        let mut settings = create_default_settings();
+        settings.distributed_ws_url = "ws://legacy.local:6005".to_string();
+        settings.distributed_vcp_key = "legacy-key".to_string();
+
+        mirror_realtime_aliases(&mut settings);
+
+        assert!(settings.vcp_log_url.is_empty());
+        assert!(settings.vcp_log_key.is_empty());
+        assert!(settings.distributed_ws_url.is_empty());
+        assert!(settings.distributed_vcp_key.is_empty());
+    }
 }

@@ -7,7 +7,61 @@ use crate::vcp_modules::vcp_client::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::{ipc::Channel, AppHandle, State};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
+
+#[derive(Clone, Default)]
+pub struct AssistantChatActivityState {
+    active_count: Arc<AtomicUsize>,
+}
+
+impl AssistantChatActivityState {
+    fn emit(&self, app_handle: &AppHandle, active_count: usize) {
+        let _ = app_handle.emit(
+            "floating-assistant-activity",
+            json!({
+                "activeCount": active_count,
+                "isGenerating": active_count > 0,
+            }),
+        );
+    }
+
+    pub fn begin(&self, app_handle: &AppHandle) -> AssistantChatActivityGuard {
+        let active_count = self.active_count.fetch_add(1, Ordering::SeqCst) + 1;
+        self.emit(app_handle, active_count);
+        AssistantChatActivityGuard {
+            state: self.clone(),
+            app_handle: app_handle.clone(),
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active_count.load(Ordering::SeqCst) > 0
+    }
+}
+
+pub struct AssistantChatActivityGuard {
+    state: AssistantChatActivityState,
+    app_handle: AppHandle,
+}
+
+impl Drop for AssistantChatActivityGuard {
+    fn drop(&mut self) {
+        let previous = self.state.active_count.fetch_sub(1, Ordering::SeqCst);
+        let active_count = previous.saturating_sub(1);
+        self.state.emit(&self.app_handle, active_count);
+    }
+}
+
+#[tauri::command]
+pub async fn is_assistant_chat_active(
+    activity_state: State<'_, AssistantChatActivityState>,
+) -> Result<bool, String> {
+    Ok(activity_state.is_active())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,6 +267,10 @@ pub async fn handle_assistant_chat_stream(
     payload: AssistantChatPayload,
     stream_channel: Channel<crate::vcp_modules::vcp_client::StreamEvent>,
 ) -> Result<Value, String> {
+    let activity_guard = app_handle
+        .try_state::<AssistantChatActivityState>()
+        .map(|state| state.begin(&app_handle));
+
     let agent_id = payload.agent_id;
     let temp_messages = payload.temp_messages;
 
@@ -332,6 +390,8 @@ pub async fn handle_assistant_chat_stream(
                 stream_channel.send(StreamEvent::error(thinking_id.clone(), context, e.clone()));
         }
     }
+
+    drop(activity_guard);
 
     Ok(json!({ "status": "sent", "messageId": thinking_id }))
 }

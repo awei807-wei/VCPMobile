@@ -370,8 +370,8 @@ const loadSettings = async () => {
   try {
     await settingsStore.fetchSettings();
     if (settingsStore.settings) {
-      wsUrl.value = settingsStore.settings.distributedWsUrl || settingsStore.settings.vcpLogUrl || settingsStore.settings.vcpServerUrl || "";
-      vcpKey.value = settingsStore.settings.distributedVcpKey || settingsStore.settings.vcpLogKey || settingsStore.settings.vcpApiKey || "";
+      wsUrl.value = settingsStore.settings.vcpLogUrl || settingsStore.settings.distributedWsUrl || "";
+      vcpKey.value = settingsStore.settings.vcpLogKey || settingsStore.settings.distributedVcpKey || "";
       deviceName.value = settingsStore.settings.distributedDeviceName ?? "VCPMobile";
     }
     // Pull registered tools dynamically
@@ -386,6 +386,8 @@ const handleConnect = async () => {
   try {
     if (settingsStore.settings) {
       const updates = {
+        vcpLogUrl: wsUrl.value,
+        vcpLogKey: vcpKey.value,
         distributedWsUrl: wsUrl.value,
         distributedVcpKey: vcpKey.value,
         distributedDeviceName: deviceName.value,
@@ -715,14 +717,14 @@ watch(
               />
               <SettingsTextField
                 v-model="wsUrl"
-                label="WS 服务地址 / WebSocket URL"
+                label="VCPLog / 分布式 WS 基地址"
                 placeholder="ws://192.168.x.x:port"
                 mono
                 :disabled="status.state !== 'disconnected'"
               />
               <SettingsTextField
                 v-model="vcpKey"
-                label="VCP 鉴权密钥 / VCP API Key"
+                label="VCPLog / 分布式鉴权 Key"
                 placeholder="授权校验密钥"
                 is-secure
                 :disabled="status.state !== 'disconnected'"

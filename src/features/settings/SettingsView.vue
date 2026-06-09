@@ -8,6 +8,7 @@ import SlidePage from "../../components/ui/SlidePage.vue";
 import UserProfileSection from "./components/UserProfileSection.vue";
 import SyncSettingsSection from "./components/SyncSettingsSection.vue";
 import VcpCoreSettingsSection from "./components/VcpCoreSettingsSection.vue";
+import ConnectionProfilesSection from "./components/ConnectionProfilesSection.vue";
 import ThemePicker from "./ThemePicker.vue";
 import ModelSelector from "../../components/ModelSelector.vue";
 import SettingsCard from "../../components/settings/SettingsCard.vue";
@@ -59,6 +60,8 @@ const settings = ref<AppSettings>({
   syncLogLevel: "INFO",
   enableAssistant: false,
   assistantAgentId: "",
+  connectionProfiles: [],
+  activeConnectionProfileId: "lan",
 });
 
 const loading = ref(true);
@@ -267,6 +270,15 @@ watch(currentSubPage, (val) => {
                     <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">数据同步</h3>
                     <SettingsCard>
                       <SyncSettingsSection
+                        :settings="settings"
+                        @save-request="saveSettings"
+                      />
+                    </SettingsCard>
+                  </div>
+                  <div>
+                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">线路档案</h3>
+                    <SettingsCard>
+                      <ConnectionProfilesSection
                         :settings="settings"
                         @save-request="saveSettings"
                       />

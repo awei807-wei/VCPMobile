@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      NODE_VERSION: '22'
-      PNPM_VERSION: '10'
-      JAVA_VERSION: '17'
-      NDK_VERSION: '29.0.13846066'
+      NODE_VERSION: "22"
+      PNPM_VERSION: "10"
+      JAVA_VERSION: "17"
+      NDK_VERSION: "29.0.13846066"
       ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/src-tauri/release.keystore
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -154,6 +154,9 @@ jobs:
           NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VERSION }}
           TAURI_ANDROID_VERSION_NAME: ${{ steps.meta.outputs.version }}
           TAURI_ANDROID_VERSION_CODE: ${{ steps.meta.outputs.android_version_code }}
+          RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+          CC_aarch64_linux_android: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang
+          AR_aarch64_linux_android: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         run: |
           pnpm tauri android build --apk --target aarch64
 
@@ -205,6 +208,42 @@ jobs:
 
           # 3. 保存路径供后续步骤使用
           echo "SOURCE_APK=$SOURCE_APK" >> "$GITHUB_ENV"
+
+      - name: Verify 16KB ELF alignment
+        shell: bash
+        run: |
+          APK="${{ env.SOURCE_APK }}"
+          python3 - "$APK" << 'PYEOF'
+          import zipfile, struct, sys
+
+          apk_path = sys.argv[1]
+          z = zipfile.ZipFile(apk_path, 'r')
+          failed = False
+
+          for name in z.namelist():
+              if not name.endswith('.so'):
+                  continue
+              so = z.read(name)
+              endian = '<' if so[5] == 1 else '>'
+              e_phoff = struct.unpack_from(endian + 'Q', so, 32)[0]
+              e_phnum = struct.unpack_from(endian + 'H', so, 56)[0]
+
+              for i in range(e_phnum):
+                  ph = e_phoff + i * 56
+                  p_type = struct.unpack_from(endian + 'I', so, ph)[0]
+                  if p_type == 1:  # PT_LOAD
+                      p_align = struct.unpack_from(endian + 'Q', so, ph + 48)[0]
+                      if p_align < 16384:
+                          print(f"FAIL: {name} LOAD segment {i}: p_align={p_align} (need >= 16384)")
+                          failed = True
+
+          z.close()
+          if failed:
+              print("\nERROR: One or more .so files have insufficient page alignment. Build is REJECTED.")
+              sys.exit(1)
+          else:
+              print("PASS: All .so files have 16KB page alignment.")
+          PYEOF
 
       - name: Collect and rename APK artifact
         id: artifacts

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, watch, ref } from "vue";
-import { X, Trash2, Bug, RefreshCw } from "lucide-vue-next";
+import { X, Trash2, Bug, RefreshCw, BookOpen } from "lucide-vue-next";
 import { useNotificationStore } from "../../core/stores/notification";
 import { useNotificationProcessor } from "../../core/composables/useNotificationProcessor";
 import { useSidebarSwipe } from "../../core/composables/useSidebarSwipe";
@@ -39,6 +39,11 @@ const connectionSwitchTitle = computed(() => {
 
 const switchConnectionProfile = () => {
   connectionProfilesStore.switchToTarget().catch(() => {});
+};
+
+const openDailyNoteView = () => {
+  overlayStore.openDailyNote();
+  emit("close");
 };
 
 const sidebarRef = ref<HTMLElement | null>(null);
@@ -243,11 +248,13 @@ watch(
             线路：{{ connectionProfilesStore.activeProfileName }}
           </span>
         </button>
-        <div
-          class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3"
+        <button
+          class="col-span-1 py-3 px-4 rounded-full transition-all text-primary-text flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 shadow-md border border-black/5 dark:border-white/5 bg-black/5 dark:bg-white/5"
+          @click="openDailyNoteView"
         >
-          <span>待开发</span>
-        </div>
+          <BookOpen :size="15" />
+          <span class="font-bold text-[11px] leading-none">日记</span>
+        </button>
         <div
           class="col-span-1 border border-dashed border-black/10 dark:border-white/10 rounded-full flex items-center justify-center text-[10px] opacity-25 text-primary-text py-3"
         >

@@ -28,6 +28,7 @@ const SyncSessionView = defineAsyncComponent(() => import('../features/sync/Sync
 const RebuildSessionView = defineAsyncComponent(() => import('../features/settings/components/RebuildSessionView.vue'));
 const DistributedView = defineAsyncComponent(() => import('../features/distributed/DistributedView.vue'));
 const SettingsView = defineAsyncComponent(() => import('../features/settings/SettingsView.vue'));
+const DailyNoteView = defineAsyncComponent(() => import('../features/dailynote/DailyNoteView.vue'));
 
 const overlayStore = useOverlayStore();
 const settingsStore = useSettingsStore();
@@ -80,6 +81,13 @@ onMounted(() => {
       :z-index="overlayStore.getPageZIndex('distributed')"
       @close="overlayStore.closeDistributed()"
     />
+
+    <DailyNoteView
+      :is-open="overlayStore.isDailyNoteOpen"
+      :z-index="overlayStore.getPageZIndex('dailyNote')"
+      @close="overlayStore.closeDailyNote()"
+    />
+
     <!-- 仅当用户已启用分布式计算时才挂载事件监听器，避免常驻不必要的后台监听 -->
     <ToolInteractionOverlay v-if="settingsStore.settings?.distributedEnabled" />
   </div>

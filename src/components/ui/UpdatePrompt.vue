@@ -2,6 +2,7 @@
 import { watch, computed } from 'vue';
 import { useModalHistory } from '../../core/composables/useModalHistory';
 import { useUpdateStore } from '../../core/stores/update';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -10,6 +11,7 @@ const props = defineProps<{
   version: string;
   releaseNotes?: string | null;
   apkSize?: number | null;
+  releasePageUrl?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -40,6 +42,11 @@ watch(
 
 const handleConfirm = () => {
   emit('confirm');
+};
+
+const handleOpenRelease = async () => {
+  if (!props.releasePageUrl) return;
+  await openUrl(props.releasePageUrl);
 };
 
 const handleDismiss = () => {
@@ -77,6 +84,8 @@ const progressPercent = computed(() => {
   if (!total || total === 0) return 0;
   return Math.min(100, Math.round((progress / total) * 100));
 });
+
+const hasDirectDownload = computed(() => Boolean(updateStore.updateInfo?.downloadUrl));
 </script>
 
 <template>
@@ -129,6 +138,13 @@ const progressPercent = computed(() => {
             安装包大小: {{ formatBytes(apkSize) }}
           </div>
 
+          <div
+            v-if="!hasDirectDownload && releasePageUrl"
+            class="text-xs text-amber-700 dark:text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 mb-4 leading-relaxed"
+          >
+            已发现新版本，但当前 Release 没有匹配到可直接安装的 APK。请打开 Release 页面手动下载合适安装包。
+          </div>
+
           <!-- 错误信息反馈 -->
           <div
             v-if="updateStore.status === 'error'"
@@ -171,11 +187,12 @@ const progressPercent = computed(() => {
             </button>
             <button
               :disabled="updateStore.status === 'downloading' || updateStore.status === 'installing'"
-              @click="handleConfirm"
+              @click="hasDirectDownload ? handleConfirm() : handleOpenRelease()"
               class="px-5 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white shadow-[0_4px_15px_rgba(59,130,246,0.35)] active:scale-95 active:shadow-[0_2px_8px_rgba(59,130,246,0.2)] transition-all duration-200 disabled:opacity-60 disabled:pointer-events-none"
             >
               <span v-if="updateStore.status === 'downloading'">正在下载 {{ progressPercent }}%...</span>
               <span v-else-if="updateStore.status === 'installing'">正在安装...</span>
+              <span v-else-if="!hasDirectDownload && releasePageUrl">打开 Release</span>
               <span v-else>立即更新</span>
             </button>
           </div>

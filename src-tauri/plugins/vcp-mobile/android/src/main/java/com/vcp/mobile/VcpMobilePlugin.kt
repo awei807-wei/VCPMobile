@@ -97,17 +97,16 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     // ==================================================================
     // Permissions & App Control
     // ==================================================================
-    @Command
-    fun checkAllPermissions(invoke: Invoke) {
-        val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
-
-        val notificationGranted = if (Build.VERSION.SDK_INT >= 33) {
+    private fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 33) {
             ContextCompat.checkSelfPermission(activity, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         } else {
             true
         }
+    }
 
-        val storageGranted = if (Build.VERSION.SDK_INT >= 34) {
+    private fun hasStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 34) {
             val hasAll = ContextCompat.checkSelfPermission(activity, android.Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
             val hasVisualSelected = ContextCompat.checkSelfPermission(activity, "android.permission.READ_MEDIA_VISUAL_USER_SELECTED") == PackageManager.PERMISSION_GRANTED
             hasAll || hasVisualSelected
@@ -119,6 +118,54 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             ContextCompat.checkSelfPermission(activity, android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
                 ContextCompat.checkSelfPermission(activity, android.Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         }
+    }
+
+    private fun hasAgentMessageRingCapability(notificationGranted: Boolean): Boolean {
+        if (!notificationGranted) return false
+        if (!androidx.core.app.NotificationManagerCompat.from(activity).areNotificationsEnabled()) return false
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            createAgentMessageNotificationChannel()
+            val notificationManager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val channel = notificationManager.getNotificationChannel(AGENT_MESSAGE_CHANNEL_ID) ?: return false
+            val highEnough = channel.importance >= android.app.NotificationManager.IMPORTANCE_HIGH
+            val hasSound = channel.sound != null
+            val hasVibration = channel.shouldVibrate()
+            return highEnough && hasSound && hasVibration
+        }
+
+        return true
+    }
+
+    private fun openAgentMessageNotificationSettings(invoke: Invoke) {
+        try {
+            createAgentMessageNotificationChannel()
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
+                    putExtra(Settings.EXTRA_CHANNEL_ID, AGENT_MESSAGE_CHANNEL_ID)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${activity.packageName}")
+                }
+            }
+            startActivityForResult(invoke, intent, "onNotificationSettingsResult")
+        } catch (e: Exception) {
+            val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${activity.packageName}")
+            }
+            startActivityForResult(invoke, fallback, "onNotificationSettingsResult")
+        }
+    }
+
+    @Command
+    fun checkAllPermissions(invoke: Invoke) {
+        val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+
+        val notificationGranted = hasNotificationPermission()
+        val ringGranted = hasAgentMessageRingCapability(notificationGranted)
+        val storageGranted = hasStoragePermission()
 
         val microphoneGranted = ContextCompat.checkSelfPermission(activity, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val cameraGranted = ContextCompat.checkSelfPermission(activity, android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -130,6 +177,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
         val result = JSObject()
         result.put("notification", notificationGranted)
+        result.put("ring", ringGranted)
         result.put("storage", storageGranted)
         result.put("microphone", microphoneGranted)
         result.put("camera", cameraGranted)
@@ -150,6 +198,13 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 } else {
                     emitPermissionsToWebView()
                     invoke.resolve()
+                }
+            }
+            "ring" -> {
+                if (Build.VERSION.SDK_INT >= 33 && !hasNotificationPermission()) {
+                    requestPermissionForAlias("notification", invoke, "onPermissionResult")
+                } else {
+                    openAgentMessageNotificationSettings(invoke)
                 }
             }
             "storage" -> {
@@ -203,27 +258,18 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve()
     }
 
+    @ActivityCallback
+    fun onNotificationSettingsResult(invoke: Invoke, @Suppress("UNUSED_PARAMETER") result: ActivityResult) {
+        emitPermissionsToWebView()
+        invoke.resolve()
+    }
+
     private fun emitPermissionsToWebView() {
         val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
 
-        val notificationGranted = if (Build.VERSION.SDK_INT >= 33) {
-            ContextCompat.checkSelfPermission(activity, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-
-        val storageGranted = if (Build.VERSION.SDK_INT >= 34) {
-            val hasAll = ContextCompat.checkSelfPermission(activity, android.Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-            val hasVisualSelected = ContextCompat.checkSelfPermission(activity, "android.permission.READ_MEDIA_VISUAL_USER_SELECTED") == PackageManager.PERMISSION_GRANTED
-            hasAll || hasVisualSelected
-        } else if (Build.VERSION.SDK_INT >= 33) {
-            ContextCompat.checkSelfPermission(activity, android.Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-        } else if (Build.VERSION.SDK_INT >= 29) {
-            ContextCompat.checkSelfPermission(activity, android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(activity, android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(activity, android.Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-        }
+        val notificationGranted = hasNotificationPermission()
+        val ringGranted = hasAgentMessageRingCapability(notificationGranted)
+        val storageGranted = hasStoragePermission()
 
         val microphoneGranted = ContextCompat.checkSelfPermission(activity, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val cameraGranted = ContextCompat.checkSelfPermission(activity, android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -233,7 +279,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         val batteryOptimizationIgnored = pm.isIgnoringBatteryOptimizations(activity.packageName)
         val overlayGranted = floatingWindowManager.hasOverlayPermission()
 
-        val json = """{"notification":$notificationGranted,"storage":$storageGranted,"microphone":$microphoneGranted,"camera":$cameraGranted,"battery":$batteryOptimizationIgnored,"overlay":$overlayGranted,"location":$locationGranted}"""
+        val json = """{"notification":$notificationGranted,"ring":$ringGranted,"storage":$storageGranted,"microphone":$microphoneGranted,"camera":$cameraGranted,"battery":$batteryOptimizationIgnored,"overlay":$overlayGranted,"location":$locationGranted}"""
         val script = "window.dispatchEvent(new CustomEvent('vcp-permission-change', { detail: $json }))"
         webViewRef?.evaluateJavascript(script, null)
     }

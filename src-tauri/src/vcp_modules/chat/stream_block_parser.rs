@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use crate::vcp_modules::chat::daily_note::{self, DailyNoteDetails};
 use crate::vcp_modules::content_parser::{
     BlockType, ToolResultDetail, BUTTON_CLICK, /* extraction helpers */
-    CONTENT_REGEX, DATE_REGEX, DIARY_END, DIARY_START, GENERIC_CODE_FENCE_END,
-    GENERIC_CODE_FENCE_START, HTML_DOC_END, HTML_DOC_START, HTML_FENCE_START, KV_REGEX, MAID_REGEX,
+    DIARY_END, DIARY_START, GENERIC_CODE_FENCE_END,
+    GENERIC_CODE_FENCE_START, HTML_DOC_END, HTML_DOC_START, HTML_FENCE_START, KV_REGEX,
     ROLE_DIVIDER, STYLE_TAG_END, STYLE_TAG_START, THINK_END, THINK_START, THOUGHT_END,
     THOUGHT_START, TOOL_END, TOOL_NAME, TOOL_RESULT_END, TOOL_RESULT_START, TOOL_START,
 };
@@ -51,6 +52,26 @@ pub enum StreamBlock {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         nodes: Option<Vec<MarkdownNode>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_label: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        replace: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_nodes: Option<Vec<MarkdownNode>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        replace_nodes: Option<Vec<MarkdownNode>>,
         hash: String,
     },
     #[serde(rename = "html-preview")]
@@ -121,18 +142,40 @@ impl StreamBlock {
         }
     }
 
-    pub fn diary(
-        maid: String,
-        date: String,
-        content: String,
-        nodes: Option<Vec<MarkdownNode>>,
-        hash: String,
-    ) -> Self {
+    pub fn daily_note(details: DailyNoteDetails, hash: String) -> Self {
+        let nodes = if details.content.trim().is_empty() {
+            None
+        } else {
+            Some(crate::vcp_modules::pre_renderer::parse_markdown_to_ast(
+                &details.content,
+            ))
+        };
+        let target_nodes = details
+            .target
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| crate::vcp_modules::pre_renderer::parse_markdown_to_ast(v));
+        let replace_nodes = details
+            .replace
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| crate::vcp_modules::pre_renderer::parse_markdown_to_ast(v));
+
         Self::Diary {
-            maid,
-            date,
-            content,
+            maid: details.agent_name,
+            date: details.date,
+            content: details.content,
             nodes,
+            mode: Some(details.mode),
+            agent_type: Some(details.agent_type),
+            agent_label: Some(details.agent_label),
+            file_name: details.file_name,
+            folder: details.folder,
+            tag: details.tag,
+            target: details.target,
+            replace: details.replace,
+            target_nodes,
+            replace_nodes,
             hash,
         }
     }
@@ -383,14 +426,12 @@ fn build_stream_block(
 ) -> StreamBlock {
     match block_type {
         BlockType::Tool => {
-            let tool_name = extract_tool_name(inner_content);
-            if is_daily_note_create(inner_content) {
-                let (maid, date, content) = extract_diary_details(inner_content);
-                let nodes = crate::vcp_modules::chat::pre_renderer::parse_markdown_to_ast(&content);
+            if let Some(details) = daily_note::parse_daily_note_tool(inner_content) {
                 let hash =
-                    HashAggregator::compute_content_hash(&format!("{}:{}:{}", maid, date, content));
-                StreamBlock::diary(maid, date, content, Some(nodes), hash)
+                    HashAggregator::compute_content_hash(&daily_note::fingerprint(&details));
+                StreamBlock::daily_note(details, hash)
             } else {
+                let tool_name = extract_tool_name(inner_content);
                 let hash = HashAggregator::compute_content_hash(&format!(
                     "{}:{}",
                     tool_name, inner_content
@@ -437,11 +478,9 @@ fn build_stream_block(
             StreamBlock::tool_result(tool_name, status, details, footer, hash)
         }
         BlockType::Diary => {
-            let (maid, date, content) = extract_diary_details(inner_content);
-            let nodes = crate::vcp_modules::chat::pre_renderer::parse_markdown_to_ast(&content);
-            let hash =
-                HashAggregator::compute_content_hash(&format!("{}:{}:{}", maid, date, content));
-            StreamBlock::diary(maid, date, content, Some(nodes), hash)
+            let details = daily_note::parse_daily_note_legacy(inner_content);
+            let hash = HashAggregator::compute_content_hash(&daily_note::fingerprint(&details));
+            StreamBlock::daily_note(details, hash)
         }
         BlockType::HtmlFence | BlockType::HtmlDoc => {
             let hash = HashAggregator::compute_content_hash(inner_content);
@@ -663,32 +702,6 @@ fn extract_tool_name(content: &str) -> String {
     "Processing...".to_string()
 }
 
-fn is_daily_note_create(content: &str) -> bool {
-    content.contains("DailyNote") && content.contains("create")
-}
-
-fn extract_diary_details(content: &str) -> (String, String, String) {
-    let maid = MAID_REGEX
-        .captures(content)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)))
-        .map(|m| m.as_str().trim().to_string())
-        .unwrap_or_default();
-
-    let date = DATE_REGEX
-        .captures(content)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)))
-        .map(|m| m.as_str().trim().to_string())
-        .unwrap_or_default();
-
-    let diary_content = CONTENT_REGEX
-        .captures(content)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)))
-        .map(|m| m.as_str().trim().to_string())
-        .unwrap_or_else(|| "[日记内容解析失败]".to_string());
-
-    (maid, date, diary_content)
-}
-
 fn parse_tool_result(content: &str) -> (String, String, Vec<ToolResultDetail>, String) {
     let mut tool_name = "Unknown Tool".to_string();
     let mut status = "Unknown Status".to_string();
@@ -739,6 +752,103 @@ fn parse_tool_result(content: &str) -> (String, String, Vec<ToolResultDetail>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_daily_note_static_and_stream_parsers_agree() {
+        let samples = [
+            // create（标记字段 + Maid）
+            "<<<[TOOL_REQUEST]>>>\nmaid:「始」小克「末」,\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nDate:「始」2026.6.11「末」,\nfileName:「始」随记「末」,\nfolder:「始」小克日记「末」,\nTag:「始」日常「末」,\nContent:「始」正文第一段「末」\n<<<[END_TOOL_REQUEST]>>>",
+            // update（Valet + target/replace）
+            "<<<[TOOL_REQUEST]>>>\nvalet:「始」管家「末」,\ntool_name:「始」DailyNote「末」,\ncommand:「始」update「末」,\nfolder:「始」管家日志「末」,\ntarget:「始」旧段落「末」,\nreplace:「始」新段落「末」\n<<<[END_TOOL_REQUEST]>>>",
+            // legacy 老式块
+            "<<<DailyNoteStart>>>\nMaid: 小克\nDate: 2026.6.11\nContent: 老式日记正文\n<<<DailyNoteEnd>>>",
+        ];
+
+        for sample in samples {
+            let static_blocks = crate::vcp_modules::content_parser::parse_content(sample);
+            let mut parser = StreamBlockParser::new();
+            let stream_blocks = parser.finalize(sample);
+
+            let static_diary = static_blocks
+                .iter()
+                .find_map(|b| match b {
+                    crate::vcp_modules::content_parser::ContentBlock::Diary {
+                        maid,
+                        date,
+                        content,
+                        mode,
+                        agent_type,
+                        agent_label,
+                        file_name,
+                        folder,
+                        tag,
+                        target,
+                        replace,
+                        ..
+                    } => Some((
+                        maid.clone(),
+                        date.clone(),
+                        content.clone(),
+                        mode.clone(),
+                        agent_type.clone(),
+                        agent_label.clone(),
+                        file_name.clone(),
+                        folder.clone(),
+                        tag.clone(),
+                        target.clone(),
+                        replace.clone(),
+                    )),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("static parser missed diary in: {sample}"));
+
+            let stream_diary = stream_blocks
+                .iter()
+                .find_map(|b| match b {
+                    StreamBlock::Diary {
+                        maid,
+                        date,
+                        content,
+                        mode,
+                        agent_type,
+                        agent_label,
+                        file_name,
+                        folder,
+                        tag,
+                        target,
+                        replace,
+                        ..
+                    } => Some((
+                        maid.clone(),
+                        date.clone(),
+                        content.clone(),
+                        mode.clone(),
+                        agent_type.clone(),
+                        agent_label.clone(),
+                        file_name.clone(),
+                        folder.clone(),
+                        tag.clone(),
+                        target.clone(),
+                        replace.clone(),
+                    )),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("stream parser missed diary in: {sample}"));
+
+            assert_eq!(static_diary, stream_diary, "field mismatch for: {sample}");
+        }
+    }
+
+    #[test]
+    fn test_non_daily_note_tool_stays_tool_block() {
+        let sample = "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SciCalculator「末」,\nexpression:「始」1+1「末」\n<<<[END_TOOL_REQUEST]>>>";
+        let mut parser = StreamBlockParser::new();
+        let blocks = parser.finalize(sample);
+        assert!(blocks
+            .iter()
+            .any(|b| matches!(b, StreamBlock::Tool { tool_name, .. } if tool_name == "SciCalculator")));
+        assert!(!blocks.iter().any(|b| matches!(b, StreamBlock::Diary { .. })));
+    }
 
     #[test]
     fn test_code_block_precipitation_failure() {

@@ -93,26 +93,8 @@ function renderBlockHtml(block: ContentBlock): string {
       }
       return `<div class="vcp-markdown-block"><p>${escapeHtml(block.content || "")}</p></div>`;
     
-    case "diary": {
-      const diaryContent = (block.nodes && block.nodes.length > 0)
-        ? renderMarkdownNodes(block.nodes, props.message.id, block.hash)
-        : escapeHtml(block.content || "");
-      return `
-        <div class="vcp-diary-block">
-          <div class="vcp-diary-header">
-            <span class="vcp-diary-title">Maid's Diary</span>
-            ${block.date ? `<span class="vcp-diary-date">${escapeHtml(block.date)}</span>` : ''}
-          </div>
-          ${block.maid ? `
-            <div class="vcp-diary-maid-info">
-              <span class="diary-maid-label">Maid:</span>
-              <span class="vcp-diary-maid-name">${escapeHtml(block.maid)}</span>
-            </div>
-          ` : ''}
-          <div class="vcp-diary-content vcp-markdown-block">${diaryContent}</div>
-        </div>
-      `;
-    }
+    case "diary":
+      return renderDailyNoteBlock(block);
     
     case "role-divider":
       const role = block.role || "unknown";
@@ -144,6 +126,80 @@ function renderBlockHtml(block: ContentBlock): string {
     default:
       return "";
   }
+}
+
+function renderMarkdownField(nodes: ContentBlock["nodes"], raw: string | undefined, fallback: string): string {
+  if (nodes && nodes.length > 0) {
+    return renderMarkdownNodes(nodes, props.message.id, raw || fallback);
+  }
+  const text = raw && raw.trim() ? raw : fallback;
+  return `<p>${escapeHtml(text).replace(/\n/g, "<br>")}</p>`;
+}
+
+function renderDailyNoteBlock(block: ContentBlock): string {
+  const agentType = block.agent_type === "valet" ? "valet" : "maid";
+  const agentLabel = block.agent_label || (agentType === "valet" ? "Valet" : "Maid");
+  const defaultTitle = agentType === "valet" ? "Valet's Diary" : "Maid's Diary";
+  const title = block.file_name || defaultTitle;
+  const agentName = block.maid || "";
+  const folder = block.folder || "";
+  const mode = block.mode || "legacy";
+
+  if (mode === "update") {
+    const targetHtml = renderMarkdownField(block.target_nodes, block.target, "原文解析失败");
+    const replaceHtml = renderMarkdownField(block.replace_nodes, block.replace, "替换内容解析失败");
+    return `
+      <div class="maid-diary-update-bubble ${agentType}-diary-update-bubble" data-vcp-block-type="maid-diary-update">
+        <div class="diary-update-header">
+          <span class="diary-update-title">DailyNote Update</span>
+          ${(agentName || folder) ? `
+            <span class="diary-update-meta">
+              ${agentName ? `<span class="diary-maid-name">${escapeHtml(agentName)}</span>` : ""}
+              ${(agentName && folder) ? `<span class="diary-meta-separator">·</span>` : ""}
+              ${folder ? `<span class="diary-folder-name">${escapeHtml(folder)}</span>` : ""}
+            </span>
+          ` : ""}
+        </div>
+        <div class="diary-update-body">
+          <div class="diary-update-side diary-update-before">
+            <div class="diary-update-label">A</div>
+            <div class="diary-update-content vcp-markdown-block">${targetHtml}</div>
+          </div>
+          <div class="diary-update-arrow" aria-hidden="true">→</div>
+          <div class="diary-update-side diary-update-after">
+            <div class="diary-update-label">B</div>
+            <div class="diary-update-content vcp-markdown-block">${replaceHtml}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  const diaryContent = renderMarkdownField(block.nodes, block.content, "[日记内容解析失败]");
+  return `
+    <div class="maid-diary-bubble ${agentType}-diary-bubble vcp-diary-block" data-vcp-block-type="maid-diary">
+      <div class="diary-header">
+        <span class="diary-title">${escapeHtml(title)}</span>
+        ${block.date ? `<span class="diary-date">${escapeHtml(block.date)}</span>` : ""}
+      </div>
+      ${(agentName || folder || block.tag) ? `
+        <div class="diary-maid-info">
+          ${agentName ? `
+            <span class="diary-maid-label">${escapeHtml(agentLabel)}:</span>
+            <span class="diary-maid-name">${escapeHtml(agentName)}</span>
+          ` : ""}
+          ${(agentName && folder) ? `<span class="diary-meta-separator">·</span>` : ""}
+          ${folder ? `
+            <span class="diary-folder-label">Folder:</span>
+            <span class="diary-folder-name">${escapeHtml(folder)}</span>
+          ` : ""}
+          ${((agentName || folder) && block.tag) ? `<span class="diary-meta-separator">·</span>` : ""}
+          ${block.tag ? `<span class="diary-folder-label">Tag:</span> <span class="diary-folder-name">${escapeHtml(block.tag)}</span>` : ""}
+        </div>
+      ` : ""}
+      <div class="diary-content vcp-markdown-block">${diaryContent}</div>
+    </div>
+  `;
 }
 
 function getBlockKey(block: ContentBlock, index: number): string {

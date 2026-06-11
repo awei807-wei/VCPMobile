@@ -486,6 +486,7 @@ onUnmounted(() => {
       :version="updateInfo?.latestVersion || ''"
       :release-notes="updateInfo?.releaseNotes"
       :apk-size="updateInfo?.apkSize"
+      :release-page-url="updateInfo?.releasePageUrl"
       @confirm="handleConfirm"
       @dismiss="handleDismiss"
     />

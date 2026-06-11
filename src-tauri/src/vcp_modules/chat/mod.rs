@@ -4,6 +4,7 @@ pub mod content_parser;
 pub mod context_assembler;
 pub mod context_injection;
 pub mod context_sanitizer;
+pub mod daily_note;
 pub mod emoticon_manager;
 pub mod message_service;
 pub mod pre_renderer;

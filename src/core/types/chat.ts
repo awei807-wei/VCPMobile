@@ -59,6 +59,17 @@ export interface ContentBlock {
   footer?: string;
   maid?: string;
   date?: string;
+  // DailyNote create/update 元数据（type: "diary"）
+  mode?: string; // "create" | "update" | "legacy"
+  agent_type?: string; // "maid" | "valet"
+  agent_label?: string; // "Maid" | "Valet"
+  file_name?: string;
+  folder?: string;
+  tag?: string;
+  target?: string;
+  replace?: string;
+  target_nodes?: MarkdownNode[];
+  replace_nodes?: MarkdownNode[];
   theme?: string;
   role?: string;
   is_end?: boolean;
@@ -158,6 +169,17 @@ export interface StreamBlock {
   footer?: string;
   maid?: string;
   date?: string;
+  // DailyNote create/update 元数据（type: "diary"）
+  mode?: string; // "create" | "update" | "legacy"
+  agent_type?: string; // "maid" | "valet"
+  agent_label?: string; // "Maid" | "Valet"
+  file_name?: string;
+  folder?: string;
+  tag?: string;
+  target?: string;
+  replace?: string;
+  target_nodes?: MarkdownNode[];
+  replace_nodes?: MarkdownNode[];
   role?: string;
   is_end?: boolean;
   highlighted_content?: string;

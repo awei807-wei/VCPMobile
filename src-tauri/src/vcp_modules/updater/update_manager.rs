@@ -8,7 +8,6 @@ const GITHUB_API_LATEST_URL: &str =
     "https://api.github.com/repos/awei807-wei/VCPMobile/releases/latest";
 const GITHUB_API_LIST_URL: &str =
     "https://api.github.com/repos/awei807-wei/VCPMobile/releases?per_page=1";
-const APK_ASSET_SUFFIX: &str = "arm64-v8a.apk";
 const APK_FILENAME: &str = "update.apk";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -49,6 +48,8 @@ async fn fetch_latest_release(client: &Client) -> Result<GitHubRelease, String> 
     let res = client
         .get(GITHUB_API_LATEST_URL)
         .header("User-Agent", "VCPMobile")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .await
         .map_err(|e| format!("网络请求失败: {}", e))?;
@@ -65,6 +66,8 @@ async fn fetch_latest_release(client: &Client) -> Result<GitHubRelease, String> 
         let list_res = client
             .get(GITHUB_API_LIST_URL)
             .header("User-Agent", "VCPMobile")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
             .await
             .map_err(|e| format!("网络请求失败: {}", e))?;
@@ -91,6 +94,33 @@ async fn fetch_latest_release(client: &Client) -> Result<GitHubRelease, String> 
     Err(format!("GitHub API 错误 ({}): {}", status.as_u16(), text))
 }
 
+fn is_installable_release_apk(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".apk")
+        && !lower.contains("debug")
+        && !lower.contains("source")
+        && !lower.contains("mapping")
+        && !lower.contains("metadata")
+}
+
+fn apk_asset_priority(name: &str) -> i32 {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("arm64-v8a") || lower.contains("aarch64") {
+        300
+    } else if lower.contains("universal") {
+        200
+    } else {
+        100
+    }
+}
+
+fn select_apk_asset(assets: &[GitHubAsset]) -> Option<&GitHubAsset> {
+    assets
+        .iter()
+        .filter(|a| is_installable_release_apk(&a.name))
+        .max_by_key(|a| apk_asset_priority(&a.name))
+}
+
 #[tauri::command]
 pub async fn check_for_update(app: AppHandle) -> Result<UpdateInfo, String> {
     let current_version_str = app.package_info().version.to_string();
@@ -111,17 +141,7 @@ pub async fn check_for_update(app: AppHandle) -> Result<UpdateInfo, String> {
         Err(_) => latest_version != current_version_str,
     };
 
-    let apk_asset = release
-        .assets
-        .iter()
-        .find(|a| a.name.contains(APK_ASSET_SUFFIX));
-
-    if apk_asset.is_none() && has_update {
-        return Err(format!(
-            "检测到新版本 {}，但该 Release 未包含 {} 安装包。\n请前往 Release 页面手动下载。",
-            latest_version, APK_ASSET_SUFFIX
-        ));
-    }
+    let apk_asset = select_apk_asset(&release.assets);
 
     Ok(UpdateInfo {
         has_update,
@@ -232,5 +252,56 @@ pub async fn install_update(app: AppHandle, apk_path: String) -> Result<(), Stri
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset(name: &str) -> GitHubAsset {
+        GitHubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+            size: 42,
+        }
+    }
+
+    #[test]
+    fn selects_arm64_or_aarch64_apk_first() {
+        let assets = vec![
+            asset("VCPMobile-universal-release.apk"),
+            asset("VCPMobile-aarch64-release.apk"),
+            asset("VCPMobile-arm64-v8a-release.apk"),
+        ];
+        let selected = select_apk_asset(&assets).expect("apk asset");
+        assert!(selected.name.contains("arm64-v8a") || selected.name.contains("aarch64"));
+    }
+
+    #[test]
+    fn falls_back_to_universal_release_apk() {
+        let assets = vec![
+            asset("VCPMobile-x86_64-release.apk"),
+            asset("VCPMobile-universal-release.apk"),
+        ];
+        let selected = select_apk_asset(&assets).expect("universal apk");
+        assert_eq!(selected.name, "VCPMobile-universal-release.apk");
+    }
+
+    #[test]
+    fn rejects_debug_and_non_apk_assets() {
+        let assets = vec![
+            asset("VCPMobile-arm64-v8a-debug.apk"),
+            asset("mapping.txt"),
+            asset("frontend-dist-v1.0.6.zip"),
+        ];
+        assert!(select_apk_asset(&assets).is_none());
+    }
+
+    #[test]
+    fn accepts_other_release_apk_as_last_resort() {
+        let assets = vec![asset("VCPMobile-x86_64-release.apk")];
+        let selected = select_apk_asset(&assets).expect("release apk");
+        assert_eq!(selected.name, "VCPMobile-x86_64-release.apk");
     }
 }

@@ -56,6 +56,10 @@ rg -q "setSound\\(agentMessageSoundUri, soundAttributes\\)" src-tauri/plugins/vc
   || fail "Android AgentMessage 通知通道必须显式设置默认铃声"
 rg -q "enableVibration\\(true\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
   || fail "Android AgentMessage 通知通道必须显式启用振动"
+rg -q "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  || fail "首次权限门必须检查 AgentMessage 响铃能力"
+rg -q "ACTION_CHANNEL_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  || fail "响铃能力异常时必须引导到通知通道设置"
 if rg -q 'title=\$title' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
   fail "Android 系统通知日志不应输出通知标题内容"
 fi
@@ -186,6 +190,12 @@ rg -q "Agent message event emit failed after notification dispatch" src-tauri/sr
 if rg -q "Failed to emit agent message event" src-tauri/src/distributed/tools/agent_message.rs; then
   fail "AgentMessage 不应在通知副作用后因事件 emit 失败返回 Err"
 fi
+rg -q "select_apk_asset" src-tauri/src/vcp_modules/updater/update_manager.rs \
+  || fail "APK 更新必须通过独立 asset 选择函数"
+rg -q "rejects_debug_and_non_apk_assets" src-tauri/src/vcp_modules/updater/update_manager.rs \
+  || fail "APK asset 选择必须覆盖 debug 排除测试"
+rg -q "test_daily_note_static_and_stream_parsers_agree" src-tauri/src/vcp_modules/chat/stream_block_parser.rs \
+  || fail "DailyNote 静态与流式解析一致性测试缺失"
 
 log "重复执行类型检查与关键 Rust 测试"
 for round in $(seq 1 "$ROUNDS"); do
@@ -195,6 +205,8 @@ for round in $(seq 1 "$ROUNDS"); do
   run cargo test --manifest-path src-tauri/Cargo.toml topic_memo --lib
   run cargo test --manifest-path src-tauri/Cargo.toml topic_sponsor --lib
   run cargo test --manifest-path src-tauri/Cargo.toml stream_block_parser --lib
+  run cargo test --manifest-path src-tauri/Cargo.toml daily_note --lib
+  run cargo test --manifest-path src-tauri/Cargo.toml update_manager --lib
   run cargo test --manifest-path src-tauri/Cargo.toml context_sanitizer --lib
   run cargo test --manifest-path src-tauri/Cargo.toml vcp_log --lib
 done

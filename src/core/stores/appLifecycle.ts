@@ -247,8 +247,8 @@ export const useAppLifecycleStore = defineStore('appLifecycle', () => {
         hasBootstrapped.value = false;
 
         setState('PERMISSIONS', '检查系统权限完整性');
-        const pStatus = await invoke<{ notification: boolean; storage: boolean; battery: boolean }>('plugin:vcp-mobile|check_all_permissions');
-        if (!pStatus.notification || !pStatus.storage || !pStatus.battery) {
+        const pStatus = await invoke<{ notification: boolean; ring: boolean; storage: boolean; battery: boolean }>('plugin:vcp-mobile|check_all_permissions');
+        if (!pStatus.notification || !pStatus.ring || !pStatus.storage || !pStatus.battery) {
           console.log('[Lifecycle] Missing permissions, waiting for user action');
           // 清除 Promise，以便下次点击“进入应用”时能重新触发
           bootstrapPromise = null;

@@ -34,9 +34,9 @@ export function useContentProcessor() {
    */
   const escapeHtml = (text: string) => {
     return text
-      .replace(/&/g, "&")
-      .replace(/</g, "<")
-      .replace(/>/g, ">")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   };
@@ -127,8 +127,9 @@ export function useContentProcessor() {
             .replace(/,$/, "")
             .trim();
         }
-        if (content.includes("DailyNote") && content.includes("create")) {
-          return `\n<div class="my-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-sm"><div class="font-bold text-amber-600 dark:text-amber-400 mb-1">📖 日记撰写中...</div><pre class="opacity-70 text-xs whitespace-pre-wrap">${escapeHtml(content)}</pre></div>\n`;
+        if (content.includes("DailyNote") && (content.includes("create") || content.includes("update"))) {
+          const actionLabel = content.includes("update") ? "日记更新中..." : "日记撰写中...";
+          return `\n<div class="my-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-sm"><div class="font-bold text-amber-600 dark:text-amber-400 mb-1">📖 ${actionLabel}</div><pre class="opacity-70 text-xs whitespace-pre-wrap">${escapeHtml(content)}</pre></div>\n`;
         }
         return `\n<div class="my-2 p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl text-sm"><div class="font-bold text-blue-500 mb-1">🛠️ 工具调用: ${toolName}</div><pre class="opacity-70 text-xs whitespace-pre-wrap">${escapeHtml(content)}</pre></div>\n`;
       },

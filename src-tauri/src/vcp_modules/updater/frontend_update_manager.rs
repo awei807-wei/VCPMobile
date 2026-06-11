@@ -87,6 +87,8 @@ async fn fetch_latest_release(client: &Client) -> Result<GitHubRelease, String> 
     let res = client
         .get(GITHUB_API_LATEST_URL)
         .header("User-Agent", "VCPMobile")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .await
         .map_err(|e| format!("网络请求失败: {}", e))?;
@@ -102,6 +104,8 @@ async fn fetch_latest_release(client: &Client) -> Result<GitHubRelease, String> 
         let list_res = client
             .get(GITHUB_API_LIST_URL)
             .header("User-Agent", "VCPMobile")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
             .await
             .map_err(|e| format!("网络请求失败: {}", e))?;

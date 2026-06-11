@@ -34,7 +34,18 @@ const authStatus = ref("正在读取全局管理员鉴权…");
 const frameRef = ref<HTMLIFrameElement | null>(null);
 const currentAuthPayload = ref<{ username: string; token: string } | null>(null);
 const currentDailyNoteApiBase = ref("");
+const currentAppliedConfigKey = ref("");
 let reloadRequestId = 0;
+let suppressSettingsWatcher = false;
+
+const dailyNoteConfigKey = computed(() =>
+  JSON.stringify({
+    profileId: settingsStore.settings?.activeConnectionProfileId || "",
+    serverUrl: settingsStore.settings?.vcpServerUrl || "",
+    username: settingsStore.settings?.adminUsername || "",
+    password: settingsStore.settings?.adminPassword || "",
+  }),
+);
 
 const frameSrc = computed(() => {
   const params = new URLSearchParams({
@@ -93,7 +104,9 @@ const clearPreviewAuth = () => {
 
 const injectGlobalAdminAuth = async () => {
   try {
+    suppressSettingsWatcher = true;
     await settingsStore.fetchSettings();
+    currentAppliedConfigKey.value = dailyNoteConfigKey.value;
   } catch (error: any) {
     clearPreviewAuth();
     authStatus.value = "读取全局配置失败，日记面板将停在鉴权提示页";
@@ -106,6 +119,8 @@ const injectGlobalAdminAuth = async () => {
     currentAuthPayload.value = null;
     currentDailyNoteApiBase.value = "";
     return;
+  } finally {
+    suppressSettingsWatcher = false;
   }
 
   const apiBase = buildDailyNoteApiBase(settingsStore.settings?.vcpServerUrl);
@@ -184,6 +199,18 @@ watch(
     }
   },
   { immediate: true },
+);
+
+watch(
+  dailyNoteConfigKey,
+  (newKey, oldKey) => {
+    if (!props.isOpen || suppressSettingsWatcher || !shouldRenderFrame.value) return;
+    if (!oldKey || newKey === oldKey) return;
+    if (newKey === currentAppliedConfigKey.value) return;
+
+    authStatus.value = "检测到线路或管理员配置变化，正在刷新日记面板…";
+    void reloadPanel();
+  },
 );
 
 onMounted(() => {

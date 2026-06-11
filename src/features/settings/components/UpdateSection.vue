@@ -47,6 +47,9 @@ const rowDescription = computed(() => {
     return '更新出错 (点击查看详情)';
   }
   if (updateStore.latestVersion) {
+    if (updateStore.updateInfo && !updateStore.updateInfo.downloadUrl && updateStore.updateInfo.releasePageUrl) {
+      return `发现新版本: v${updateStore.latestVersion}，需手动下载 (点击查看)`;
+    }
     return `发现新版本: v${updateStore.latestVersion} (点击查看)`;
   }
   return currentVersion.value ? `当前版本: v${currentVersion.value}` : '获取版本中...';

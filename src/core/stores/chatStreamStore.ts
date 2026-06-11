@@ -101,6 +101,16 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     ]);
   });
 
+  const globalActiveStreamMessageIds = computed(() => {
+    const ids = new Set<string>();
+    for (const streams of Object.values(sessionActiveStreams.value)) {
+      for (const id of streams) {
+        ids.add(id);
+      }
+    }
+    return ids;
+  });
+
   const isGroupGenerating = computed(() => {
     if (
       !sessionStore.currentSelectedItem?.id ||
@@ -135,16 +145,20 @@ export const useChatStreamStore = defineStore("chatStream", () => {
 
   const enforceStreamPoolLimit = () => {
     if (activeStreamMessages.size <= MAX_STREAM_MESSAGES) return;
-    const excess = activeStreamMessages.size - MAX_STREAM_MESSAGES;
+    let remainingExcess = activeStreamMessages.size - MAX_STREAM_MESSAGES;
     // 按插入顺序（Map 保持插入顺序）清理最旧的非活跃消息
     for (const [id] of activeStreamMessages) {
-      if (excess <= 0) break;
+      if (remainingExcess <= 0) break;
       // 只删除已完成的流（不在当前活跃会话中）
-      if (!activeStreamingIds.value.has(id)) {
+      if (!globalActiveStreamMessageIds.value.has(id)) {
         activeStreamMessages.delete(id);
+        remainingExcess -= 1;
       }
     }
   };
+
+  const isMessageInAnyActiveStream = (messageId: string) =>
+    globalActiveStreamMessageIds.value.has(messageId);
 
   // 辅助方法：管理会话流状态
   const addSessionStream = (
@@ -220,7 +234,7 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     }
     // 同时从全局池中移除 (延迟移除，确保 finalizeStream 能拿到对象)
     const cleanupTimer = setTimeout(() => {
-        if (!activeStreamingIds.value.has(messageId)) {
+        if (!isMessageInAnyActiveStream(messageId)) {
             activeStreamMessages.delete(messageId);
             clearRAFUpdate(messageId, false); // 漏洞 2 修复：延迟清理时，强制安全注销 rAF 帧，杜绝句柄泄露
         }
@@ -549,8 +563,10 @@ export const useChatStreamStore = defineStore("chatStream", () => {
     pendingGenerationRequests,
     activeStreamMessages,
     activeStreamingIds,
+    globalActiveStreamMessageIds,
     isGroupGenerating,
     hasActiveStreams,
+    isMessageInAnyActiveStream,
     computeShell,
     addPendingGeneration,
     removePendingGeneration,

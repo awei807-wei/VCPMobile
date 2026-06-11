@@ -124,6 +124,8 @@ require_pattern "modelStore\\.invalidatePersistedCache\\(\\)" src/core/stores/co
 require_pattern "modelStore\\.isLoading" src/core/stores/connectionProfiles.ts
 require_pattern "cacheGeneration" src/core/stores/modelStore.ts
 require_pattern "hasActiveStreams" src/core/stores/chatStreamStore.ts
+require_pattern "globalActiveStreamMessageIds" src/core/stores/chatStreamStore.ts
+require_pattern "isMessageInAnyActiveStream" src/features/chat/MessageRenderer.vue
 require_pattern "pendingGenerationRequests" src/core/stores/chatStreamStore.ts
 require_pattern "dailyNoteConfigKey" src/features/dailynote/DailyNoteView.vue
 require_pattern "检测到线路或管理员配置变化" src/features/dailynote/DailyNoteView.vue
@@ -146,6 +148,23 @@ require_pattern "\"distributed-notification\"" src-tauri/src/distributed/tools/n
 require_pattern "\"vcp-system-event\"" src-tauri/src/distributed/tools/agent_message.rs
 
 log "审查修复静态回归"
+require_pattern "pub mod daily_note" src-tauri/src/vcp_modules/chat/mod.rs
+require_pattern "parse_daily_note_tool" src-tauri/src/vcp_modules/chat/daily_note.rs
+require_pattern "test_daily_note_static_and_stream_parsers_agree" src-tauri/src/vcp_modules/chat/stream_block_parser.rs
+require_pattern "maid-diary-update-bubble" src/features/chat/MessageRenderer.vue
+require_pattern "valet-diary-bubble" src/assets/message-blocks.css
+require_pattern "html.dark \\.valet-diary-bubble" src/assets/message-blocks.css
+require_pattern "formatDailyNoteNotificationMessage" src/core/composables/useNotificationProcessor.ts
+require_pattern "vcpData\\.tool_name === 'DailyNote' && pluginOutputMessage" src/core/composables/useNotificationProcessor.ts
+require_pattern "日记已成功创建" src/components/layout/RightSidebar.vue
+require_pattern "日记已成功更新" src/components/layout/RightSidebar.vue
+require_pattern "响铃提醒" src/components/layout/PermissionGate.vue
+require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "\"ring\"" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "select_apk_asset" src-tauri/src/vcp_modules/updater/update_manager.rs
+require_pattern "打开 Release" src/components/ui/UpdatePrompt.vue
+require_pattern "awei807-wei/VCPMobile" src/features/settings/components/AboutSection.vue
+reject_pattern "github.com/MRiecy/VCPMobile" src/features/settings/components/AboutSection.vue
 require_pattern "Notification requested but Android delivery failed" src-tauri/src/distributed/tools/notification.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_memo.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_sponsor.rs

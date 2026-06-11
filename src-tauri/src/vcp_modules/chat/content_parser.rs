@@ -3,6 +3,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
+use crate::vcp_modules::chat::daily_note::DailyNoteDetails;
 use crate::vcp_modules::pre_renderer::MarkdownNode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
@@ -41,6 +42,26 @@ pub enum ContentBlock {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         nodes: Option<Vec<MarkdownNode>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_label: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        replace: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_nodes: Option<Vec<MarkdownNode>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        replace_nodes: Option<Vec<MarkdownNode>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         hash: Option<u64>,
     },
@@ -122,17 +143,40 @@ impl ContentBlock {
         }
     }
 
-    pub fn diary(
-        maid: String,
-        date: String,
-        content: String,
-        nodes: Option<Vec<MarkdownNode>>,
-    ) -> Self {
+    pub(crate) fn daily_note(details: DailyNoteDetails) -> Self {
+        let nodes = if details.content.trim().is_empty() {
+            None
+        } else {
+            Some(crate::vcp_modules::pre_renderer::parse_markdown_to_ast(
+                &details.content,
+            ))
+        };
+        let target_nodes = details
+            .target
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| crate::vcp_modules::pre_renderer::parse_markdown_to_ast(v));
+        let replace_nodes = details
+            .replace
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| crate::vcp_modules::pre_renderer::parse_markdown_to_ast(v));
+
         Self::Diary {
-            maid,
-            date,
-            content,
+            maid: details.agent_name,
+            date: details.date,
+            content: details.content,
             nodes,
+            mode: Some(details.mode),
+            agent_type: Some(details.agent_type),
+            agent_label: Some(details.agent_label),
+            file_name: details.file_name,
+            folder: details.folder,
+            tag: details.tag,
+            target: details.target,
+            replace: details.replace,
+            target_nodes,
+            replace_nodes,
             hash: None,
         }
     }
@@ -249,10 +293,6 @@ lazy_static! {
     pub(crate) static ref DIARY_END: Regex = Regex::new(r"(?im)^[ \t]*<<<DailyNoteEnd>>>").unwrap();
 
     pub(crate) static ref BUTTON_CLICK: Regex = Regex::new(r"\[\[点击按钮:(.*?)\]\]").unwrap();
-
-    pub(crate) static ref MAID_REGEX: Regex = Regex::new(r"(?:maid|maidName):\s*「始(?:exp)?」([^「」]*)「末(?:exp)?」|Maid:\s*([^\n\r]*)").unwrap();
-    pub(crate) static ref DATE_REGEX: Regex = Regex::new(r"Date:\s*「始(?:exp)?」([^「」]*)「末(?:exp)?」|Date:\s*([^\n\r]*)").unwrap();
-    pub(crate) static ref CONTENT_REGEX: Regex = Regex::new(r"Content:\s*「始(?:exp)?」([\s\S]*?)「末(?:exp)?」|Content:\s*([\s\S]*)").unwrap();
 
     pub(crate) static ref KV_REGEX: Regex = Regex::new(r"^-\s*([^:]+):\s*(.*)").unwrap();
 
@@ -533,13 +573,12 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
             // 3. 解析具体的块内容
             let block = match block_type {
                 BlockType::Tool => {
-                    let tool_name = extract_tool_name(inner_content);
-                    if is_daily_note_create(inner_content) {
-                        let (maid, date, content) = extract_diary_details(inner_content);
-                        let nodes =
-                            crate::vcp_modules::pre_renderer::parse_markdown_to_ast(&content);
-                        ContentBlock::diary(maid, date, content, Some(nodes))
+                    if let Some(details) =
+                        crate::vcp_modules::chat::daily_note::parse_daily_note_tool(inner_content)
+                    {
+                        ContentBlock::daily_note(details)
                     } else {
+                        let tool_name = extract_tool_name(inner_content);
                         ContentBlock::tool_use(tool_name, inner_content.to_string(), is_complete)
                     }
                 }
@@ -574,11 +613,9 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                     let (tool_name, status, details, footer) = parse_tool_result(inner_content);
                     ContentBlock::tool_result(tool_name, status, details, footer)
                 }
-                BlockType::Diary => {
-                    let (maid, date, content) = extract_diary_details(inner_content);
-                    let nodes = crate::vcp_modules::pre_renderer::parse_markdown_to_ast(&content);
-                    ContentBlock::diary(maid, date, content, Some(nodes))
-                }
+                BlockType::Diary => ContentBlock::daily_note(
+                    crate::vcp_modules::chat::daily_note::parse_daily_note_legacy(inner_content),
+                ),
                 BlockType::HtmlFence => ContentBlock::html_preview(inner_content.to_string()),
                 BlockType::HtmlDoc => {
                     let mut full_html = String::new();
@@ -734,32 +771,6 @@ fn extract_tool_name(content: &str) -> String {
         }
     }
     "Processing...".to_string()
-}
-
-fn is_daily_note_create(content: &str) -> bool {
-    content.contains("DailyNote") && content.contains("create")
-}
-
-fn extract_diary_details(content: &str) -> (String, String, String) {
-    let maid = MAID_REGEX
-        .captures(content)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)))
-        .map(|m| m.as_str().trim().to_string())
-        .unwrap_or_default();
-
-    let date = DATE_REGEX
-        .captures(content)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)))
-        .map(|m| m.as_str().trim().to_string())
-        .unwrap_or_default();
-
-    let diary_content = CONTENT_REGEX
-        .captures(content)
-        .and_then(|c| c.get(1).or_else(|| c.get(2)))
-        .map(|m| m.as_str().trim().to_string())
-        .unwrap_or_else(|| "[日记内容解析失败]".to_string());
-
-    (maid, date, diary_content)
 }
 
 fn parse_tool_result(content: &str) -> (String, String, Vec<ToolResultDetail>, String) {

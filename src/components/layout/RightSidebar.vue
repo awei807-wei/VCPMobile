@@ -49,7 +49,7 @@ const triggerDebugNotifications = () => {
 
   // 调试 payload 必须与后端真实消息结构一致，统一走 processPayload 引擎
   const debugPayloads = [
-    // 1. DailyNote 成功 (vcp_log)
+    // 1. DailyNote 创建成功 (vcp_log)
     {
       type: "vcp_log",
       data: {
@@ -58,10 +58,30 @@ const triggerDebugNotifications = () => {
         content: JSON.stringify({
           MaidName: "[Nova]Nova",
           timestamp: "2026-05-26T21:49:09.295+08:00",
+          original_plugin_output: {
+            status: "success",
+            message: "日记已成功创建。",
+          },
         }),
       },
     },
-    // 2. 普通工具成功 (vcp_log)
+    // 2. DailyNote 更新成功 (vcp_log)
+    {
+      type: "vcp_log",
+      data: {
+        tool_name: "DailyNote",
+        status: "success",
+        content: JSON.stringify({
+          MaidName: "[Nova]Nova",
+          timestamp: "2026-05-26T22:05:18.122+08:00",
+          original_plugin_output: {
+            status: "success",
+            message: "日记已成功更新。",
+          },
+        }),
+      },
+    },
+    // 3. 普通工具成功 (vcp_log)
     {
       type: "vcp_log",
       data: {
@@ -79,7 +99,7 @@ const triggerDebugNotifications = () => {
         }),
       },
     },
-    // 3. 工具错误 (vcp_log)
+    // 4. 工具错误 (vcp_log)
     {
       type: "vcp_log",
       data: {
@@ -90,7 +110,7 @@ const triggerDebugNotifications = () => {
           '执行错误: {"plugin_error": "device \'emulator-5554\' not found."}',
       },
     },
-    // 4. DistPluginManager 消息 (vcp_log)
+    // 5. DistPluginManager 消息 (vcp_log)
     {
       type: "vcp_log",
       data: {
@@ -99,7 +119,7 @@ const triggerDebugNotifications = () => {
           "已成功同步 3 个分布式计算节点状态，物理核心 CPU 综合占用率 14%。",
       },
     },
-    // 5. 视频生成状态
+    // 6. 视频生成状态
     {
       type: "video_generation_status",
       data: {
@@ -111,7 +131,7 @@ const triggerDebugNotifications = () => {
         },
       },
     },
-    // 6. 工具审核请求（duration=0，含 actions）
+    // 7. 工具审核请求（duration=0，含 actions）
     {
       type: "tool_approval_request",
       data: {
@@ -122,7 +142,7 @@ const triggerDebugNotifications = () => {
         timestamp: "2026-05-26 21:38:00",
       },
     },
-    // 7. 连接确认（默认回退逻辑）
+    // 8. 连接确认（默认回退逻辑）
     {
       type: "connection_ack",
       message: "VCPLog 连接成功！",

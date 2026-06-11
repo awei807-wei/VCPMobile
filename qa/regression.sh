@@ -149,6 +149,10 @@ require_pattern "test_daily_note_static_and_stream_parsers_agree" src-tauri/src/
 require_pattern "maid-diary-update-bubble" src/features/chat/MessageRenderer.vue
 require_pattern "valet-diary-bubble" src/assets/message-blocks.css
 require_pattern "html.dark \\.valet-diary-bubble" src/assets/message-blocks.css
+require_pattern "formatDailyNoteNotificationMessage" src/core/composables/useNotificationProcessor.ts
+require_pattern "vcpData\\.tool_name === 'DailyNote' && pluginOutputMessage" src/core/composables/useNotificationProcessor.ts
+require_pattern "日记已成功创建" src/components/layout/RightSidebar.vue
+require_pattern "日记已成功更新" src/components/layout/RightSidebar.vue
 require_pattern "响铃提醒" src/components/layout/PermissionGate.vue
 require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "\"ring\"" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt

@@ -50,6 +50,24 @@ const buildAgentNotificationFields = (
   };
 };
 
+const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const getDisplayMessage = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    return value.trim() ? value : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
+};
+
+const formatDailyNoteNotificationMessage = (status: unknown, text: unknown, fallback: string): string => {
+  const statusIcon = status === 'success' ? '✅' : '❌';
+  return `${statusIcon} ${getDisplayMessage(text) || fallback}`;
+};
+
 export function useNotificationProcessor() {
   const store = useNotificationStore();
 
@@ -233,14 +251,35 @@ export function useNotificationProcessor() {
           }
 
           if (typeof inner.original_plugin_output !== 'undefined') {
-            if (typeof inner.original_plugin_output === 'object' && inner.original_plugin_output !== null) {
-              message = JSON.stringify(inner.original_plugin_output, null, 2);
+            const pluginOutput = inner.original_plugin_output;
+            if (isObjectRecord(pluginOutput)) {
+              const pluginOutputMessage = getDisplayMessage(pluginOutput.message);
+              if (vcpData.tool_name === 'DailyNote' && pluginOutputMessage) {
+                message = formatDailyNoteNotificationMessage(
+                  pluginOutput.status ?? vcpData.status,
+                  pluginOutputMessage,
+                  '日记内容已成功记录到本地知识库。'
+                );
+                isPreformatted = false;
+              } else if (pluginOutputMessage) {
+                message = pluginOutputMessage;
+                isPreformatted = false;
+              } else {
+                message = JSON.stringify(pluginOutput, null, 2);
+                isPreformatted = true;
+              }
             } else {
-              message = String(inner.original_plugin_output);
+              message = String(pluginOutput);
               isPreformatted = false;
             }
-          } else if (vcpData.tool_name === 'DailyNote' && vcpData.status === 'success') {
-            message = "✅ 日记内容已成功记录到本地知识库。";
+          } else if (vcpData.tool_name === 'DailyNote') {
+            message = formatDailyNoteNotificationMessage(
+              vcpData.status,
+              inner.message,
+              vcpData.status === 'success'
+                ? '日记内容已成功记录到本地知识库。'
+                : `日记处理状态: ${vcpData.status || '未知'}`
+            );
             isPreformatted = false;
           }
         } catch (e) { }

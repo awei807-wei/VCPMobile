@@ -1,5 +1,6 @@
 import { ref, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { useAppLifecycleStore } from '../stores/appLifecycle';
 import { useUpdateDownloader } from './useUpdateDownloader';
 import { useUpdateStore } from '../stores/update';
@@ -53,7 +54,7 @@ export function useAutoUpdate() {
       const info: UpdateInfo = await invoke('check_for_update');
       localStorage.setItem(LAST_CHECK_KEY, Date.now().toString());
 
-      if (info.hasUpdate && info.downloadUrl) {
+      if (info.hasUpdate) {
         updateStore.openPrompt(info);
       }
     } catch (e) {
@@ -72,7 +73,12 @@ export function useAutoUpdate() {
   );
 
   const handleConfirm = async () => {
-    if (!updateInfo.value?.downloadUrl) return;
+    if (!updateInfo.value?.downloadUrl) {
+      if (updateInfo.value?.releasePageUrl) {
+        await openUrl(updateInfo.value.releasePageUrl);
+      }
+      return;
+    }
 
     try {
       await downloadAndInstall(updateInfo.value.downloadUrl);

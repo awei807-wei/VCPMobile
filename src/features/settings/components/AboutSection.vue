@@ -160,11 +160,11 @@ const showFeatures = () => {
 };
 
 const openGitHub = () => {
-  openUrl('https://github.com/MRiecy/VCPMobile');
+  openUrl('https://github.com/awei807-wei/VCPMobile');
 };
 
 const openFeedback = () => {
-  openUrl('https://github.com/MRiecy/VCPMobile/issues');
+  openUrl('https://github.com/awei807-wei/VCPMobile/issues');
 };
 </script>
 

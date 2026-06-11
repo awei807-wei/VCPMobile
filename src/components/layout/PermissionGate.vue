@@ -7,19 +7,21 @@ const lifecycleStore = useAppLifecycleStore();
 
 interface PermissionStatus {
   notification: boolean;
+  ring: boolean;
   storage: boolean;
   battery: boolean;
 }
 
 const status = ref<PermissionStatus>({
   notification: false,
+  ring: false,
   storage: false,
   battery: false
 });
 
 const currentStep = ref(1);
 
-const allGranted = computed(() => status.value.notification && status.value.storage && status.value.battery);
+const allGranted = computed(() => status.value.notification && status.value.ring && status.value.storage && status.value.battery);
 
 const check = async () => {
   try {
@@ -30,7 +32,7 @@ const check = async () => {
   }
 };
 
-const request = async (type: 'notification' | 'storage' | 'battery') => {
+const request = async (type: 'notification' | 'ring' | 'storage' | 'battery') => {
   try {
     await invoke('plugin:vcp-mobile|request_android_permission', { pType: type });
   } catch (e) {
@@ -142,6 +144,7 @@ onUnmounted(() => {
               <!-- Permission Cards -->
               <div v-for="item in [
                 { id: 'notification', name: '系统通知', desc: '显示 Agent 运行状态和即时提醒', icon: 'i-heroicons-bell' },
+                { id: 'ring', name: '响铃提醒', desc: '确认 AgentMessage 通知通道可发声和振动', icon: 'i-heroicons-speaker-wave' },
                 { id: 'storage', name: '储存空间权限', desc: '用于保存头像、聊天图片及导出日志', icon: 'i-heroicons-folder-open' },
                 { id: 'battery', name: '后台运行权限', desc: '切换到后台时保持连接不被系统中断', icon: 'i-heroicons-arrow-path' }
               ]" :key="item.id"

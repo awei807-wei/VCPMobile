@@ -125,6 +125,9 @@ require_pattern "modelStore\\.isLoading" src/core/stores/connectionProfiles.ts
 require_pattern "cacheGeneration" src/core/stores/modelStore.ts
 require_pattern "hasActiveStreams" src/core/stores/chatStreamStore.ts
 require_pattern "pendingGenerationRequests" src/core/stores/chatStreamStore.ts
+require_pattern "dailyNoteConfigKey" src/features/dailynote/DailyNoteView.vue
+require_pattern "检测到线路或管理员配置变化" src/features/dailynote/DailyNoteView.vue
+require_pattern "apiBase: currentDailyNoteApiBase\\.value" src/features/dailynote/DailyNoteView.vue
 require_pattern "refresh_lock" src-tauri/src/vcp_modules/infra/model_manager.rs
 require_pattern "connection_profiles: Vec<ConnectionProfile>" src-tauri/src/vcp_modules/infra/settings_manager.rs
 

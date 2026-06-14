@@ -87,6 +87,22 @@ function renderBlockHtml(block: ContentBlock): string {
   switch (block.type) {
     case "markdown":
       if (block.nodes && block.nodes.length > 0) {
+        if (
+          block.nodes.length === 1 &&
+          block.nodes[0].type === "raw_html" &&
+          block.nodes[0].content?.trimStart().toLowerCase().startsWith("<style")
+        ) {
+          const content = block.nodes[0].content;
+          let cssContent = "";
+          content.replace(/<style\b[^>]*>([\s\S]*?)(?:<\/style>|$)/gi, (_, css) => {
+            cssContent += css.trim() + "\n";
+            return "";
+          });
+          if (cssContent.trim().length > 0) {
+            injectScopedCss(cssContent, props.message.id);
+          }
+          return "";
+        }
         return `<div class="vcp-markdown-block">${renderMarkdownNodes(block.nodes, props.message.id, block.hash)}</div>`;
       }
       return `<div class="vcp-markdown-block"><p>${escapeHtml(block.content || "")}</p></div>`;
@@ -482,10 +498,51 @@ watch(
       }
 
       try {
-        morphdom(tailRootRef.value, processedHtml, {
+        morphdom(tailRootRef.value, `<div>${processedHtml}</div>`, {
           childrenOnly: true,
+          getNodeKey: (node) => {
+            if (!node || node.nodeType !== 1) return undefined;
+            const el = node as Element;
+            return el.id || el.getAttribute("data-vcp-key") || undefined;
+          },
           onBeforeElUpdated: (fromEl, toEl) => {
             if (fromEl.isEqualNode(toEl)) return false;
+
+            const animationClasses = [
+              "vcp-stream-element-fade-in",
+              "animate-fade-in",
+              "vcp-stream-content-pulse",
+            ];
+            for (const className of animationClasses) {
+              if (fromEl.classList.contains(className)) {
+                toEl.classList.add(className);
+              }
+            }
+
+            if (fromEl.tagName === "VIDEO" || fromEl.tagName === "AUDIO") {
+              const mediaEl = fromEl as HTMLMediaElement;
+              if (!mediaEl.paused) return false;
+            }
+
+            if (fromEl === document.activeElement) {
+              requestAnimationFrame(() => {
+                if (toEl && typeof toEl.focus === "function") {
+                  toEl.focus();
+                }
+              });
+            }
+
+            if (fromEl.tagName === "IMG") {
+              const fromImg = fromEl as HTMLImageElement;
+              const toImg = toEl as HTMLImageElement;
+              if (fromImg.onerror && !toImg.onerror) toImg.onerror = fromImg.onerror;
+              if (fromImg.onload && !toImg.onload) toImg.onload = fromImg.onload;
+              if (fromImg.style.visibility) {
+                toImg.style.visibility = fromImg.style.visibility;
+              }
+              if (fromImg.complete && fromImg.naturalWidth > 0) return false;
+            }
+
             return true;
           }
         });

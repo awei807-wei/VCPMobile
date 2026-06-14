@@ -305,7 +305,11 @@ impl StreamBlockParser {
         let (mut blocks, tail) = self.process(full_text);
         let trimmed = tail.trim();
         if !trimmed.is_empty() {
-            let nodes = crate::vcp_modules::pre_renderer::parse_markdown_to_ast(trimmed);
+            let nodes = if crate::vcp_modules::content_parser::is_html_tag_block(trimmed) {
+                vec![MarkdownNode::raw_html(trimmed.to_string())]
+            } else {
+                crate::vcp_modules::pre_renderer::parse_markdown_to_ast(trimmed)
+            };
             let hash = HashAggregator::compute_content_hash(trimmed);
             blocks.push(StreamBlock::markdown(
                 trimmed.to_string(),

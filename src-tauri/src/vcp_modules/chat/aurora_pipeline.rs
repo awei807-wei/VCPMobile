@@ -82,7 +82,14 @@ impl AuroraBuffer {
         //    当 tail 超过 MAX_SPECULATIVE_TAIL_AST_BYTES 时跳过 AST 解析，
         //    避免在流式热路径上产生性能悬崖
         if !self.tail_content.is_empty() {
-            let nodes = if self.tail_content.len() <= MAX_SPECULATIVE_TAIL_AST_BYTES {
+            let nodes = if crate::vcp_modules::content_parser::is_html_tag_block(&self.tail_content) {
+                // HTML 容器/样式标签开头的流式尾部按 RawHtml 处理，避免 Markdown 解析器把内部 CSS 或内联样式误判为代码块。
+                Some(vec![
+                    crate::vcp_modules::pre_renderer::MarkdownNode::raw_html(
+                        self.tail_content.clone(),
+                    ),
+                ])
+            } else if self.tail_content.len() <= MAX_SPECULATIVE_TAIL_AST_BYTES {
                 Some(crate::vcp_modules::pre_renderer::parse_markdown_to_ast(
                     &self.tail_content,
                 ))

@@ -10,6 +10,51 @@ export interface SidebarSwipeOptions {
 }
 
 /**
+ * 判断手势起点是否位于横向滚动或文本输入区域，避免侧边栏手势抢占内容区操作。
+ */
+function isScrollableArea(el: Element): boolean {
+  if (el.closest('.vcp-scrollable') || el.closest('.overflow-x-auto')) {
+    return true;
+  }
+
+  if (
+    el.closest('table') ||
+    el.closest('td') ||
+    el.closest('th') ||
+    el.closest('.table-container') ||
+    el.closest('.vcp-table')
+  ) {
+    return true;
+  }
+
+  if (el.closest('pre') || el.closest('code') || el.closest('.vcp-code-block')) {
+    return true;
+  }
+
+  const tagName = el.tagName.toLowerCase();
+  if (tagName === 'textarea' || tagName === 'input') {
+    return true;
+  }
+
+  let current: Element | null = el;
+  while (current && current !== document.body) {
+    const style = window.getComputedStyle(current);
+    const overflowX = style.overflowX;
+    const hasScrollX =
+      (overflowX === 'auto' || overflowX === 'scroll') &&
+      current.scrollWidth > current.clientWidth;
+
+    if (hasScrollX) {
+      return true;
+    }
+
+    current = current.parentElement;
+  }
+
+  return false;
+}
+
+/**
  * 统一管理侧边栏滑动响应的组合式函数
  * 支持：
  * 1. global: 仅在侧边栏关闭时，从左滑向右开启左侧边栏，从右滑向左开启右侧边栏（避开滚动区域）
@@ -34,7 +79,15 @@ export function useSidebarSwipe(target: Ref<HTMLElement | null>, options: Sideba
 
       if (options.type === 'global') {
         // 避开滚动区域以防跟页面内滚动冲突，同时避开侧边栏内部以防跟侧边栏自身的手势发生事件冒泡冲突
-        if (e.target instanceof Element && (e.target.closest('.vcp-scrollable') || e.target.closest('.vcp-drawer'))) return;
+        if (e.target instanceof Element) {
+          if (
+            e.target.closest('.vcp-scrollable') ||
+            e.target.closest('.vcp-drawer') ||
+            isScrollableArea(e.target)
+          ) {
+            return;
+          }
+        }
 
         if (!layoutStore.leftDrawerOpen && !layoutStore.rightDrawerOpen) {
           // 从左往右划 -> 开启左侧边栏 (需要一定位移以防误触)

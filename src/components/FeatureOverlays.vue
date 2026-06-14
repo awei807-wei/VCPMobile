@@ -29,6 +29,7 @@ const RebuildSessionView = defineAsyncComponent(() => import('../features/settin
 const DistributedView = defineAsyncComponent(() => import('../features/distributed/DistributedView.vue'));
 const SettingsView = defineAsyncComponent(() => import('../features/settings/SettingsView.vue'));
 const DailyNoteView = defineAsyncComponent(() => import('../features/dailynote/DailyNoteView.vue'));
+const RagObserverView = defineAsyncComponent(() => import('../features/rag/RagObserver.vue'));
 
 const overlayStore = useOverlayStore();
 const settingsStore = useSettingsStore();
@@ -86,6 +87,12 @@ onMounted(() => {
       :is-open="overlayStore.isDailyNoteOpen"
       :z-index="overlayStore.getPageZIndex('dailyNote')"
       @close="overlayStore.closeDailyNote()"
+    />
+
+    <RagObserverView
+      :is-open="overlayStore.isRagObserverOpen"
+      :z-index="overlayStore.getPageZIndex('ragObserver')"
+      @close="overlayStore.closeRagObserver()"
     />
 
     <!-- 仅当用户已启用分布式计算时才挂载事件监听器，避免常驻不必要的后台监听 -->

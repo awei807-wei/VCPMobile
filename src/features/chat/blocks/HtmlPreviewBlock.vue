@@ -2,6 +2,7 @@
 import { ref, watch, computed, onUnmounted } from 'vue';
 import DOMPurify from 'dompurify';
 import { useThemeStore } from '../../../core/stores/theme';
+import { useModalHistory } from '../../../core/composables/useModalHistory';
 
 const props = defineProps<{
   content: string;
@@ -16,6 +17,19 @@ const isPreviewing = ref(false); // 默认开启代码模式，减小开销
 const isFullScreen = ref(false);
 const fullScreenTab = ref<'code' | 'preview'>('code');
 
+const { registerModal, unregisterModal } = useModalHistory();
+const modalId = `HtmlPreviewBlockFullScreen_${Math.random().toString(36).substring(2, 9)}`;
+const imageNonce = Math.random().toString(36).substring(2, 15);
+
+watch(isFullScreen, (newVal) => {
+  if (newVal) {
+    registerModal(modalId, () => {
+      isFullScreen.value = false;
+    });
+  } else {
+    unregisterModal(modalId);
+  }
+});
 // 代码预览转义处理 (优先使用后端预渲染 syntect 高亮，无值时回退为安全 HTML 转义)
 const highlightedCode = computed(() => {
   if (props.highlightedContent) {
@@ -74,6 +88,22 @@ const getSandboxHtml = (content: string) => {
           if (!href || href === '#' || href.startsWith('javascript:')) {
             e.preventDefault();
           }
+        }
+
+        // 捕获并拦截图片点击，发送 postMessage 放大查看
+        const img = e.target.closest('img');
+        if (img) {
+          e.preventDefault();
+          window.parent.postMessage({
+            source: 'vcp-mobile',
+            type: 'rendered-image-click',
+            nonce: '${imageNonce}',
+            image: {
+              src: img.src,
+              alt: img.alt || '',
+              title: img.title || ''
+            }
+          }, '*');
         }
       }, true);
 
@@ -196,6 +226,7 @@ onUnmounted(() => {
               sandbox="allow-scripts allow-modals allow-forms allow-popups"
               loading="lazy"
               :srcdoc="getSandboxHtml(content)"
+              :data-vcp-image-nonce="imageNonce"
             ></iframe>
           </div>
         </div>
@@ -258,6 +289,7 @@ onUnmounted(() => {
           sandbox="allow-scripts allow-modals allow-forms"
           loading="lazy"
           :srcdoc="getSandboxHtml(content)"
+          :data-vcp-image-nonce="imageNonce"
         ></iframe>
       </div>
     </div>

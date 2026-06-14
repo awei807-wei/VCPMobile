@@ -21,6 +21,9 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
   const hasMoreHistory = ref(true); // 是否还有更多旧消息
   const isLoadingHistory = ref(false); // 防止并发重复触发
 
+  // 用于防止并发加载与话题切换导致竞态的消息拉取中止控制器
+  let currentLoadAbortController: AbortController | null = null;
+
   // 用于拦截重新生成时的输入框补全
   const editMessageContent = ref("");
   // 用于标记当前是否正在“编辑重发”某条历史消息
@@ -106,6 +109,17 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     );
     loading.value = true;
     isLoadingHistory.value = true;
+
+    if (currentLoadAbortController) {
+      currentLoadAbortController.abort();
+    }
+    const controller = new AbortController();
+    currentLoadAbortController = controller;
+    const { signal } = controller;
+
+    let pendingHistory: ChatMessage[] = [];
+    let flushRafId: number | null = null;
+
     try {
       const requestedTopicId = sessionStore.currentTopicId;
       const channel = new Channel<HistoryChunk>();
@@ -116,11 +130,36 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
         resolveComplete = resolve;
       });
 
+      let lastFlushTime = 0;
+      const FLUSH_INTERVAL = 33.3; // 30Hz
+
+      const flushHistory = (force = false) => {
+        if (pendingHistory.length === 0) return;
+        const now = performance.now();
+        if (force || now - lastFlushTime >= FLUSH_INTERVAL) {
+          currentChatHistory.value = [...currentChatHistory.value, ...pendingHistory];
+          pendingHistory = [];
+          lastFlushTime = now;
+        }
+      };
+
+      const scheduleHistoryFlush = () => {
+        if (flushRafId) return;
+        flushRafId = requestAnimationFrame(() => {
+          flushRafId = null;
+          flushHistory(false);
+          if (pendingHistory.length > 0) {
+            scheduleHistoryFlush();
+          }
+        });
+      };
+
       channel.onmessage = (chunk) => {
         // 1. 会话一致性校验：如果用户在加载中途切换了话题，丢弃后续消息
         if (
-          sessionStore.currentTopicId !== requestedTopicId &&
-          requestedTopicId !== null
+          signal.aborted ||
+          (sessionStore.currentTopicId !== requestedTopicId &&
+            requestedTopicId !== null)
         ) {
           return;
         }
@@ -138,8 +177,9 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
             currentChatHistory.value = [];
             hasMoreHistory.value = true;
           }
-          currentChatHistory.value.push(msgToUse);
+          pendingHistory.push(msgToUse);
           receivedCount++;
+          scheduleHistoryFlush();
         } else {
           buffer.push(msgToUse);
           receivedCount++;
@@ -153,6 +193,11 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
               hasMoreHistory.value = false;
             }
           } else {
+            if (flushRafId !== null) {
+              cancelAnimationFrame(flushRafId);
+              flushRafId = null;
+            }
+            flushHistory(true);
             historyOffset.value = receivedCount;
             if (receivedCount < limit) {
               hasMoreHistory.value = false;
@@ -188,8 +233,9 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       );
 
       if (
-        sessionStore.currentTopicId !== requestedTopicId &&
-        requestedTopicId !== null
+        signal.aborted ||
+        (sessionStore.currentTopicId !== requestedTopicId &&
+          requestedTopicId !== null)
       ) {
         console.warn(
           `[ChatHistoryStore] Topic changed during load, discarding results.`,
@@ -207,6 +253,13 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     } catch (e) {
       console.error("[ChatHistoryStore] Failed to stream history:", e);
     } finally {
+      if (currentLoadAbortController === controller) {
+        currentLoadAbortController = null;
+      }
+      if (flushRafId !== null) {
+        cancelAnimationFrame(flushRafId);
+        flushRafId = null;
+      }
       loading.value = false;
       isLoadingHistory.value = false;
     }

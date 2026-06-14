@@ -71,6 +71,10 @@ use vcp_modules::vcp_client::{
     interruptGroupTurn, interruptRequest, sendToVCP, test_vcp_connection, ActiveRequests,
     CancelledGroupTurns,
 };
+use vcp_modules::vcp_info_service::{
+    clear_vcp_info, get_vcp_info_connection_status, get_vcp_info_metadata_list,
+    get_vcp_info_payload, init_vcp_info_connection,
+};
 use vcp_modules::vcp_log_service::{
     init_vcp_log_connection, send_vcp_log_message, set_vcp_log_heartbeat,
 };
@@ -292,6 +296,11 @@ pub fn run() {
             init_vcp_log_connection,
             send_vcp_log_message,
             set_vcp_log_heartbeat,
+            init_vcp_info_connection,
+            get_vcp_info_connection_status,
+            get_vcp_info_metadata_list,
+            get_vcp_info_payload,
+            clear_vcp_info,
             get_system_snapshot,
             get_emoticon_library,
             regenerate_emoticon_library,

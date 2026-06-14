@@ -82,12 +82,12 @@ pub fn diff_markdown_nodes(
     }
 
     // 2. 新增的尾部节点
-    for i in common_len..new_list.len() {
+    for (i, item) in new_list.iter().enumerate().skip(common_len) {
         let node_id = format!("{}{}", prefix, i);
         mutations.push(AstMutation::Add {
             id: node_id,
             parent: parent_id.to_string(),
-            node: new_list[i].clone(),
+            node: item.clone(),
         });
     }
 
@@ -190,12 +190,12 @@ pub fn diff_inline_nodes(
     }
 
     // 2. 新增的尾部节点
-    for i in common_len..new_list.len() {
+    for (i, item) in new_list.iter().enumerate().skip(common_len) {
         let node_id = format!("{}{}", prefix, i);
         mutations.push(AstMutation::AddInline {
             id: node_id,
             parent: parent_id.to_string(),
-            node: new_list[i].clone(),
+            node: item.clone(),
         });
     }
 
@@ -265,8 +265,7 @@ fn diff_text_node(
         return;
     }
 
-    if new_value.starts_with(old_value) {
-        let chunk = &new_value[old_value.len()..];
+    if let Some(chunk) = new_value.strip_prefix(old_value) {
         if !chunk.is_empty() {
             mutations.push(AstMutation::AppendText {
                 id: id.to_string(),

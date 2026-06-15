@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useSidebarSwipe } from "./core/composables/useSidebarSwipe";
+import { useWindowInsets } from "./core/composables/useWindowInsets";
 import { useThemeStore } from "./core/stores/theme";
 import { useAppLifecycleStore } from "./core/stores/appLifecycle";
 import { useLayoutStore } from "./core/stores/layout";
@@ -184,6 +185,7 @@ const handleShareSelectorClose = () => {
 // --- Global Swipe Logic for Sidebar ---
 const appRootRef = ref<HTMLElement | null>(null);
 useSidebarSwipe(appRootRef, { type: "global" });
+useWindowInsets();
 
 const bootstrapApp = async () => {
   try {
@@ -498,6 +500,8 @@ onUnmounted(() => {
 :root {
   --vcp-safe-top: 0px;
   --vcp-safe-bottom: 0px;
+  --vcp-navigation-bottom: 0px;
+  --vcp-keyboard-bottom: 0px;
 }
 
 html,

@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::vcp_modules::chat::daily_note::{self, DailyNoteDetails};
 use crate::vcp_modules::content_parser::{
-    BlockType, ToolResultDetail, ToolCallSummaryItem, BUTTON_CLICK, /* extraction helpers */
-    DIARY_END, DIARY_START, GENERIC_CODE_FENCE_END,
-    GENERIC_CODE_FENCE_START, HTML_DOC_END, HTML_DOC_START, HTML_FENCE_START, KV_REGEX,
-    ROLE_DIVIDER, STYLE_TAG_END, STYLE_TAG_START, THINK_END, THINK_START, THOUGHT_END,
-    THOUGHT_START, TOOL_END, TOOL_NAME, TOOL_RESULT_END, TOOL_RESULT_START, TOOL_START,
+    BlockType, ToolCallSummaryItem, ToolResultDetail, BUTTON_CLICK, /* extraction helpers */
+    DIARY_END, DIARY_START, GENERIC_CODE_FENCE_END, GENERIC_CODE_FENCE_START, HTML_DOC_END,
+    HTML_DOC_START, HTML_FENCE_START, KV_REGEX, ROLE_DIVIDER, STYLE_TAG_END, STYLE_TAG_START,
+    THINK_END, THINK_START, THOUGHT_END, THOUGHT_START, TOOL_END, TOOL_NAME, TOOL_RESULT_END,
+    TOOL_RESULT_START, TOOL_START,
 };
 use crate::vcp_modules::pre_renderer::MarkdownNode;
 use crate::vcp_modules::sync_hash::HashAggregator;
@@ -47,32 +47,8 @@ pub enum StreamBlock {
     },
     #[serde(rename = "diary")]
     Diary {
-        maid: String,
-        date: String,
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        nodes: Option<Vec<MarkdownNode>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mode: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        agent_type: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        agent_label: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        file_name: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        folder: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tag: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        replace: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        target_nodes: Option<Vec<MarkdownNode>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        replace_nodes: Option<Vec<MarkdownNode>>,
-        hash: String,
+        #[serde(flatten)]
+        fields: Box<StreamDiaryBlock>,
     },
     #[serde(rename = "html-preview")]
     HtmlPreview {
@@ -97,6 +73,36 @@ pub enum StreamBlock {
         raw_content: String,
         hash: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamDiaryBlock {
+    pub maid: String,
+    pub date: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<Vec<MarkdownNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_nodes: Option<Vec<MarkdownNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace_nodes: Option<Vec<MarkdownNode>>,
+    pub hash: String,
 }
 
 impl StreamBlock {
@@ -168,21 +174,23 @@ impl StreamBlock {
             .map(|v| crate::vcp_modules::pre_renderer::parse_markdown_to_ast(v));
 
         Self::Diary {
-            maid: details.agent_name,
-            date: details.date,
-            content: details.content,
-            nodes,
-            mode: Some(details.mode),
-            agent_type: Some(details.agent_type),
-            agent_label: Some(details.agent_label),
-            file_name: details.file_name,
-            folder: details.folder,
-            tag: details.tag,
-            target: details.target,
-            replace: details.replace,
-            target_nodes,
-            replace_nodes,
-            hash,
+            fields: Box::new(StreamDiaryBlock {
+                maid: details.agent_name,
+                date: details.date,
+                content: details.content,
+                nodes,
+                mode: Some(details.mode),
+                agent_type: Some(details.agent_type),
+                agent_label: Some(details.agent_label),
+                file_name: details.file_name,
+                folder: details.folder,
+                tag: details.tag,
+                target: details.target,
+                replace: details.replace,
+                target_nodes,
+                replace_nodes,
+                hash,
+            }),
         }
     }
 
@@ -429,7 +437,9 @@ fn find_end_marker(
         BlockType::Think => THINK_END.find(search_area),
         BlockType::ToolResult => TOOL_RESULT_END.find(search_area),
         BlockType::Diary => DIARY_END.find(search_area),
-        BlockType::ToolCallSummary => crate::vcp_modules::content_parser::TOOL_CALL_SUMMARY_END.find(search_area),
+        BlockType::ToolCallSummary => {
+            crate::vcp_modules::content_parser::TOOL_CALL_SUMMARY_END.find(search_area)
+        }
         BlockType::HtmlFence | BlockType::CodeFence => GENERIC_CODE_FENCE_END.find(search_area),
         BlockType::HtmlDoc => HTML_DOC_END.find(search_area),
         BlockType::HtmlContainer => unreachable!(),
@@ -454,8 +464,7 @@ fn build_stream_block(
     match block_type {
         BlockType::Tool => {
             if let Some(details) = daily_note::parse_daily_note_tool(inner_content) {
-                let hash =
-                    HashAggregator::compute_content_hash(&daily_note::fingerprint(&details));
+                let hash = HashAggregator::compute_content_hash(&daily_note::fingerprint(&details));
                 StreamBlock::daily_note(details, hash)
             } else {
                 let tool_name = extract_tool_name(inner_content);
@@ -758,31 +767,18 @@ mod tests {
             let static_diary = static_blocks
                 .iter()
                 .find_map(|b| match b {
-                    crate::vcp_modules::content_parser::ContentBlock::Diary {
-                        maid,
-                        date,
-                        content,
-                        mode,
-                        agent_type,
-                        agent_label,
-                        file_name,
-                        folder,
-                        tag,
-                        target,
-                        replace,
-                        ..
-                    } => Some((
-                        maid.clone(),
-                        date.clone(),
-                        content.clone(),
-                        mode.clone(),
-                        agent_type.clone(),
-                        agent_label.clone(),
-                        file_name.clone(),
-                        folder.clone(),
-                        tag.clone(),
-                        target.clone(),
-                        replace.clone(),
+                    crate::vcp_modules::content_parser::ContentBlock::Diary { fields } => Some((
+                        fields.maid.clone(),
+                        fields.date.clone(),
+                        fields.content.clone(),
+                        fields.mode.clone(),
+                        fields.agent_type.clone(),
+                        fields.agent_label.clone(),
+                        fields.file_name.clone(),
+                        fields.folder.clone(),
+                        fields.tag.clone(),
+                        fields.target.clone(),
+                        fields.replace.clone(),
                     )),
                     _ => None,
                 })
@@ -791,31 +787,18 @@ mod tests {
             let stream_diary = stream_blocks
                 .iter()
                 .find_map(|b| match b {
-                    StreamBlock::Diary {
-                        maid,
-                        date,
-                        content,
-                        mode,
-                        agent_type,
-                        agent_label,
-                        file_name,
-                        folder,
-                        tag,
-                        target,
-                        replace,
-                        ..
-                    } => Some((
-                        maid.clone(),
-                        date.clone(),
-                        content.clone(),
-                        mode.clone(),
-                        agent_type.clone(),
-                        agent_label.clone(),
-                        file_name.clone(),
-                        folder.clone(),
-                        tag.clone(),
-                        target.clone(),
-                        replace.clone(),
+                    StreamBlock::Diary { fields } => Some((
+                        fields.maid.clone(),
+                        fields.date.clone(),
+                        fields.content.clone(),
+                        fields.mode.clone(),
+                        fields.agent_type.clone(),
+                        fields.agent_label.clone(),
+                        fields.file_name.clone(),
+                        fields.folder.clone(),
+                        fields.tag.clone(),
+                        fields.target.clone(),
+                        fields.replace.clone(),
                     )),
                     _ => None,
                 })
@@ -830,10 +813,12 @@ mod tests {
         let sample = "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SciCalculator「末」,\nexpression:「始」1+1「末」\n<<<[END_TOOL_REQUEST]>>>";
         let mut parser = StreamBlockParser::new();
         let blocks = parser.finalize(sample);
-        assert!(blocks
+        assert!(blocks.iter().any(
+            |b| matches!(b, StreamBlock::Tool { tool_name, .. } if tool_name == "SciCalculator")
+        ));
+        assert!(!blocks
             .iter()
-            .any(|b| matches!(b, StreamBlock::Tool { tool_name, .. } if tool_name == "SciCalculator")));
-        assert!(!blocks.iter().any(|b| matches!(b, StreamBlock::Diary { .. })));
+            .any(|b| matches!(b, StreamBlock::Diary { .. })));
     }
 
     #[test]
@@ -915,7 +900,10 @@ mod tests {
         let padding = "这里是一段用来填充文本长度以达到测试新设定之八百字节双换行沉淀阈值物理条件的垫片数据。".repeat(10);
 
         // 模拟第 1 帧：输出到代码块开头，未闭合
-        let frame_1 = format!("{}### 维度二：代码高亮\n\n测试流式传输未闭合时：\n\n```rust", padding);
+        let frame_1 = format!(
+            "{}### 维度二：代码高亮\n\n测试流式传输未闭合时：\n\n```rust",
+            padding
+        );
         let (blocks_1, tail_1) = parser.process(&frame_1);
         println!("Frame 1 - Blocks: {}, Tail: {:?}", blocks_1.len(), tail_1);
         // 应该成功沉淀出前面的两个 Markdown 块（因 \n\n 物理分段），且 tail 只包含 ```rust
@@ -923,7 +911,10 @@ mod tests {
         assert_eq!(tail_1, "```rust");
 
         // 模拟第 2 帧：代码块流式增量增长，仍未闭合
-        let frame_2 = format!("{}### 维度二：代码高亮\n\n测试流式传输未闭合时：\n\n```rust\nuse tokio;\n", padding);
+        let frame_2 = format!(
+            "{}### 维度二：代码高亮\n\n测试流式传输未闭合时：\n\n```rust\nuse tokio;\n",
+            padding
+        );
         let (blocks_2, tail_2) = parser.process(&frame_2);
         println!("Frame 2 - Blocks: {}, Tail: {:?}", blocks_2.len(), tail_2);
         // 应该没有任何新的 blocks（因为前段已经沉淀，后段未闭合），且 tail 应该是增量代码块且去掉了前段
@@ -931,7 +922,10 @@ mod tests {
         assert_eq!(tail_2, "```rust\nuse tokio;\n");
 
         // 模拟第 3 帧：流式代码块闭合
-        let frame_3 = format!("{}### 维度二：代码高亮\n\n测试流式传输未闭合时：\n\n```rust\nuse tokio;\n```", padding);
+        let frame_3 = format!(
+            "{}### 维度二：代码高亮\n\n测试流式传输未闭合时：\n\n```rust\nuse tokio;\n```",
+            padding
+        );
         let (blocks_3, tail_3) = parser.process(&frame_3);
         println!("Frame 3 - Blocks: {}, Tail: {:?}", blocks_3.len(), tail_3);
         // 应该成功闭合代码块并将其沉淀，且 tail 为空

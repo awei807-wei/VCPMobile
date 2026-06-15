@@ -180,7 +180,8 @@ const close = () => emit("close");
 
       <!-- Main Content -->
       <div
-        class="flex-1 overflow-auto vcp-scrollable no-rubber-band pb-[env(safe-area-inset-bottom)]"
+        class="flex-1 overflow-auto vcp-scrollable no-rubber-band"
+        :style="{ paddingBottom: 'var(--vcp-safe-bottom, env(safe-area-inset-bottom, 0px))' }"
       >
         <!-- Text/Code/MD Viewer -->
         <div

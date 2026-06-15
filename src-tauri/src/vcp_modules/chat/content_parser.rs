@@ -37,33 +37,8 @@ pub enum ContentBlock {
     },
     #[serde(rename = "diary")]
     Diary {
-        maid: String,
-        date: String,
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        nodes: Option<Vec<MarkdownNode>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mode: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        agent_type: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        agent_label: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        file_name: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        folder: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tag: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        replace: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        target_nodes: Option<Vec<MarkdownNode>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        replace_nodes: Option<Vec<MarkdownNode>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        hash: Option<u64>,
+        #[serde(flatten)]
+        fields: Box<DiaryContentBlock>,
     },
     #[serde(rename = "thought")]
     Thought {
@@ -109,6 +84,37 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         hash: Option<u64>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+pub struct DiaryContentBlock {
+    pub maid: String,
+    pub date: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<Vec<MarkdownNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_nodes: Option<Vec<MarkdownNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace_nodes: Option<Vec<MarkdownNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
@@ -176,21 +182,23 @@ impl ContentBlock {
             .map(|v| crate::vcp_modules::pre_renderer::parse_markdown_to_ast(v));
 
         Self::Diary {
-            maid: details.agent_name,
-            date: details.date,
-            content: details.content,
-            nodes,
-            mode: Some(details.mode),
-            agent_type: Some(details.agent_type),
-            agent_label: Some(details.agent_label),
-            file_name: details.file_name,
-            folder: details.folder,
-            tag: details.tag,
-            target: details.target,
-            replace: details.replace,
-            target_nodes,
-            replace_nodes,
-            hash: None,
+            fields: Box::new(DiaryContentBlock {
+                maid: details.agent_name,
+                date: details.date,
+                content: details.content,
+                nodes,
+                mode: Some(details.mode),
+                agent_type: Some(details.agent_type),
+                agent_label: Some(details.agent_label),
+                file_name: details.file_name,
+                folder: details.folder,
+                tag: details.tag,
+                target: details.target,
+                replace: details.replace,
+                target_nodes,
+                replace_nodes,
+                hash: None,
+            }),
         }
     }
 
@@ -264,7 +272,7 @@ impl ContentBlock {
             ContentBlock::Markdown { hash, .. } => *hash = Some(h),
             ContentBlock::ToolUse { hash, .. } => *hash = Some(h),
             ContentBlock::ToolResult { hash, .. } => *hash = Some(h),
-            ContentBlock::Diary { hash, .. } => *hash = Some(h),
+            ContentBlock::Diary { fields } => fields.hash = Some(h),
             ContentBlock::Thought { hash, .. } => *hash = Some(h),
             ContentBlock::ButtonClick { hash, .. } => *hash = Some(h),
             ContentBlock::HtmlPreview { hash, .. } => *hash = Some(h),
@@ -882,13 +890,28 @@ pub(crate) fn parse_tool_call_summary(content: &str) -> Vec<ToolCallSummaryItem>
             continue;
         }
 
-        let status = if entry.contains("拒绝") || entry.contains("被拒") || entry.contains("denied") || entry.contains("rejected") || entry.contains("refused") {
+        let status = if entry.contains("拒绝")
+            || entry.contains("被拒")
+            || entry.contains("denied")
+            || entry.contains("rejected")
+            || entry.contains("refused")
+        {
             "rejected"
-        } else if entry.contains("失败") || entry.contains("错误") || entry.contains("异常") || entry.contains("error") || entry.contains("failed") {
+        } else if entry.contains("失败")
+            || entry.contains("错误")
+            || entry.contains("异常")
+            || entry.contains("error")
+            || entry.contains("failed")
+        {
             "failure"
         } else if entry.contains("超时") || entry.contains("timeout") {
             "timeout"
-        } else if entry.contains("成功") || entry.contains("完成") || entry.contains("success") || entry.contains("succeeded") || entry.contains("ok") {
+        } else if entry.contains("成功")
+            || entry.contains("完成")
+            || entry.contains("success")
+            || entry.contains("succeeded")
+            || entry.contains("ok")
+        {
             "success"
         } else if entry.contains("取消") || entry.contains("中止") || entry.contains("cancel") {
             "cancelled"

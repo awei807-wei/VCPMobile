@@ -302,7 +302,10 @@ const exportToGallery = () => {
       leave-from-class="translate-y-0 opacity-100"
       leave-to-class="translate-y-10 opacity-0"
     >
-      <div v-if="visible" class="fixed inset-0 z-viewer flex flex-col select-none overflow-hidden pb-[env(safe-area-inset-bottom)]"
+      <div
+        v-if="visible"
+        class="fixed inset-0 z-viewer flex flex-col select-none overflow-hidden"
+        :style="{ paddingBottom: 'var(--vcp-safe-bottom, env(safe-area-inset-bottom, 0px))' }"
         :class="themeStore.isDarkResolved ? 'bg-[#0d1117] text-gray-200' : 'bg-[#f8fafc] text-gray-800'">
 
         <!-- Header -->

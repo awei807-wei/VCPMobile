@@ -192,12 +192,26 @@ require_pattern "schema_version: u32" src-tauri/src/distributed/tool_registry.rs
 require_pattern "Unsupported disabled tools schemaVersion" src-tauri/src/distributed/tool_registry.rs
 require_pattern "MAX_CHECK_NEW_TOPICS_DAYS" src-tauri/src/distributed/tools/topic_sponsor.rs
 require_pattern "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor.rs
+require_pattern "DISTRIBUTED_HEARTBEAT_INTERVAL" src-tauri/src/distributed/client.rs
+require_pattern "DISTRIBUTED_HEARTBEAT_TIMEOUT" src-tauri/src/distributed/client.rs
+require_pattern "Message::Ping\\(Vec::new\\(\\)\\.into\\(\\)\\)" src-tauri/src/distributed/client.rs
+require_pattern "Heartbeat timeout: no inbound WebSocket frame" src-tauri/src/distributed/client.rs
+require_pattern "is_distributed_connection_stale" src-tauri/src/distributed/client.rs
+require_pattern "recover_distributed_node_after_network_restore" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs
+require_pattern "recover_distributed_node_after_network_restore\\(&h\\)" src-tauri/src/lib.rs
+require_pattern "ForegroundServiceStartNotAllowedException/IllegalStateException" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "onTaskRemoved" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
+require_pattern "createRecoveryIntent" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
+require_pattern "distributed_keepalive_active" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
+require_file src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt
+require_pattern "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml
+require_pattern "ACTION_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt
 require_pattern "normalizeDistributedNotification" src/features/distributed/ToolInteractionOverlay.vue
 require_pattern "androidNotification.delivered === true" src/features/distributed/ToolInteractionOverlay.vue
 reject_pattern "event.payload.title.length" src/features/distributed/ToolInteractionOverlay.vue
 reject_pattern "event.payload.body.length" src/features/distributed/ToolInteractionOverlay.vue
 reject_pattern "findAgentMessagePayload\\(event.payload\\)" src/features/distributed/ToolInteractionOverlay.vue
-require_pattern "最后更新：2026-06-06 \\| VCP Mobile v1\\.0\\.4" docs/vue_docs/features/distributed/19_分布式能力前端交互.md
+require_pattern "最后更新：2026-06-15 \\| VCP Mobile v1\\.0\\.6" docs/vue_docs/features/distributed/19_分布式能力前端交互.md
 
 log "前端类型检查"
 run pnpm exec vue-tsc --noEmit

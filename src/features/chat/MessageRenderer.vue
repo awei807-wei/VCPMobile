@@ -123,7 +123,10 @@ const shell = computed(() => props.message.shell);
 // === Streaming State ===
 
 // 数据层面：消息是否处于任意活跃流中（不依赖当前话题）
-const isMessageInActiveStream = computed(() => streamStore.isMessageActive(props.message.id));
+const isMessageInAnyActiveStream = computed(() =>
+  streamStore.isMessageInAnyActiveStream(props.message.id)
+);
+const isMessageInActiveStream = isMessageInAnyActiveStream;
 
 // UI 层面：消息是否在当前视口中显示流式状态
 const isStreaming = computed(() => {

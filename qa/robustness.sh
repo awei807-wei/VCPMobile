@@ -91,6 +91,39 @@ rg -q "MAX_CHECK_NEW_TOPICS_DAYS" src-tauri/src/distributed/tools/topic_sponsor.
 rg -q "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor.rs \
   || fail "MobileTopicSponsor CheckNewTopics cutoff 必须使用饱和计算"
 
+log "分布式长连接保活哨兵"
+rg -q "DISTRIBUTED_HEARTBEAT_INTERVAL" src-tauri/src/distributed/client.rs \
+  || fail "分布式 WebSocket 必须保留主动心跳间隔"
+rg -q "DISTRIBUTED_HEARTBEAT_TIMEOUT" src-tauri/src/distributed/client.rs \
+  || fail "分布式 WebSocket 必须保留心跳超时阈值"
+rg -q "Message::Ping\\(Vec::new\\(\\)\\.into\\(\\)\\)" src-tauri/src/distributed/client.rs \
+  || fail "分布式 WebSocket 必须主动发送标准 Ping"
+rg -q "Heartbeat timeout: no inbound WebSocket frame" src-tauri/src/distributed/client.rs \
+  || fail "分布式 WebSocket 半开连接必须主动超时"
+rg -q "is_distributed_connection_stale" src-tauri/src/distributed/client.rs \
+  || fail "分布式心跳超时策略必须有可测 helper"
+rg -q "recover_distributed_node_after_network_restore" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs \
+  || fail "网络恢复必须能触发完整分布式生命周期恢复"
+rg -q "recover_distributed_node_after_network_restore\\(&h\\)" src-tauri/src/lib.rs \
+  || fail "网络恢复事件不能只发送空 session reconnect 信号"
+rg -q "ForegroundServiceStartNotAllowedException/IllegalStateException" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  || fail "Android 前台服务后台启动限制必须显式处理"
+if rg -q "degrading to normal service" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
+  fail "前台服务启动失败不能静默降级为普通后台服务"
+fi
+rg -q "onTaskRemoved" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
+  || fail "任务被移除时必须有分布式保活恢复入口"
+rg -q "createRecoveryIntent" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
+  || fail "前台保活服务必须提供恢复 Intent"
+rg -q "distributed_keepalive_active" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
+  || fail "分布式保活意图必须持久化供开机/包更新恢复使用"
+[[ -f src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt ]] \
+  || fail "缺少 BootReceiver 分布式保活恢复入口"
+rg -q "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml \
+  || fail "缺少开机恢复权限声明"
+rg -q "ACTION_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt \
+  || fail "BootReceiver 必须处理开机完成事件"
+
 log "Tauri command 注册一致性"
 for command in \
   sendToVCP \

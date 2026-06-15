@@ -300,6 +300,39 @@ mod tests {
         }
     }
 
+    fn sample_agent_stream_document() -> String {
+        let fixture = "../scripts/tail-test/测试文档.txt";
+        let fallback_fixture = "scripts/tail-test/测试文档.txt";
+        std::fs::read_to_string(fixture)
+            .or_else(|_| std::fs::read_to_string(fallback_fixture))
+            .unwrap_or_else(|_| {
+                let section = r#"
+# 流式渲染压力样张
+
+这是一段用于 AST Diff 回归测试的内置样张。它包含普通段落、列表、代码块、表格和中文内容，
+用于模拟真实 Agent 在移动端连续输出时的尾部增量更新。
+
+## 检查项
+
+- 第一项：普通文本追加必须稳定。
+- 第二项：Markdown 结构变化不能触发序列化失败。
+- 第三项：中文标点、Emoji 😊 和链接 https://example.com 都应保持可解析。
+
+```ts
+export function example(input: string) {
+  return input.trim().toUpperCase();
+}
+```
+
+| 名称 | 状态 | 说明 |
+|------|------|------|
+| 心跳 | 正常 | WebSocket 主动 Ping |
+| 恢复 | 正常 | 网络恢复后 reconcile |
+"#;
+                section.repeat(48)
+            })
+    }
+
     #[test]
     fn test_diff_append_text() {
         let mut old = vec![MarkdownNode::paragraph(vec![InlineNode::text("Hello".to_string())])];
@@ -345,11 +378,7 @@ mod tests {
     #[test]
     fn test_real_agent_stream_simulation() {
         // 读取真实的 9.8KB Agent 输出样张文档
-        let text = std::fs::read_to_string("../scripts/tail-test/测试文档.txt")
-            .unwrap_or_else(|_| {
-                std::fs::read_to_string("scripts/tail-test/测试文档.txt")
-                    .expect("Failed to find or read 测试文档.txt in scripts/tail-test")
-            });
+        let text = sample_agent_stream_document();
 
         let mut rng = SimpleRng::new(42); // 固定 seed 保证测试具有确定的可复现性
         let mut buffer = AuroraBuffer::new();

@@ -159,12 +159,19 @@ require_pattern "vcpData\\.tool_name === 'DailyNote' && pluginOutputMessage" src
 require_pattern "日记已成功创建" src/components/layout/RightSidebar.vue
 require_pattern "日记已成功更新" src/components/layout/RightSidebar.vue
 require_pattern "响铃提醒" src/components/layout/PermissionGate.vue
+require_pattern "vcp-lifecycle" src/components/layout/PermissionGate.vue
+require_pattern "permission-gate-bottom-action" src/components/layout/PermissionGate.vue
 require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "\"ring\"" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "select_apk_asset" src-tauri/src/vcp_modules/updater/update_manager.rs
 require_pattern "打开 Release" src/components/ui/UpdatePrompt.vue
 require_pattern "awei807-wei/VCPMobile" src/features/settings/components/AboutSection.vue
 reject_pattern "github.com/MRiecy/VCPMobile" src/features/settings/components/AboutSection.vue
+require_pattern "max-page-size=16384" scripts/android_env.fish
+require_pattern "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER" scripts/android_env.fish
+require_pattern "max-page-size=16384" scripts/android_env.sh
+require_pattern "max-page-size=16384" .cargo/config.toml
+require_pattern "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" .github/workflows/release.yml
 require_pattern "Notification requested but Android delivery failed" src-tauri/src/distributed/tools/notification.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_memo.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_sponsor.rs

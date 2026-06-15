@@ -62,6 +62,11 @@ class KeyboardInsetsManager(private val activity: Activity) {
             insets
         }
 
+        requestInsetsRefresh()
+    }
+
+    fun requestInsetsRefresh() {
+        val rootView = activity.window.decorView.rootView
         ViewCompat.requestApplyInsets(rootView)
         rootView.post { ViewCompat.requestApplyInsets(rootView) }
         rootView.postDelayed({ ViewCompat.requestApplyInsets(rootView) }, 250L)

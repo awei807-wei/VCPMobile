@@ -78,7 +78,15 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     val pluginActivity: Activity get() = activity
     var webViewRef: WebView? = null
     private val keyboardInsetsManager = KeyboardInsetsManager(activity)
-    private val lifecycleBridge = LifecycleBridge()
+    private val lifecycleBridge = LifecycleBridge(
+        onResumeHook = {
+            emitPermissionsToWebView()
+            keyboardInsetsManager.requestInsetsRefresh()
+        },
+        onConfigurationChangedHook = {
+            keyboardInsetsManager.requestInsetsRefresh()
+        }
+    )
     private val batteryStatusManager = BatteryStatusManager(activity)
     private val networkStatusManager = NetworkStatusManager(activity)
     private val cpuStatusManager = CpuStatusManager(activity)
@@ -128,10 +136,14 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             createAgentMessageNotificationChannel()
             val notificationManager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             val channel = notificationManager.getNotificationChannel(AGENT_MESSAGE_CHANNEL_ID) ?: return false
-            val highEnough = channel.importance >= android.app.NotificationManager.IMPORTANCE_HIGH
+            val highEnough = channel.importance >= android.app.NotificationManager.IMPORTANCE_DEFAULT
             val hasSound = channel.sound != null
             val hasVibration = channel.shouldVibrate()
-            return highEnough && hasSound && hasVibration
+            Log.i(
+                TAG,
+                "AgentMessage ring capability: importance=${channel.importance} sound=$hasSound vibration=$hasVibration"
+            )
+            return highEnough && (hasSound || hasVibration)
         }
 
         return true
@@ -281,7 +293,9 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
         val json = """{"notification":$notificationGranted,"ring":$ringGranted,"storage":$storageGranted,"microphone":$microphoneGranted,"camera":$cameraGranted,"battery":$batteryOptimizationIgnored,"overlay":$overlayGranted,"location":$locationGranted}"""
         val script = "window.dispatchEvent(new CustomEvent('vcp-permission-change', { detail: $json }))"
-        webViewRef?.evaluateJavascript(script, null)
+        activity.runOnUiThread {
+            webViewRef?.evaluateJavascript(script, null)
+        }
     }
 
     @Command

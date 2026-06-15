@@ -5,6 +5,8 @@ import { useAppLifecycleStore } from '../../core/stores/appLifecycle';
 
 const lifecycleStore = useAppLifecycleStore();
 
+const REQUEST_RECHECK_DELAYS_MS = [250, 1000, 2500, 5000] as const;
+
 interface PermissionStatus {
   notification: boolean;
   ring: boolean;
@@ -20,23 +22,58 @@ const status = ref<PermissionStatus>({
 });
 
 const currentStep = ref(1);
+const requesting = ref<keyof PermissionStatus | null>(null);
 
 const allGranted = computed(() => status.value.notification && status.value.ring && status.value.storage && status.value.battery);
 
+let checkSequence = 0;
+let requestRecheckTimers: ReturnType<typeof setTimeout>[] = [];
+let requestingResetTimer: ReturnType<typeof setTimeout> | null = null;
+
 const check = async () => {
+  const sequence = ++checkSequence;
   try {
     const res = await invoke<PermissionStatus>('plugin:vcp-mobile|check_all_permissions');
+    if (sequence !== checkSequence) return;
     status.value = res;
   } catch (e) {
     console.error('[PermissionGate] Failed to check permissions:', e);
   }
 };
 
+const clearRequestRecheckTimers = () => {
+  requestRecheckTimers.forEach((timer) => clearTimeout(timer));
+  requestRecheckTimers = [];
+};
+
+const scheduleRequestRechecks = () => {
+  clearRequestRecheckTimers();
+  requestRecheckTimers = REQUEST_RECHECK_DELAYS_MS.map((delay) => setTimeout(check, delay));
+};
+
+const resetRequestingLater = (type: keyof PermissionStatus) => {
+  if (requestingResetTimer) clearTimeout(requestingResetTimer);
+  requestingResetTimer = setTimeout(() => {
+    if (requesting.value === type) {
+      requesting.value = null;
+    }
+  }, 6000);
+};
+
 const request = async (type: 'notification' | 'ring' | 'storage' | 'battery') => {
+  requesting.value = type;
+  scheduleRequestRechecks();
+  resetRequestingLater(type);
   try {
     await invoke('plugin:vcp-mobile|request_android_permission', { pType: type });
+    await check();
   } catch (e) {
     console.error(`[PermissionGate] Failed to request ${type} permission:`, e);
+  } finally {
+    if (requesting.value === type) {
+      requesting.value = null;
+    }
+    scheduleRequestRechecks();
   }
 };
 
@@ -57,17 +94,35 @@ const goNext = () => {
 let checkTimer: any = null;
 
 const onPermissionChange = (e: Event) => {
-  status.value = (e as CustomEvent).detail;
+  const detail = (e as CustomEvent<PermissionStatus>).detail;
+  if (!detail) return;
+  checkSequence++;
+  status.value = detail;
 };
 
 const onVisibilityChange = () => {
   if (!document.hidden) check();
 };
 
+const onLifecycleChange = (e: Event) => {
+  const state = (e as CustomEvent<{ state?: string }>).detail?.state;
+  if (state === 'resume' || state === 'config-changed') {
+    check();
+  }
+};
+
+const onPageVisible = () => {
+  check();
+};
+
 onMounted(() => {
   check();
   // 当应用从后台切回前台时重检（用户在设置页操作后返回）
   window.addEventListener('visibilitychange', onVisibilityChange);
+  // Android 原生 Activity 恢复比 WebView visibilitychange 更可靠，设置页返回时优先走这里
+  window.addEventListener('vcp-lifecycle', onLifecycleChange);
+  window.addEventListener('focus', onPageVisible);
+  window.addEventListener('pageshow', onPageVisible);
   // Kotlin 侧主动推送的权限变更事件
   window.addEventListener('vcp-permission-change', onPermissionChange);
   // 低频兜底轮询，防止极端情况下事件丢失
@@ -76,7 +131,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (checkTimer) clearInterval(checkTimer);
+  if (requestingResetTimer) clearTimeout(requestingResetTimer);
+  clearRequestRecheckTimers();
   window.removeEventListener('visibilitychange', onVisibilityChange);
+  window.removeEventListener('vcp-lifecycle', onLifecycleChange);
+  window.removeEventListener('focus', onPageVisible);
+  window.removeEventListener('pageshow', onPageVisible);
   window.removeEventListener('vcp-permission-change', onPermissionChange);
 });
 </script>
@@ -84,7 +144,10 @@ onUnmounted(() => {
 <template>
   <div class="fixed inset-0 z-gate bg-white flex flex-col items-center select-none overflow-hidden no-rubber-band">
     <!-- Top Section: 米白（所有步骤共享） -->
-    <div class="w-full bg-[#FAF6EE] flex flex-col items-center pt-12 px-5 pb-3 shrink-0">
+    <div
+      class="w-full bg-[#FAF6EE] flex flex-col items-center px-5 pb-3 shrink-0"
+      style="padding-top: calc(3rem + var(--vcp-safe-top, env(safe-area-inset-top, 0px)));"
+    >
       <!-- Top Illustration Area -->
       <div class="relative w-full flex flex-col items-center mb-1">
         <!-- Background Decorative Blobs -->
@@ -163,16 +226,17 @@ onUnmounted(() => {
                   <p class="text-xs text-gray-500 opacity-70 leading-relaxed">{{ item.desc }}</p>
                 </div>
                 <button v-if="!status[item.id as keyof PermissionStatus]"
+                  :disabled="requesting === item.id"
                   @click="request(item.id as any)"
-                  class="px-3 py-1.5 bg-gray-900 text-white text-[13px] font-bold rounded-lg active:scale-95 transition-all shrink-0"
+                  class="px-3 py-1.5 bg-gray-900 text-white text-[13px] font-bold rounded-lg active:scale-95 transition-all shrink-0 disabled:opacity-60 disabled:active:scale-100"
                 >
-                  去授权
+                  {{ requesting === item.id ? '检查中' : '去授权' }}
                 </button>
               </div>
             </div>
 
             <!-- Bottom Action -->
-            <div class="mt-auto w-full flex flex-col items-center gap-2 pb-6">
+            <div class="mt-auto w-full flex flex-col items-center gap-2 permission-gate-bottom-action">
               <button v-if="allGranted && currentStep === 1"
                 @click="goNext"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
@@ -205,7 +269,7 @@ onUnmounted(() => {
             </div>
 
             <!-- Bottom Action -->
-            <div class="mt-auto w-full flex flex-col items-center gap-2 pb-6">
+            <div class="mt-auto w-full flex flex-col items-center gap-2 permission-gate-bottom-action">
               <button
                 @click="lifecycleStore.bootstrap(true)"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
@@ -229,7 +293,7 @@ onUnmounted(() => {
             </div>
 
             <!-- Bottom Action -->
-            <div class="w-full flex flex-col items-center gap-2 pb-6">
+            <div class="w-full flex flex-col items-center gap-2 permission-gate-bottom-action">
               <button
                 @click="lifecycleStore.bootstrap(true)"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
@@ -254,5 +318,9 @@ onUnmounted(() => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+.permission-gate-bottom-action {
+  padding-bottom: calc(1.5rem + var(--vcp-safe-bottom, env(safe-area-inset-bottom, 0px)));
 }
 </style>

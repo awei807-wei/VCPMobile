@@ -26,23 +26,46 @@ class KeyboardInsetsManager(private val activity: Activity) {
 
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars())
+            val navigationBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             val isKeyboardVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val keyboardHeight = if (isKeyboardVisible) ime.bottom else 0
 
-            Log.d("VCPKeyboard", "Native inset event: height=$keyboardHeight, visible=$isKeyboardVisible, safeArea=${systemBars.bottom}")
+            Log.d(
+                "VCPKeyboard",
+                "Native inset event: height=$keyboardHeight, visible=$isKeyboardVisible, " +
+                    "safeArea=${systemBars.bottom}, navigation=${navigationBars.bottom}"
+            )
 
             emit(
                 "vcp-keyboard-inset",
                 mapOf(
                     "height" to keyboardHeight,
                     "visible" to isKeyboardVisible,
-                    "safeAreaBottom" to systemBars.bottom
+                    "safeAreaBottom" to navigationBars.bottom
+                )
+            )
+
+            emit(
+                "vcp-window-insets",
+                mapOf(
+                    "systemTop" to systemBars.top,
+                    "systemBottom" to systemBars.bottom,
+                    "statusTop" to statusBars.top,
+                    "navigationBottom" to navigationBars.bottom,
+                    "imeBottom" to ime.bottom,
+                    "keyboardVisible" to isKeyboardVisible
                 )
             )
 
             insets
         }
+
+        ViewCompat.requestApplyInsets(rootView)
+        rootView.post { ViewCompat.requestApplyInsets(rootView) }
+        rootView.postDelayed({ ViewCompat.requestApplyInsets(rootView) }, 250L)
+        rootView.postDelayed({ ViewCompat.requestApplyInsets(rootView) }, 1000L)
     }
 
     fun queryCurrentState(): KeyboardState {

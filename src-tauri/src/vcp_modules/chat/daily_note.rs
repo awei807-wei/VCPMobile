@@ -6,6 +6,7 @@
 //! - tool_name 为 DailyNote 且 command=update（或缺省但同时有 target+replace）→ update
 //! - tool_name 为 DailyNote 且 command=create（或缺省但有 Content）→ create
 //! - `<<<DailyNoteStart>>>` 老式块 → legacy
+//!
 //! 字段值兼容 `「始」…「末」` / `「始exp」…「末exp」` / `{始}…{末}` 标记形式与普通 `Key:` 行。
 
 use lazy_static::lazy_static;
@@ -34,7 +35,6 @@ lazy_static! {
     static ref MARK_START: Regex = Regex::new(r"(?i)[「{]始(?:escape|exp)?[」}]").unwrap();
     static ref MARK_END_PLAIN: Regex = Regex::new(r"[「{]末[」}]").unwrap();
     static ref MARK_END_ESCAPE: Regex = Regex::new(r"(?i)[「{]末(?:escape|exp)[」}]").unwrap();
-
     static ref LABEL_TOOL_NAME: Regex = Regex::new(r"(?i)\btool_name\s*:").unwrap();
     static ref LABEL_COMMAND: Regex = Regex::new(r"(?i)\bcommand\s*:").unwrap();
     static ref LABEL_MAID: Regex = Regex::new(r"(?i)\b(?:maidname|maid)\s*:").unwrap();
@@ -46,7 +46,6 @@ lazy_static! {
     static ref LABEL_TARGET: Regex = Regex::new(r"(?i)\btarget\s*:").unwrap();
     static ref LABEL_REPLACE: Regex = Regex::new(r"(?i)\breplace\s*:").unwrap();
     static ref LABEL_CONTENT: Regex = Regex::new(r"(?i)\bcontent\s*:").unwrap();
-
     static ref XML_TOOL_NAME: Regex = Regex::new(r"(?i)<tool_name>([\s\S]*?)</tool_name>").unwrap();
 }
 
@@ -250,7 +249,8 @@ mod tests {
 
     #[test]
     fn create_inferred_without_command() {
-        let text = "maid:「始」小克「末」,\ntool_name:「始」DailyNote「末」,\nContent:「始」正文「末」";
+        let text =
+            "maid:「始」小克「末」,\ntool_name:「始」DailyNote「末」,\nContent:「始」正文「末」";
         let d = parse_daily_note_tool(text).expect("content implies create");
         assert_eq!(d.mode, "create");
         assert_eq!(d.content, "正文");

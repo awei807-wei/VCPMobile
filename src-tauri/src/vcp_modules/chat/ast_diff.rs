@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
-use crate::vcp_modules::pre_renderer::markdown_ast::{MarkdownNode, InlineNode};
+use crate::vcp_modules::pre_renderer::markdown_ast::{InlineNode, MarkdownNode};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "op")]
@@ -17,15 +17,9 @@ pub enum AstMutation {
         node: InlineNode,
     },
     #[serde(rename = "text")]
-    UpdateText {
-        id: String,
-        value: String,
-    },
+    UpdateText { id: String, value: String },
     #[serde(rename = "append")]
-    AppendText {
-        id: String,
-        chunk: String,
-    },
+    AppendText { id: String, chunk: String },
     #[serde(rename = "prop")]
     UpdateProp {
         id: String,
@@ -33,19 +27,11 @@ pub enum AstMutation {
         value: String,
     },
     #[serde(rename = "replace")]
-    Replace {
-        id: String,
-        node: MarkdownNode,
-    },
+    Replace { id: String, node: MarkdownNode },
     #[serde(rename = "replace_inline")]
-    ReplaceInline {
-        id: String,
-        node: InlineNode,
-    },
+    ReplaceInline { id: String, node: InlineNode },
     #[serde(rename = "remove")]
-    Remove {
-        id: String,
-    },
+    Remove { id: String },
 }
 
 /// 对外暴露的 AST 对比入口
@@ -114,10 +100,36 @@ fn diff_single_markdown_node(
     }
 
     match (old_node, new_node) {
-        (MarkdownNode::Paragraph { children: old_children, .. }, MarkdownNode::Paragraph { children: new_children, .. }) => {
-            diff_inline_nodes(old_children, new_children, node_id, &format!("{}.i", node_id), mutations);
+        (
+            MarkdownNode::Paragraph {
+                children: old_children,
+                ..
+            },
+            MarkdownNode::Paragraph {
+                children: new_children,
+                ..
+            },
+        ) => {
+            diff_inline_nodes(
+                old_children,
+                new_children,
+                node_id,
+                &format!("{}.i", node_id),
+                mutations,
+            );
         }
-        (MarkdownNode::Heading { level: old_level, children: old_children, .. }, MarkdownNode::Heading { level: new_level, children: new_children, .. }) => {
+        (
+            MarkdownNode::Heading {
+                level: old_level,
+                children: old_children,
+                ..
+            },
+            MarkdownNode::Heading {
+                level: new_level,
+                children: new_children,
+                ..
+            },
+        ) => {
             if old_level != new_level {
                 mutations.push(AstMutation::UpdateProp {
                     id: node_id.to_string(),
@@ -125,12 +137,44 @@ fn diff_single_markdown_node(
                     value: new_level.to_string(),
                 });
             }
-            diff_inline_nodes(old_children, new_children, node_id, &format!("{}.i", node_id), mutations);
+            diff_inline_nodes(
+                old_children,
+                new_children,
+                node_id,
+                &format!("{}.i", node_id),
+                mutations,
+            );
         }
-        (MarkdownNode::Blockquote { children: old_children, .. }, MarkdownNode::Blockquote { children: new_children, .. }) => {
-            diff_markdown_nodes(old_children, new_children, node_id, &format!("{}.b", node_id), mutations);
+        (
+            MarkdownNode::Blockquote {
+                children: old_children,
+                ..
+            },
+            MarkdownNode::Blockquote {
+                children: new_children,
+                ..
+            },
+        ) => {
+            diff_markdown_nodes(
+                old_children,
+                new_children,
+                node_id,
+                &format!("{}.b", node_id),
+                mutations,
+            );
         }
-        (MarkdownNode::List { ordered: old_ordered, items: old_items, .. }, MarkdownNode::List { ordered: new_ordered, items: new_items, .. }) => {
+        (
+            MarkdownNode::List {
+                ordered: old_ordered,
+                items: old_items,
+                ..
+            },
+            MarkdownNode::List {
+                ordered: new_ordered,
+                items: new_items,
+                ..
+            },
+        ) => {
             if old_ordered != new_ordered {
                 mutations.push(AstMutation::Replace {
                     id: node_id.to_string(),
@@ -224,27 +268,106 @@ fn diff_single_inline_node(
         (InlineNode::Text { value: old_val }, InlineNode::Text { value: new_val }) => {
             diff_text_node(node_id, old_val, new_val, mutations);
         }
-        (InlineNode::Strong { children: old_children, .. }, InlineNode::Strong { children: new_children, .. }) => {
-            diff_inline_nodes(old_children, new_children, node_id, &format!("{}.i", node_id), mutations);
+        (
+            InlineNode::Strong {
+                children: old_children,
+                ..
+            },
+            InlineNode::Strong {
+                children: new_children,
+                ..
+            },
+        ) => {
+            diff_inline_nodes(
+                old_children,
+                new_children,
+                node_id,
+                &format!("{}.i", node_id),
+                mutations,
+            );
         }
-        (InlineNode::Emphasis { children: old_children, .. }, InlineNode::Emphasis { children: new_children, .. }) => {
-            diff_inline_nodes(old_children, new_children, node_id, &format!("{}.i", node_id), mutations);
+        (
+            InlineNode::Emphasis {
+                children: old_children,
+                ..
+            },
+            InlineNode::Emphasis {
+                children: new_children,
+                ..
+            },
+        ) => {
+            diff_inline_nodes(
+                old_children,
+                new_children,
+                node_id,
+                &format!("{}.i", node_id),
+                mutations,
+            );
         }
-        (InlineNode::Link { href: old_href, title: old_title, children: old_children, .. }, InlineNode::Link { href: new_href, title: new_title, children: new_children, .. }) => {
+        (
+            InlineNode::Link {
+                href: old_href,
+                title: old_title,
+                children: old_children,
+                ..
+            },
+            InlineNode::Link {
+                href: new_href,
+                title: new_title,
+                children: new_children,
+                ..
+            },
+        ) => {
             if old_href != new_href || old_title != new_title {
                 mutations.push(AstMutation::ReplaceInline {
                     id: node_id.to_string(),
                     node: new_node.clone(),
                 });
             } else {
-                diff_inline_nodes(old_children, new_children, node_id, &format!("{}.i", node_id), mutations);
+                diff_inline_nodes(
+                    old_children,
+                    new_children,
+                    node_id,
+                    &format!("{}.i", node_id),
+                    mutations,
+                );
             }
         }
-        (InlineNode::QuotedText { children: old_children, .. }, InlineNode::QuotedText { children: new_children, .. }) => {
-            diff_inline_nodes(old_children, new_children, node_id, &format!("{}.i", node_id), mutations);
+        (
+            InlineNode::QuotedText {
+                children: old_children,
+                ..
+            },
+            InlineNode::QuotedText {
+                children: new_children,
+                ..
+            },
+        ) => {
+            diff_inline_nodes(
+                old_children,
+                new_children,
+                node_id,
+                &format!("{}.i", node_id),
+                mutations,
+            );
         }
-        (InlineNode::Strikethrough { children: old_children, .. }, InlineNode::Strikethrough { children: new_children, .. }) => {
-            diff_inline_nodes(old_children, new_children, node_id, &format!("{}.i", node_id), mutations);
+        (
+            InlineNode::Strikethrough {
+                children: old_children,
+                ..
+            },
+            InlineNode::Strikethrough {
+                children: new_children,
+                ..
+            },
+        ) => {
+            diff_inline_nodes(
+                old_children,
+                new_children,
+                node_id,
+                &format!("{}.i", node_id),
+                mutations,
+            );
         }
         _ => {
             mutations.push(AstMutation::ReplaceInline {
@@ -255,12 +378,7 @@ fn diff_single_inline_node(
     }
 }
 
-fn diff_text_node(
-    id: &str,
-    old_value: &str,
-    new_value: &str,
-    mutations: &mut Vec<AstMutation>,
-) {
+fn diff_text_node(id: &str, old_value: &str, new_value: &str, mutations: &mut Vec<AstMutation>) {
     if new_value == old_value {
         return;
     }
@@ -335,8 +453,12 @@ export function example(input: string) {
 
     #[test]
     fn test_diff_append_text() {
-        let mut old = vec![MarkdownNode::paragraph(vec![InlineNode::text("Hello".to_string())])];
-        let mut new = vec![MarkdownNode::paragraph(vec![InlineNode::text("Hello World".to_string())])];
+        let mut old = vec![MarkdownNode::paragraph(vec![InlineNode::text(
+            "Hello".to_string(),
+        )])];
+        let mut new = vec![MarkdownNode::paragraph(vec![InlineNode::text(
+            "Hello World".to_string(),
+        )])];
 
         old[0].compute_hashes_recursively();
         new[0].compute_hashes_recursively();
@@ -354,7 +476,9 @@ export function example(input: string) {
 
     #[test]
     fn test_diff_add_node() {
-        let mut old = vec![MarkdownNode::paragraph(vec![InlineNode::text("Hello".to_string())])];
+        let mut old = vec![MarkdownNode::paragraph(vec![InlineNode::text(
+            "Hello".to_string(),
+        )])];
         let mut new = vec![
             MarkdownNode::paragraph(vec![InlineNode::text("Hello".to_string())]),
             MarkdownNode::paragraph(vec![InlineNode::text("World".to_string())]),
@@ -402,8 +526,8 @@ export function example(input: string) {
             if let Some(frame) = tail_frame {
                 total_mutations_count += frame.mutations.len();
                 // 确保 frame 成功进行 serde JSON 序列化，验证没有任何序列化死锁或 panic
-                let serialized = serde_json::to_string(&frame)
-                    .expect("Failed to serialize tail frame to JSON");
+                let serialized =
+                    serde_json::to_string(&frame).expect("Failed to serialize tail frame to JSON");
                 assert!(!serialized.is_empty());
             }
         }
@@ -412,6 +536,10 @@ export function example(input: string) {
         buffer.finalize();
 
         // 确保整个大文本在流式过程中产生了大量的 diff 更新指令
-        assert!(total_mutations_count > 50, "Total mutations count was too low: {}", total_mutations_count);
+        assert!(
+            total_mutations_count > 50,
+            "Total mutations count was too low: {}",
+            total_mutations_count
+        );
     }
 }

@@ -8,6 +8,8 @@
   /* 移动端安全区 - 增加物理回退值 (24px 是安卓常见的刘海高度) */
   --vcp-safe-top: env(safe-area-inset-top, 24px);
   --vcp-safe-bottom: env(safe-area-inset-bottom, 20px);
+  --vcp-navigation-bottom: 0px;
+  --vcp-keyboard-bottom: 0px;
 
   /* === VCP 全局层级系统 ===
    * 用途：统一管理 z-index，消除魔法数字

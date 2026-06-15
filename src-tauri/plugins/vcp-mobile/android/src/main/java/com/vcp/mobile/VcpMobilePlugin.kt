@@ -481,9 +481,16 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             } else {
                 activity.startService(intent)
             }
+        } catch (e: IllegalStateException) {
+            Log.e(
+                TAG,
+                "Foreground service start rejected (ForegroundServiceStartNotAllowedException/IllegalStateException). Waiting for foreground or network recovery retry.",
+                e
+            )
+            throw e
         } catch (e: SecurityException) {
-            Log.w(TAG, "POST_NOTIFICATIONS permission denied, degrading to normal service", e)
-            activity.startService(intent)
+            Log.e(TAG, "Foreground service start rejected by missing permission or service type policy", e)
+            throw e
         }
     }
 

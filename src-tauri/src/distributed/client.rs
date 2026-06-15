@@ -10,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, RwLock};
-use tokio::time;
+use tokio::time::{self, Instant};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -29,6 +29,9 @@ type WsSink = Arc<
         >,
     >,
 >;
+
+const DISTRIBUTED_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
+const DISTRIBUTED_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// Immutable configuration for a single connection lifecycle.
 struct ConnectionConfig {
@@ -104,6 +107,10 @@ fn redact_distributed_connection_url(connection_url: &str) -> String {
         }
         Err(_) => connection_url.to_string(),
     }
+}
+
+fn is_distributed_connection_stale(idle_for: Duration) -> bool {
+    idle_for >= DISTRIBUTED_HEARTBEAT_TIMEOUT
 }
 
 /// Distributed node state, shared across async tasks.
@@ -443,6 +450,10 @@ impl DistributedClient {
         // Skip the first immediate tick; we do an initial push below after registration.
         placeholder_interval.tick().await;
 
+        let mut heartbeat_interval = time::interval(DISTRIBUTED_HEARTBEAT_INTERVAL);
+        heartbeat_interval.tick().await;
+        let mut last_inbound_at = Instant::now();
+
         #[allow(unused_assignments)]
         let mut exit_reason = "Connection closed normally".to_string();
 
@@ -452,6 +463,7 @@ impl DistributedClient {
                 msg = ws_rx.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
+                            last_inbound_at = Instant::now();
                             Self::handle_incoming(
                                 app,
                                 &text,
@@ -462,8 +474,15 @@ impl DistributedClient {
                             ).await;
                         }
                         Some(Ok(Message::Ping(data))) => {
+                            last_inbound_at = Instant::now();
                             let mut tx = ws_tx.lock().await;
                             let _ = tx.send(Message::Pong(data)).await;
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            last_inbound_at = Instant::now();
+                        }
+                        Some(Ok(Message::Binary(_))) => {
+                            last_inbound_at = Instant::now();
                         }
                         Some(Ok(Message::Close(reason))) => {
                             let r_str = reason.map(|r| format!("{} (code: {})", r.reason, r.code)).unwrap_or_else(|| "No reason provided".to_string());
@@ -502,6 +521,34 @@ impl DistributedClient {
                     acquire_wake_lock_helper(app);
                     Self::push_static_placeholders(app, device_name, &ws_tx, registry).await;
                     release_wake_lock_helper(app);
+                }
+
+                // --- Active heartbeat ---
+                _ = heartbeat_interval.tick() => {
+                    let idle_for = last_inbound_at.elapsed();
+                    if is_distributed_connection_stale(idle_for) {
+                        exit_reason = format!(
+                            "Heartbeat timeout: no inbound WebSocket frame for {}s",
+                            idle_for.as_secs()
+                        );
+                        log::warn!("[Distributed] {}", exit_reason);
+                        let mut tx = ws_tx.lock().await;
+                        let _ = tx.close().await;
+                        break;
+                    }
+
+                    acquire_wake_lock_helper(app);
+                    let ping_result = {
+                        let mut tx = ws_tx.lock().await;
+                        tx.send(Message::Ping(Vec::new().into())).await
+                    };
+                    release_wake_lock_helper(app);
+
+                    if let Err(e) = ping_result {
+                        exit_reason = format!("Heartbeat ping failed: {}", e);
+                        log::warn!("[Distributed] {}", exit_reason);
+                        break;
+                    }
                 }
 
                 // --- Cancellation signal ---
@@ -879,5 +926,16 @@ mod tests {
             redact_distributed_connection_url(&url),
             "ws://example.com:6005/vcp-distributed-server/VCP_Key=***"
         );
+    }
+
+    #[test]
+    fn distributed_connection_stale_after_heartbeat_timeout() {
+        assert!(!is_distributed_connection_stale(
+            DISTRIBUTED_HEARTBEAT_TIMEOUT - Duration::from_secs(1)
+        ));
+        assert!(is_distributed_connection_stale(
+            DISTRIBUTED_HEARTBEAT_TIMEOUT
+        ));
+        assert!(DISTRIBUTED_HEARTBEAT_TIMEOUT > DISTRIBUTED_HEARTBEAT_INTERVAL * 2);
     }
 }

@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import android.os.PowerManager
@@ -36,7 +38,11 @@ class StreamKeepaliveService : Service() {
         const val NOTIFICATION_ID = 0x53545201 // "STR" + 01
         const val EXTRA_AGENT_NAME = "agent_name"
         const val EXTRA_IS_KEEPALIVE_MODE = "is_keepalive_mode"
+        const val ACTION_RECOVER_KEEPALIVE = "com.vcp.mobile.action.RECOVER_KEEPALIVE"
         private const val TAG = "VcpMobileService"
+        private const val PREFS_NAME = "vcp_mobile_keepalive"
+        private const val PREF_DISTRIBUTED_KEEPALIVE = "distributed_keepalive_active"
+        private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
 
         @Volatile
         var isServiceRunning = false
@@ -53,6 +59,20 @@ class StreamKeepaliveService : Service() {
                 }
             }
         }
+
+        @JvmStatic
+        fun createRecoveryIntent(context: Context): Intent {
+            return createIntent(context, "", true).apply {
+                action = ACTION_RECOVER_KEEPALIVE
+            }
+        }
+
+        @JvmStatic
+        fun isDistributedKeepaliveRequested(context: Context): Boolean {
+            return context
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(PREF_DISTRIBUTED_KEEPALIVE, false)
+        }
     }
 
     override fun onCreate() {
@@ -62,9 +82,18 @@ class StreamKeepaliveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent != null) {
+        if (intent == null) {
+            isKeepaliveModeActive = isDistributedKeepaliveRequested(this)
+        } else {
+            if (
+                intent.action == ACTION_RECOVER_KEEPALIVE &&
+                !intent.hasExtra(EXTRA_IS_KEEPALIVE_MODE)
+            ) {
+                isKeepaliveModeActive = isDistributedKeepaliveRequested(this)
+            }
             if (intent.hasExtra(EXTRA_IS_KEEPALIVE_MODE)) {
                 isKeepaliveModeActive = intent.getBooleanExtra(EXTRA_IS_KEEPALIVE_MODE, false)
+                persistDistributedKeepaliveMode(isKeepaliveModeActive)
             }
             if (intent.hasExtra(EXTRA_AGENT_NAME)) {
                 currentStreamName = intent.getStringExtra(EXTRA_AGENT_NAME) ?: ""
@@ -109,19 +138,34 @@ class StreamKeepaliveService : Service() {
         }
 
         if (isKeepaliveModeActive || currentStreamName.isNotEmpty()) {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (wakeLock == null) {
-                wakeLock = powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "VcpMobile::StreamWakeLock"
-                ).apply {
-                    acquire(10 * 60 * 1000L) // 限制最大超时 10 分钟以防电池耗尽
-                }
-                Log.i(TAG, "WakeLock acquired for stream: $currentStreamName")
-            }
+            refreshWakeLock()
         }
 
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (!isKeepaliveModeActive && !isDistributedKeepaliveRequested(this)) {
+            return
+        }
+
+        Log.w(
+            TAG,
+            "Task removed while distributed keepalive is active; scheduling best-effort recovery."
+        )
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                val recoveryIntent = createRecoveryIntent(this)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(recoveryIntent)
+                } else {
+                    startService(recoveryIntent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Best-effort keepalive recovery was rejected by system policy", e)
+            }
+        }, 3000L)
     }
 
     override fun onDestroy() {
@@ -142,6 +186,30 @@ class StreamKeepaliveService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun persistDistributedKeepaliveMode(active: Boolean) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREF_DISTRIBUTED_KEEPALIVE, active)
+            .apply()
+    }
+
+    private fun refreshWakeLock() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (wakeLock == null) {
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "VcpMobile::StreamWakeLock"
+            ).apply {
+                setReferenceCounted(false)
+            }
+        }
+        wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+        Log.i(
+            TAG,
+            "WakeLock refreshed for stream='$currentStreamName', keepalive=$isKeepaliveModeActive"
+        )
+    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -182,13 +250,19 @@ class StreamKeepaliveService : Service() {
             agentName.contains("[数据同步]") -> "正在与云端服务器进行高精度同步..."
             agentName.contains("[预渲染重建]") -> "正在优化与加速本地响应缓存..."
             agentName.isNotEmpty() -> "思考中……"
-            isKeepalive -> "分布式后台连接维系中..."
+            isKeepalive -> "分布式节点后台连接维系中..."
             else -> "已连接"
         }
         val cleanTitle = agentName.replace("[数据同步]", "").replace("[预渲染重建]", "").trim()
 
+        val contentTitle = when {
+            cleanTitle.isNotEmpty() -> cleanTitle
+            isKeepalive -> "VCP Mobile 分布式节点"
+            else -> "VCP Mobile"
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(if (cleanTitle.isEmpty()) "VCP Mobile" else cleanTitle)
+            .setContentTitle(contentTitle)
             .setContentText(contentText)
             .setSmallIcon(applicationInfo.icon)
             .setOngoing(true)

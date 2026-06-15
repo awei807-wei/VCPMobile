@@ -44,7 +44,8 @@ use vcp_modules::group_service::{
 use vcp_modules::high_speed_channel::prepare_vcp_upload;
 use vcp_modules::lifecycle_manager::{
     bootstrap, get_core_status, get_last_error, get_system_snapshot,
-    reconcile_distributed_node_cmd, reconcile_local_server_cmd, LifecycleState,
+    reconcile_distributed_node_cmd, reconcile_local_server_cmd,
+    recover_distributed_node_after_network_restore, LifecycleState,
 };
 use vcp_modules::maintenance_manager::{
     cleanup_orphaned_attachments, cleanup_single_orphaned_attachment, clear_webview_cache,
@@ -125,7 +126,9 @@ pub fn run() {
             app.manage(app.handle().clone());
             app.manage(LifecycleState::new());
             app.manage(ActiveRequests::default());
-            app.manage(vcp_modules::agent_chat_application_service::AssistantChatActivityState::default());
+            app.manage(
+                vcp_modules::agent_chat_application_service::AssistantChatActivityState::default(),
+            );
             app.manage(CancelledGroupTurns::default());
             app.manage(ContextSanitizer::default());
             app.manage(distributed::DistributedState::new());
@@ -167,14 +170,14 @@ pub fn run() {
             let handle_net = app.handle().clone();
             app.listen_any("vcp-network-status-changed", move |event| {
                 if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
-                    if payload.get("connected").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    if payload
+                        .get("connected")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
                         let h = handle_net.clone();
                         tauri::async_runtime::spawn(async move {
-                            if let Some(state) = h.try_state::<distributed::DistributedState>() {
-                                log::info!("[Distributed] Network restored! Triggering immediate reconnect in Rust backend.");
-                                let client = state.client.read().await;
-                                client.trigger_reconnect().await;
-                            }
+                            recover_distributed_node_after_network_restore(&h).await;
                         });
                     }
                 }

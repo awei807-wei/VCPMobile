@@ -143,6 +143,64 @@ pub async fn reconcile_distributed_node(
     }
 }
 
+/// 网络恢复后的分布式节点自恢复入口。
+///
+/// 与普通 reconnect 信号不同：如果连接 loop 已经完全退出，本函数会根据 settings
+/// 中的 distributedEnabled 重新执行完整 reconcile，避免 reconnect 信号发送到空 session。
+pub async fn recover_distributed_node_after_network_restore(app_handle: &AppHandle) {
+    let settings_state = match app_handle.try_state::<SettingsState>() {
+        Some(state) => state,
+        None => {
+            log::warn!("[Lifecycle] SettingsState not registered, skipping distributed recovery");
+            return;
+        }
+    };
+
+    let settings = match read_settings(app_handle.clone(), settings_state).await {
+        Ok(settings) => settings,
+        Err(e) => {
+            log::error!(
+                "[Lifecycle] Failed to read settings for distributed recovery: {}",
+                e
+            );
+            return;
+        }
+    };
+
+    if !settings.distributed_enabled {
+        log::info!(
+            "[Distributed] Network restored, but distributedEnabled=false; recovery skipped."
+        );
+        return;
+    }
+
+    let distributed_state = match app_handle.try_state::<crate::distributed::DistributedState>() {
+        Some(state) => state,
+        None => {
+            log::warn!(
+                "[Lifecycle] DistributedState not registered, skipping distributed recovery"
+            );
+            return;
+        }
+    };
+
+    let is_running = {
+        let client = distributed_state.client.read().await;
+        client.is_running().await
+    };
+
+    if is_running {
+        let client = distributed_state.client.read().await;
+        log::info!("[Distributed] Network restored; triggering active session reconnect.");
+        client.trigger_reconnect().await;
+    } else {
+        log::info!(
+            "[Distributed] Network restored; distributedEnabled=true but client is stopped, reconciling full node lifecycle."
+        );
+        reconcile_distributed_node(app_handle, true, false).await;
+    }
+}
+
 /// 核心启动逻辑：线性化管理所有服务的初始化顺序
 pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
     let lifecycle = app.state::<LifecycleState>();

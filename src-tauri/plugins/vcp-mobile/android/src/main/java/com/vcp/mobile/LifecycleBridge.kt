@@ -13,7 +13,10 @@ import java.lang.ref.WeakReference
  * 通过 DefaultLifecycleObserver 自动监听 Activity 生命周期，
  * 使用 evaluateJavascript 直接注入 window.CustomEvent，保持与前端 window.addEventListener 兼容。
  */
-class LifecycleBridge : DefaultLifecycleObserver {
+class LifecycleBridge(
+    private val onResumeHook: (() -> Unit)? = null,
+    private val onConfigurationChangedHook: ((Configuration) -> Unit)? = null
+) : DefaultLifecycleObserver {
 
     private var webViewRef: WebView? = null
     private var activityRef: WeakReference<Activity>? = null
@@ -35,6 +38,7 @@ class LifecycleBridge : DefaultLifecycleObserver {
 
     override fun onResume(owner: LifecycleOwner) {
         emit("vcp-lifecycle", mapOf("state" to "resume"))
+        onResumeHook?.invoke()
     }
 
     override fun onPause(owner: LifecycleOwner) {
@@ -52,6 +56,7 @@ class LifecycleBridge : DefaultLifecycleObserver {
             "state" to "config-changed",
             "isDarkMode" to isDark
         ))
+        onConfigurationChangedHook?.invoke(newConfig)
     }
 
     fun onLowMemory() {

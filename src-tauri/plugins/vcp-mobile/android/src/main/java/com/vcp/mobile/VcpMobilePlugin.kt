@@ -164,10 +164,19 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             }
             startActivityForResult(invoke, intent, "onNotificationSettingsResult")
         } catch (e: Exception) {
-            val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.parse("package:${activity.packageName}")
+            // 如果频道级设置打不开（某些定制 ROM），降级到应用级通知设置
+            try {
+                val appLevel = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
+                }
+                startActivityForResult(invoke, appLevel, "onNotificationSettingsResult")
+            } catch (e2: Exception) {
+                // 最终兜底：应用详情页
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${activity.packageName}")
+                }
+                startActivityForResult(invoke, fallback, "onNotificationSettingsResult")
             }
-            startActivityForResult(invoke, fallback, "onNotificationSettingsResult")
         }
     }
 

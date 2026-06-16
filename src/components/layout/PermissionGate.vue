@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppLifecycleStore } from "../../core/stores/appLifecycle";
 
@@ -33,9 +33,9 @@ const permissionItems: PermissionItem[] = [
   {
     id: "ring",
     name: "通知铃声",
-    desc: "让 AgentMessage 通知可发声或振动；一加/OPPO 等系统可能需要单独开启",
+    desc: "允许 AgentMessage 通知发声或振动；一加/OPPO 等系统需单独开启",
     icon: "i-heroicons-speaker-wave",
-    required: false,
+    required: true,
   },
   {
     id: "storage",
@@ -65,10 +65,13 @@ const requesting = ref<keyof PermissionStatus | null>(null);
 
 const requiredGranted = computed(
   () =>
-    status.value.notification && status.value.storage && status.value.battery
+    status.value.notification &&
+    status.value.ring &&
+    status.value.storage &&
+    status.value.battery
 );
-const ringRecommendedMissing = computed(
-  () => requiredGranted.value && !status.value.ring
+const ringBlockingMissing = computed(
+  () => status.value.notification && !status.value.ring
 );
 
 let checkSequence = 0;
@@ -138,11 +141,32 @@ const exitApp = async () => {
   }
 };
 
-const goNext = () => {
+const goNext = async () => {
+  await check();
+  if (!requiredGranted.value) return;
+
   if (currentStep.value < 3) {
     currentStep.value++;
   }
 };
+
+const enterApp = async () => {
+  await check();
+  if (!requiredGranted.value) {
+    currentStep.value = 1;
+    return;
+  }
+
+  await lifecycleStore.bootstrap(true);
+  if (lifecycleStore.state === "PERMISSIONS") {
+    currentStep.value = 1;
+    await check();
+  }
+};
+
+watch(requiredGranted, (granted) => {
+  if (!granted) currentStep.value = 1;
+});
 
 let checkTimer: any = null;
 
@@ -366,14 +390,14 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Ring recommended missing banner -->
+            <!-- Ring blocking missing banner -->
             <div
-              v-if="ringRecommendedMissing"
+              v-if="ringBlockingMissing"
               class="w-full rounded-2xl bg-amber-50 border border-amber-100 px-4 py-3 text-xs text-amber-700 leading-relaxed mb-4"
             >
               <p>
-                通知铃声未开启，Agent 消息将静音推送。一加/OPPO
-                等定制系统需在通知设置中单独开启铃声。
+                通知铃声未开启，必须开启后才能继续引导。一加/OPPO
+                等定制系统需在通知设置中单独允许使用铃声进行通知。
               </p>
               <button
                 @click="request('ring')"
@@ -440,7 +464,7 @@ onUnmounted(() => {
               class="mt-auto w-full flex flex-col items-center gap-2 permission-gate-bottom-action"
             >
               <button
-                @click="lifecycleStore.bootstrap(true)"
+                @click="enterApp"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
               >
                 <span>进入应用</span>
@@ -476,7 +500,7 @@ onUnmounted(() => {
               class="w-full flex flex-col items-center gap-2 permission-gate-bottom-action"
             >
               <button
-                @click="lifecycleStore.bootstrap(true)"
+                @click="enterApp"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
               >
                 <span>进入应用</span>

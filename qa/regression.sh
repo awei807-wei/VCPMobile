@@ -160,9 +160,17 @@ require_pattern "日记已成功创建" src/components/layout/RightSidebar.vue
 require_pattern "日记已成功更新" src/components/layout/RightSidebar.vue
 require_pattern "通知铃声" src/components/layout/PermissionGate.vue
 require_pattern "requiredGranted" src/components/layout/PermissionGate.vue
-require_pattern "ringRecommendedMissing" src/components/layout/PermissionGate.vue
+require_pattern "status\\.value\\.notification &&" src/components/layout/PermissionGate.vue
+require_pattern "status\\.value\\.ring &&" src/components/layout/PermissionGate.vue
+require_pattern "status\\.value\\.storage &&" src/components/layout/PermissionGate.vue
+require_pattern "status\\.value\\.battery" src/components/layout/PermissionGate.vue
+require_pattern "ringBlockingMissing" src/components/layout/PermissionGate.vue
+require_pattern "必须开启后才能继续引导" src/components/layout/PermissionGate.vue
+reject_pattern "ringRecommendedMissing" src/components/layout/PermissionGate.vue
 require_pattern "vcp-lifecycle" src/components/layout/PermissionGate.vue
 require_pattern "permission-gate-bottom-action" src/components/layout/PermissionGate.vue
+require_pattern "!pStatus\\.ring" src/core/stores/appLifecycle.ts
+reject_pattern "continuing bootstrap with silent" src/core/stores/appLifecycle.ts
 require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "ACTION_APP_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "\"ring\"" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt

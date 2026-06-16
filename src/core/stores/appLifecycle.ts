@@ -248,16 +248,17 @@ export const useAppLifecycleStore = defineStore('appLifecycle', () => {
 
         setState('PERMISSIONS', '检查系统权限完整性');
         const pStatus = await invoke<{ notification: boolean; ring: boolean; storage: boolean; battery: boolean }>('plugin:vcp-mobile|check_all_permissions');
-        if (!pStatus.notification || !pStatus.storage || !pStatus.battery) {
-          console.log('[Lifecycle] Missing permissions, waiting for user action');
+        if (!pStatus.notification || !pStatus.ring || !pStatus.storage || !pStatus.battery) {
+          console.log('[Lifecycle] Missing permissions, waiting for user action', {
+            notification: pStatus.notification,
+            ring: pStatus.ring,
+            storage: pStatus.storage,
+            battery: pStatus.battery
+          });
           // 清除 Promise，以便下次点击“进入应用”时能重新触发
           bootstrapPromise = null;
           isBootstrapping.value = false;
           return;
-        }
-
-        if (!pStatus.ring) {
-          console.warn('[Lifecycle] Notification ringtone is disabled; continuing bootstrap with silent AgentMessage notifications.');
         }
 
         setState('BOOTING', '开始前端主线程启动编排');

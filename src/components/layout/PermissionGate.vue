@@ -14,6 +14,45 @@ interface PermissionStatus {
   battery: boolean;
 }
 
+interface PermissionItem {
+  id: keyof PermissionStatus;
+  name: string;
+  desc: string;
+  icon: string;
+  required: boolean;
+}
+
+const permissionItems: PermissionItem[] = [
+  {
+    id: "notification",
+    name: "系统通知",
+    desc: "显示 Agent 运行状态和即时提醒",
+    icon: "i-heroicons-bell",
+    required: true,
+  },
+  {
+    id: "ring",
+    name: "通知铃声",
+    desc: "让 AgentMessage 通知可发声或振动；一加/OPPO 等系统可能需要单独开启",
+    icon: "i-heroicons-speaker-wave",
+    required: false,
+  },
+  {
+    id: "storage",
+    name: "储存空间权限",
+    desc: "用于保存头像、聊天图片及导出日志",
+    icon: "i-heroicons-folder-open",
+    required: true,
+  },
+  {
+    id: "battery",
+    name: "后台运行权限",
+    desc: "切换到后台时保持连接不被系统中断",
+    icon: "i-heroicons-arrow-path",
+    required: true,
+  },
+];
+
 const status = ref<PermissionStatus>({
   notification: false,
   ring: false,
@@ -29,7 +68,7 @@ const requiredGranted = computed(
     status.value.notification && status.value.storage && status.value.battery
 );
 const ringRecommendedMissing = computed(
-  () => status.value.notification && !status.value.ring
+  () => requiredGranted.value && !status.value.ring
 );
 
 let checkSequence = 0;
@@ -273,32 +312,7 @@ onUnmounted(() => {
             <div class="w-full space-y-3 mb-4">
               <!-- Permission Cards -->
               <div
-                v-for="item in [
-                  {
-                    id: 'notification',
-                    name: '系统通知',
-                    desc: '显示 Agent 运行状态和即时提醒',
-                    icon: 'i-heroicons-bell',
-                  },
-                  {
-                    id: 'ring',
-                    name: '响铃提醒',
-                    desc: '确认 AgentMessage 通知通道可发声和振动',
-                    icon: 'i-heroicons-speaker-wave',
-                  },
-                  {
-                    id: 'storage',
-                    name: '储存空间权限',
-                    desc: '用于保存头像、聊天图片及导出日志',
-                    icon: 'i-heroicons-folder-open',
-                  },
-                  {
-                    id: 'battery',
-                    name: '后台运行权限',
-                    desc: '切换到后台时保持连接不被系统中断',
-                    icon: 'i-heroicons-arrow-path',
-                  },
-                ]"
+                v-for="item in permissionItems"
                 :key="item.id"
                 class="group flex items-center gap-4 px-4 py-3 rounded-2xl bg-gray-100/50 active:bg-gray-200/60 transition-all"
               >
@@ -306,7 +320,10 @@ onUnmounted(() => {
                   class="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0"
                 >
                   <div
-                    :class="[item.icon, status[item.id as keyof PermissionStatus] ? 'text-green-500' : 'text-blue-500']"
+                    :class="[
+                      item.icon,
+                      status[item.id] ? 'text-green-500' : 'text-blue-500',
+                    ]"
                     class="text-xl transition-colors duration-500"
                   ></div>
                 </div>
@@ -317,20 +334,25 @@ onUnmounted(() => {
                     }}</span>
                     <Transition name="fade">
                       <span
-                        v-if="status[item.id as keyof PermissionStatus]"
+                        v-if="status[item.id]"
                         class="text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-600 rounded-md font-black uppercase tracking-wider"
                         >OK</span
                       >
                     </Transition>
+                    <span
+                      v-if="!item.required && !status[item.id]"
+                      class="text-[9px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md font-black uppercase tracking-wider"
+                      >推荐</span
+                    >
                   </div>
                   <p class="text-xs text-gray-500 opacity-70 leading-relaxed">
                     {{ item.desc }}
                   </p>
                 </div>
                 <button
-                  v-if="!status[item.id as keyof PermissionStatus]"
+                  v-if="!status[item.id]"
                   :disabled="requesting === item.id"
-                  @click="request(item.id as any)"
+                  @click="request(item.id)"
                   class="px-3 py-1.5 bg-gray-900 text-white text-[13px] font-bold rounded-lg active:scale-95 transition-all shrink-0 disabled:opacity-60 disabled:active:scale-100"
                 >
                   {{

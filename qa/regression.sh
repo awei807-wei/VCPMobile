@@ -158,10 +158,13 @@ require_pattern "formatDailyNoteNotificationMessage" src/core/composables/useNot
 require_pattern "vcpData\\.tool_name === 'DailyNote' && pluginOutputMessage" src/core/composables/useNotificationProcessor.ts
 require_pattern "日记已成功创建" src/components/layout/RightSidebar.vue
 require_pattern "日记已成功更新" src/components/layout/RightSidebar.vue
-require_pattern "响铃提醒" src/components/layout/PermissionGate.vue
+require_pattern "通知铃声" src/components/layout/PermissionGate.vue
+require_pattern "requiredGranted" src/components/layout/PermissionGate.vue
+require_pattern "ringRecommendedMissing" src/components/layout/PermissionGate.vue
 require_pattern "vcp-lifecycle" src/components/layout/PermissionGate.vue
 require_pattern "permission-gate-bottom-action" src/components/layout/PermissionGate.vue
 require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "ACTION_APP_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "\"ring\"" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "select_apk_asset" src-tauri/src/vcp_modules/updater/update_manager.rs
 require_pattern "打开 Release" src/components/ui/UpdatePrompt.vue

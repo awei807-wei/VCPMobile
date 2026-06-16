@@ -68,6 +68,8 @@ rg -q "vcp-lifecycle" src/components/layout/PermissionGate.vue \
   || fail "权限门必须监听 Android 生命周期恢复，避免设置页返回后状态不刷新"
 rg -q "permission-gate-bottom-action" src/components/layout/PermissionGate.vue \
   || fail "权限门底部操作区必须适配虚拟导航栏安全区"
+rg -q 'features = \[[^]]*"custom-protocol"' src-tauri/Cargo.toml \
+  || fail "Android 可安装 debug APK 必须启用 Tauri custom-protocol，避免离线启动时请求 http://localhost:1420"
 if rg -q 'title=\$title' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
   fail "Android 系统通知日志不应输出通知标题内容"
 fi

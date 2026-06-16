@@ -175,6 +175,7 @@ require_pattern "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER" scripts/android_env.f
 require_pattern "max-page-size=16384" scripts/android_env.sh
 require_pattern "max-page-size=16384" .cargo/config.toml
 require_pattern "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" .github/workflows/release.yml
+require_pattern 'features = \[[^]]*"custom-protocol"' src-tauri/Cargo.toml
 require_pattern "Notification requested but Android delivery failed" src-tauri/src/distributed/tools/notification.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_memo.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_sponsor.rs

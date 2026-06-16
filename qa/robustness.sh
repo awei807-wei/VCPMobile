@@ -60,8 +60,10 @@ rg -q "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/m
   || fail "首次权限门必须检查 AgentMessage 响铃能力"
 rg -q "hasSound || hasVibration" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
   || fail "响铃能力应接受声音或振动任一可用，避免 OEM 关闭振动后误判未授权"
-rg -q "ACTION_CHANNEL_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
-  || fail "响铃能力异常时必须引导到通知通道设置"
+rg -q "ACTION_APP_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  || fail "响铃能力异常时必须优先引导到应用通知设置，覆盖定制系统应用级铃声开关"
+rg -q "requiredGranted" src/components/layout/PermissionGate.vue \
+  || fail "权限门必须只用必需权限阻断下一步，通知铃声不可硬拦首装"
 rg -q "vcp-lifecycle" src/components/layout/PermissionGate.vue \
   || fail "权限门必须监听 Android 生命周期恢复，避免设置页返回后状态不刷新"
 rg -q "permission-gate-bottom-action" src/components/layout/PermissionGate.vue \

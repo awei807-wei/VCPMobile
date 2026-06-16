@@ -153,9 +153,8 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         try {
             createAgentMessageNotificationChannel()
             val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
                     putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
-                    putExtra(Settings.EXTRA_CHANNEL_ID, AGENT_MESSAGE_CHANNEL_ID)
                 }
             } else {
                 Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {

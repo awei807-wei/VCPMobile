@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { useAppLifecycleStore } from '../../core/stores/appLifecycle';
+import { ref, onMounted, onUnmounted, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { useAppLifecycleStore } from "../../core/stores/appLifecycle";
 
 const lifecycleStore = useAppLifecycleStore();
 
@@ -18,13 +18,19 @@ const status = ref<PermissionStatus>({
   notification: false,
   ring: false,
   storage: false,
-  battery: false
+  battery: false,
 });
 
 const currentStep = ref(1);
 const requesting = ref<keyof PermissionStatus | null>(null);
 
-const allGranted = computed(() => status.value.notification && status.value.ring && status.value.storage && status.value.battery);
+const requiredGranted = computed(
+  () =>
+    status.value.notification && status.value.storage && status.value.battery
+);
+const ringRecommendedMissing = computed(
+  () => status.value.notification && !status.value.ring
+);
 
 let checkSequence = 0;
 let requestRecheckTimers: ReturnType<typeof setTimeout>[] = [];
@@ -33,11 +39,13 @@ let requestingResetTimer: ReturnType<typeof setTimeout> | null = null;
 const check = async () => {
   const sequence = ++checkSequence;
   try {
-    const res = await invoke<PermissionStatus>('plugin:vcp-mobile|check_all_permissions');
+    const res = await invoke<PermissionStatus>(
+      "plugin:vcp-mobile|check_all_permissions"
+    );
     if (sequence !== checkSequence) return;
     status.value = res;
   } catch (e) {
-    console.error('[PermissionGate] Failed to check permissions:', e);
+    console.error("[PermissionGate] Failed to check permissions:", e);
   }
 };
 
@@ -48,7 +56,9 @@ const clearRequestRecheckTimers = () => {
 
 const scheduleRequestRechecks = () => {
   clearRequestRecheckTimers();
-  requestRecheckTimers = REQUEST_RECHECK_DELAYS_MS.map((delay) => setTimeout(check, delay));
+  requestRecheckTimers = REQUEST_RECHECK_DELAYS_MS.map((delay) =>
+    setTimeout(check, delay)
+  );
 };
 
 const resetRequestingLater = (type: keyof PermissionStatus) => {
@@ -60,12 +70,16 @@ const resetRequestingLater = (type: keyof PermissionStatus) => {
   }, 6000);
 };
 
-const request = async (type: 'notification' | 'ring' | 'storage' | 'battery') => {
+const request = async (
+  type: "notification" | "ring" | "storage" | "battery"
+) => {
   requesting.value = type;
   scheduleRequestRechecks();
   resetRequestingLater(type);
   try {
-    await invoke('plugin:vcp-mobile|request_android_permission', { pType: type });
+    await invoke("plugin:vcp-mobile|request_android_permission", {
+      pType: type,
+    });
     await check();
   } catch (e) {
     console.error(`[PermissionGate] Failed to request ${type} permission:`, e);
@@ -79,9 +93,9 @@ const request = async (type: 'notification' | 'ring' | 'storage' | 'battery') =>
 
 const exitApp = async () => {
   try {
-    await invoke('plugin:vcp-mobile|move_task_to_back');
+    await invoke("plugin:vcp-mobile|move_task_to_back");
   } catch (e) {
-    console.error('[PermissionGate] Failed to move task to back:', e);
+    console.error("[PermissionGate] Failed to move task to back:", e);
   }
 };
 
@@ -106,7 +120,7 @@ const onVisibilityChange = () => {
 
 const onLifecycleChange = (e: Event) => {
   const state = (e as CustomEvent<{ state?: string }>).detail?.state;
-  if (state === 'resume' || state === 'config-changed') {
+  if (state === "resume" || state === "config-changed") {
     check();
   }
 };
@@ -118,13 +132,13 @@ const onPageVisible = () => {
 onMounted(() => {
   check();
   // 当应用从后台切回前台时重检（用户在设置页操作后返回）
-  window.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener("visibilitychange", onVisibilityChange);
   // Android 原生 Activity 恢复比 WebView visibilitychange 更可靠，设置页返回时优先走这里
-  window.addEventListener('vcp-lifecycle', onLifecycleChange);
-  window.addEventListener('focus', onPageVisible);
-  window.addEventListener('pageshow', onPageVisible);
+  window.addEventListener("vcp-lifecycle", onLifecycleChange);
+  window.addEventListener("focus", onPageVisible);
+  window.addEventListener("pageshow", onPageVisible);
   // Kotlin 侧主动推送的权限变更事件
-  window.addEventListener('vcp-permission-change', onPermissionChange);
+  window.addEventListener("vcp-permission-change", onPermissionChange);
   // 低频兜底轮询，防止极端情况下事件丢失
   checkTimer = setInterval(check, 10000);
 });
@@ -133,33 +147,48 @@ onUnmounted(() => {
   if (checkTimer) clearInterval(checkTimer);
   if (requestingResetTimer) clearTimeout(requestingResetTimer);
   clearRequestRecheckTimers();
-  window.removeEventListener('visibilitychange', onVisibilityChange);
-  window.removeEventListener('vcp-lifecycle', onLifecycleChange);
-  window.removeEventListener('focus', onPageVisible);
-  window.removeEventListener('pageshow', onPageVisible);
-  window.removeEventListener('vcp-permission-change', onPermissionChange);
+  window.removeEventListener("visibilitychange", onVisibilityChange);
+  window.removeEventListener("vcp-lifecycle", onLifecycleChange);
+  window.removeEventListener("focus", onPageVisible);
+  window.removeEventListener("pageshow", onPageVisible);
+  window.removeEventListener("vcp-permission-change", onPermissionChange);
 });
 </script>
 
 <template>
-  <div class="fixed inset-0 z-gate bg-white flex flex-col items-center select-none overflow-hidden no-rubber-band">
+  <div
+    class="fixed inset-0 z-gate bg-white flex flex-col items-center select-none overflow-hidden no-rubber-band"
+  >
     <!-- Top Section: 米白（所有步骤共享） -->
     <div
       class="w-full bg-[#FAF6EE] flex flex-col items-center px-5 pb-3 shrink-0"
-      style="padding-top: calc(3rem + var(--vcp-safe-top, env(safe-area-inset-top, 0px)));"
+      style="
+        padding-top: calc(
+          3rem + var(--vcp-safe-top, env(safe-area-inset-top, 0px))
+        );
+      "
     >
       <!-- Top Illustration Area -->
       <div class="relative w-full flex flex-col items-center mb-1">
         <!-- Background Decorative Blobs -->
-        <div class="absolute -top-12 -right-6 w-36 h-36 bg-blue-500/8 rounded-full blur-3xl"></div>
-        <div class="absolute top-8 -left-12 w-44 h-44 bg-cyan-400/8 rounded-full blur-3xl"></div>
+        <div
+          class="absolute -top-12 -right-6 w-36 h-36 bg-blue-500/8 rounded-full blur-3xl"
+        ></div>
+        <div
+          class="absolute top-8 -left-12 w-44 h-44 bg-cyan-400/8 rounded-full blur-3xl"
+        ></div>
 
-        <div class="w-32 h-32 rounded-3xl flex items-center justify-center mb-1 relative z-10">
+        <div
+          class="w-32 h-32 rounded-3xl flex items-center justify-center mb-1 relative z-10"
+        >
           <img src="/vcpmobile.svg" class="w-24 h-24" />
         </div>
-        <h1 class="text-xl font-semibold text-gray-900 tracking-[0.05em] mb-1">VCP Mobile Android</h1>
+        <h1 class="text-xl font-semibold text-gray-900 tracking-[0.05em] mb-1">
+          VCP Mobile Android
+        </h1>
         <p class="text-sm text-[#8B7D6B] text-center leading-relaxed px-4">
-          将 VCPMobile 部署到你的手机，通过这台手机和智能体对话，建议使用闲置手机
+          将 VCPMobile
+          部署到你的手机，通过这台手机和智能体对话，建议使用闲置手机
         </p>
       </div>
     </div>
@@ -169,107 +198,225 @@ onUnmounted(() => {
       <!-- Progress Indicator -->
       <div class="flex items-center w-full px-5 pt-4 mb-2 shrink-0">
         <!-- Step 1 -->
-        <div class="w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors duration-300"
-          :class="currentStep === 1 ? 'border-gray-900' : (currentStep > 1 ? 'border-gray-900 bg-gray-900' : 'border-gray-100')">
-          <div v-if="currentStep === 1" class="w-2 h-2 bg-gray-900 rounded-full"></div>
-          <span v-else-if="currentStep > 1" class="text-[10px] font-bold text-white">1</span>
+        <div
+          class="w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors duration-300"
+          :class="
+            currentStep === 1
+              ? 'border-gray-900'
+              : currentStep > 1
+              ? 'border-gray-900 bg-gray-900'
+              : 'border-gray-100'
+          "
+        >
+          <div
+            v-if="currentStep === 1"
+            class="w-2 h-2 bg-gray-900 rounded-full"
+          ></div>
+          <span
+            v-else-if="currentStep > 1"
+            class="text-[10px] font-bold text-white"
+            >1</span
+          >
         </div>
         <!-- Line 1→2 -->
-        <div class="h-[1px] flex-1 mx-4 transition-colors duration-300"
-          :class="currentStep > 1 ? 'bg-gray-900' : 'bg-gray-100'"></div>
+        <div
+          class="h-[1px] flex-1 mx-4 transition-colors duration-300"
+          :class="currentStep > 1 ? 'bg-gray-900' : 'bg-gray-100'"
+        ></div>
         <!-- Step 2 -->
-        <div class="w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors duration-300"
-          :class="currentStep === 2 ? 'border-gray-900 text-gray-900' : (currentStep > 2 ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-100 text-gray-300')">
+        <div
+          class="w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors duration-300"
+          :class="
+            currentStep === 2
+              ? 'border-gray-900 text-gray-900'
+              : currentStep > 2
+              ? 'border-gray-900 bg-gray-900 text-white'
+              : 'border-gray-100 text-gray-300'
+          "
+        >
           2
         </div>
         <!-- Line 2→3 -->
-        <div class="h-[1px] flex-1 mx-4 transition-colors duration-300"
-          :class="currentStep > 2 ? 'bg-gray-900' : 'bg-gray-100'"></div>
+        <div
+          class="h-[1px] flex-1 mx-4 transition-colors duration-300"
+          :class="currentStep > 2 ? 'bg-gray-900' : 'bg-gray-100'"
+        ></div>
         <!-- Step 3 -->
-        <div class="w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors duration-300"
-          :class="currentStep === 3 ? 'border-gray-900 text-gray-900' : 'border-gray-100 text-gray-300'">
+        <div
+          class="w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors duration-300"
+          :class="
+            currentStep === 3
+              ? 'border-gray-900 text-gray-900'
+              : 'border-gray-100 text-gray-300'
+          "
+        >
           3
         </div>
       </div>
 
       <!-- Slide Container -->
       <div class="flex-1 relative overflow-hidden">
-        <div class="flex h-full transition-transform duration-500 ease-in-out"
-             :style="{ transform: `translateX(-${(currentStep - 1) * 100}%)` }">
-
+        <div
+          class="flex h-full transition-transform duration-500 ease-in-out"
+          :style="{ transform: `translateX(-${(currentStep - 1) * 100}%)` }"
+        >
           <!-- ========== Step 1: Permissions ========== -->
-          <div class="w-full h-full flex-shrink-0 flex flex-col px-5 overflow-y-auto">
-            <h3 class="text-lg font-semibold text-gray-900 mb-2 px-1 w-full">授予权限</h3>
+          <div
+            class="w-full h-full flex-shrink-0 flex flex-col px-5 overflow-y-auto"
+          >
+            <h3 class="text-lg font-semibold text-gray-900 mb-2 px-1 w-full">
+              授予权限
+            </h3>
             <p class="text-sm text-[#8B7D6B] leading-relaxed mb-4 px-1">
-              VCP Mobile 需要以下权限才能稳定运行<br>VCP Mobile Core
+              VCP Mobile 需要以下权限才能稳定运行<br />VCP Mobile Core
             </p>
             <div class="w-full space-y-3 mb-4">
               <!-- Permission Cards -->
-              <div v-for="item in [
-                { id: 'notification', name: '系统通知', desc: '显示 Agent 运行状态和即时提醒', icon: 'i-heroicons-bell' },
-                { id: 'ring', name: '响铃提醒', desc: '确认 AgentMessage 通知通道可发声和振动', icon: 'i-heroicons-speaker-wave' },
-                { id: 'storage', name: '储存空间权限', desc: '用于保存头像、聊天图片及导出日志', icon: 'i-heroicons-folder-open' },
-                { id: 'battery', name: '后台运行权限', desc: '切换到后台时保持连接不被系统中断', icon: 'i-heroicons-arrow-path' }
-              ]" :key="item.id"
+              <div
+                v-for="item in [
+                  {
+                    id: 'notification',
+                    name: '系统通知',
+                    desc: '显示 Agent 运行状态和即时提醒',
+                    icon: 'i-heroicons-bell',
+                  },
+                  {
+                    id: 'ring',
+                    name: '响铃提醒',
+                    desc: '确认 AgentMessage 通知通道可发声和振动',
+                    icon: 'i-heroicons-speaker-wave',
+                  },
+                  {
+                    id: 'storage',
+                    name: '储存空间权限',
+                    desc: '用于保存头像、聊天图片及导出日志',
+                    icon: 'i-heroicons-folder-open',
+                  },
+                  {
+                    id: 'battery',
+                    name: '后台运行权限',
+                    desc: '切换到后台时保持连接不被系统中断',
+                    icon: 'i-heroicons-arrow-path',
+                  },
+                ]"
+                :key="item.id"
                 class="group flex items-center gap-4 px-4 py-3 rounded-2xl bg-gray-100/50 active:bg-gray-200/60 transition-all"
               >
-                <div class="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
-                  <div :class="[item.icon, status[item.id as keyof PermissionStatus] ? 'text-green-500' : 'text-blue-500']" class="text-xl transition-colors duration-500"></div>
+                <div
+                  class="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0"
+                >
+                  <div
+                    :class="[item.icon, status[item.id as keyof PermissionStatus] ? 'text-green-500' : 'text-blue-500']"
+                    class="text-xl transition-colors duration-500"
+                  ></div>
                 </div>
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-2">
-                    <span class="font-semibold text-gray-900">{{ item.name }}</span>
+                    <span class="font-semibold text-gray-900">{{
+                      item.name
+                    }}</span>
                     <Transition name="fade">
-                      <span v-if="status[item.id as keyof PermissionStatus]" class="text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-600 rounded-md font-black uppercase tracking-wider">OK</span>
+                      <span
+                        v-if="status[item.id as keyof PermissionStatus]"
+                        class="text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-600 rounded-md font-black uppercase tracking-wider"
+                        >OK</span
+                      >
                     </Transition>
                   </div>
-                  <p class="text-xs text-gray-500 opacity-70 leading-relaxed">{{ item.desc }}</p>
+                  <p class="text-xs text-gray-500 opacity-70 leading-relaxed">
+                    {{ item.desc }}
+                  </p>
                 </div>
-                <button v-if="!status[item.id as keyof PermissionStatus]"
+                <button
+                  v-if="!status[item.id as keyof PermissionStatus]"
                   :disabled="requesting === item.id"
                   @click="request(item.id as any)"
                   class="px-3 py-1.5 bg-gray-900 text-white text-[13px] font-bold rounded-lg active:scale-95 transition-all shrink-0 disabled:opacity-60 disabled:active:scale-100"
                 >
-                  {{ requesting === item.id ? '检查中' : '去授权' }}
+                  {{
+                    requesting === item.id
+                      ? "检查中"
+                      : item.id === "ring" && status.notification
+                      ? "去设置"
+                      : "去授权"
+                  }}
                 </button>
               </div>
             </div>
 
+            <!-- Ring recommended missing banner -->
+            <div
+              v-if="ringRecommendedMissing"
+              class="w-full rounded-2xl bg-amber-50 border border-amber-100 px-4 py-3 text-xs text-amber-700 leading-relaxed mb-4"
+            >
+              <p>
+                通知铃声未开启，Agent 消息将静音推送。一加/OPPO
+                等定制系统需在通知设置中单独开启铃声。
+              </p>
+              <button
+                @click="request('ring')"
+                :disabled="requesting === 'ring'"
+                class="mt-2 px-3 py-1.5 bg-amber-600 text-white text-xs font-bold rounded-lg active:scale-95 transition-all disabled:opacity-60"
+              >
+                {{ requesting === "ring" ? "跳转中..." : "前往开启铃声" }}
+              </button>
+            </div>
+
             <!-- Bottom Action -->
-            <div class="mt-auto w-full flex flex-col items-center gap-2 permission-gate-bottom-action">
-              <button v-if="allGranted && currentStep === 1"
+            <div
+              class="mt-auto w-full flex flex-col items-center gap-2 permission-gate-bottom-action"
+            >
+              <button
+                v-if="requiredGranted && currentStep === 1"
                 @click="goNext"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
               >
                 <span>下一步</span>
                 <div class="i-heroicons-arrow-right text-lg"></div>
               </button>
-              <button v-else-if="!allGranted" @click="exitApp" class="text-xs font-bold text-gray-400 active:text-gray-900 transition-colors py-2 px-4">
+              <button
+                v-else-if="!requiredGranted"
+                @click="exitApp"
+                class="text-xs font-bold text-gray-400 active:text-gray-900 transition-colors py-2 px-4"
+              >
                 暂不授权，退出应用
               </button>
             </div>
           </div>
 
           <!-- ========== Step 2: Battery Optimization ========== -->
-          <div class="w-full h-full flex-shrink-0 flex flex-col px-5 overflow-y-auto">
-            <h3 class="text-lg font-semibold text-gray-900 mb-2 px-1 w-full">品牌电池白名单设置</h3>
+          <div
+            class="w-full h-full flex-shrink-0 flex flex-col px-5 overflow-y-auto"
+          >
+            <h3 class="text-lg font-semibold text-gray-900 mb-2 px-1 w-full">
+              品牌电池白名单设置
+            </h3>
             <p class="text-sm text-[#8B7D6B] leading-relaxed mb-4 px-1">
-              系统后台权限已授予，但这拦不住品牌厂商自己的电池管理。<br>小米、华为、OPPO 等品牌还有独立的电池管理策略
-  ，需要额外将本应用加入白名单。如果不进行以下设置，锁屏后 Agent 仍可能掉线。<br><br>建议将 VCP Mobile 加入电池白名单。
+              系统后台权限已授予，但这拦不住品牌厂商自己的电池管理。<br />小米、华为、OPPO
+              等品牌还有独立的电池管理策略
+              ，需要额外将本应用加入白名单。如果不进行以下设置，锁屏后 Agent
+              仍可能掉线。<br /><br />建议将 VCP Mobile 加入电池白名单。
             </p>
 
-            <div class="bg-gray-100/50 border border-gray-200 rounded-xl p-4 space-y-2 mb-4">
+            <div
+              class="bg-gray-100/50 border border-gray-200 rounded-xl p-4 space-y-2 mb-4"
+            >
               <div class="flex items-center gap-2 text-gray-700">
                 <div class="i-heroicons-information-circle w-4 h-4"></div>
-                <span class="text-xs font-bold uppercase tracking-wider">建议操作</span>
+                <span class="text-xs font-bold uppercase tracking-wider"
+                  >建议操作</span
+                >
               </div>
               <p class="text-xs text-gray-500 leading-relaxed">
-                进入应用后，右滑打开「全局设置 → 电池优化」查看各品牌的详细设置步骤，按步骤添加白名单即可。
+                进入应用后，右滑打开「全局设置 →
+                电池优化」查看各品牌的详细设置步骤，按步骤添加白名单即可。
               </p>
             </div>
 
             <!-- Bottom Action -->
-            <div class="mt-auto w-full flex flex-col items-center gap-2 permission-gate-bottom-action">
+            <div
+              class="mt-auto w-full flex flex-col items-center gap-2 permission-gate-bottom-action"
+            >
               <button
                 @click="lifecycleStore.bootstrap(true)"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
@@ -281,19 +428,31 @@ onUnmounted(() => {
           </div>
 
           <!-- ========== Step 3: Placeholder ========== -->
-          <div class="w-full h-full flex-shrink-0 flex flex-col px-5 overflow-y-auto">
+          <div
+            class="w-full h-full flex-shrink-0 flex flex-col px-5 overflow-y-auto"
+          >
             <div class="flex-1 flex flex-col items-center justify-center">
-              <div class="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
-                <div class="i-heroicons-rocket-launch text-2xl text-gray-400"></div>
+              <div
+                class="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center mb-4"
+              >
+                <div
+                  class="i-heroicons-rocket-launch text-2xl text-gray-400"
+                ></div>
               </div>
-              <h3 class="text-lg font-semibold text-gray-900 mb-2">更多功能即将上线</h3>
-              <p class="text-sm text-[#8B7D6B] text-center leading-relaxed px-4">
+              <h3 class="text-lg font-semibold text-gray-900 mb-2">
+                更多功能即将上线
+              </h3>
+              <p
+                class="text-sm text-[#8B7D6B] text-center leading-relaxed px-4"
+              >
                 后续版本将提供更多初始化引导功能
               </p>
             </div>
 
             <!-- Bottom Action -->
-            <div class="w-full flex flex-col items-center gap-2 permission-gate-bottom-action">
+            <div
+              class="w-full flex flex-col items-center gap-2 permission-gate-bottom-action"
+            >
               <button
                 @click="lifecycleStore.bootstrap(true)"
                 class="w-full py-4 bg-gray-900 text-white text-[15px] font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-gray-900/10 flex items-center justify-center gap-2"
@@ -303,7 +462,6 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
-
         </div>
       </div>
     </div>
@@ -321,6 +479,8 @@ onUnmounted(() => {
 }
 
 .permission-gate-bottom-action {
-  padding-bottom: calc(1.5rem + var(--vcp-safe-bottom, env(safe-area-inset-bottom, 0px)));
+  padding-bottom: calc(
+    1.5rem + var(--vcp-safe-bottom, env(safe-area-inset-bottom, 0px))
+  );
 }
 </style>

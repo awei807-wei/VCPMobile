@@ -446,6 +446,31 @@ pub fn de_indent_misinterpreted_code_blocks(text: &str) -> String {
     result
 }
 
+fn find_matching_fence_end(
+    search_area: &str,
+    start_marker_text: &str,
+) -> (Option<usize>, Option<usize>, bool) {
+    let trimmed = start_marker_text.trim_start();
+    let fence_char = match trimmed.chars().next() {
+        Some(c) if c == '`' => c,
+        _ => return (None, None, false),
+    };
+    let count = trimmed.chars().take_while(|&c| c == fence_char).count();
+    if count < 3 {
+        return (None, None, false);
+    }
+
+    let regex_str = format!(r"(?m)^[ \t]{{0,3}}\`{{{},}}[ \t]*\r?$", count);
+
+    if let Ok(re) = Regex::new(&regex_str) {
+        if let Some(m) = re.find(search_area) {
+            return (Some(m.start()), Some(m.end()), true);
+        }
+    }
+
+    (None, None, false)
+}
+
 /// 核心解析函数：将原始 Markdown 文本解析为 AST 块数组
 pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
     let deindented_text = de_indent_misinterpreted_code_blocks(raw_text);
@@ -963,6 +988,53 @@ mod tests {
         match &blocks[0] {
             ContentBlock::Markdown { .. } => {}
             _ => panic!("Expected Markdown block, got {:?}", blocks[0]),
+        }
+    }
+
+    #[test]
+    fn test_pre_txt_16_parsing() {
+        let text = "### 16. 代码块内包含围栏\n\n````markdown\n```python\n# This is code inside markdown inside code\nprint(\"nested\")\n```\n````";
+        let blocks = parse_content(text);
+        println!("BLOCKS: {:#?}", blocks);
+        assert_eq!(blocks.len(), 2);
+
+        // 第一个块应该是 Heading
+        if let ContentBlock::Markdown { nodes, .. } = &blocks[0] {
+            let nodes = nodes.as_ref().unwrap();
+            assert_eq!(nodes.len(), 1);
+            assert!(matches!(
+                nodes[0],
+                crate::vcp_modules::pre_renderer::MarkdownNode::Heading { .. }
+            ));
+        } else {
+            panic!("Expected Heading block");
+        }
+
+        // 第二个块应该是 CodeBlock
+        if let ContentBlock::Markdown { nodes, .. } = &blocks[1] {
+            let nodes = nodes.as_ref().unwrap();
+            assert_eq!(nodes.len(), 1);
+            let has_nested_code = nodes.iter().any(|node| {
+                if let crate::vcp_modules::pre_renderer::MarkdownNode::CodeBlock {
+                    lang,
+                    code,
+                    ..
+                } = node
+                {
+                    lang.as_deref() == Some("markdown") && code.contains("```python")
+                } else {
+                    false
+                }
+            });
+            assert!(
+                has_nested_code,
+                "Expected to find a nested CodeBlock with lang=markdown and containing inner code"
+            );
+        } else {
+            panic!(
+                "Expected Markdown block with nested code, got {:?}",
+                blocks[1]
+            );
         }
     }
 }

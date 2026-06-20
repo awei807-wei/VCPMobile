@@ -9,7 +9,11 @@ import { useNotificationStore } from "../../core/stores/notification";
 import { useMessageEvents } from "../../core/composables/useMessageEvents";
 import { useEmoticonFixer } from "../../core/composables/useEmoticonFixer";
 import { renderMarkdownNodes } from "../../core/utils/astRenderer";
-import { applyFrame, cleanupRegistry, rebuildSnapshot } from "../../core/utils/astExecutor";
+import {
+  applyFrame,
+  cleanupRegistry,
+  rebuildSnapshot,
+} from "../../core/utils/astExecutor";
 import { useMessageStyleInjector } from "../../core/composables/useMessageStyleInjector";
 import { Copy, Edit2, RotateCcw, Trash2, StopCircle } from "lucide-vue-next";
 import morphdom from "morphdom";
@@ -73,10 +77,11 @@ function astDebugLog(...args: unknown[]): void {
 const tailSandboxRef = ref<HTMLElement | null>(null);
 const enableAstDiff = ref(true); // Feature Flag, 默认开启
 const useAstForCurrentTail = computed(() => {
-  return enableAstDiff.value && (
-    !!props.message.tailFrame ||
-    !!props.message.tailBlock?.nodes ||
-    !!props.message.tailSnapshot
+  return (
+    enableAstDiff.value &&
+    (!!props.message.tailFrame ||
+      !!props.message.tailBlock?.nodes ||
+      !!props.message.tailSnapshot)
   );
 });
 let lastAppliedFrameSeq = 0;
@@ -97,7 +102,9 @@ function rebuildTailSnapshot(sandbox: HTMLElement): void {
 
 function handleAstFrameFailure(sandbox: HTMLElement, reason: string): void {
   astFailureCount += 1;
-  console.warn(`[AST Diff Recovery] ${props.message.id}: ${reason}. failureCount=${astFailureCount}`);
+  console.warn(
+    `[AST Diff Recovery] ${props.message.id}: ${reason}. failureCount=${astFailureCount}`
+  );
   if (getTailSnapshotNodes().length > 0) {
     rebuildTailSnapshot(sandbox);
     // 【意图性设计说明】：此处直接 return 退出，不执行下方的关闭降级逻辑，是有意为之的保活设计。
@@ -132,21 +139,31 @@ const isMessageInActiveStream = isMessageInAnyActiveStream;
 const isStreaming = computed(() => {
   if (shell.value?.isUser) return false;
 
-  const isGroup = !!props.message.isGroupMessage || !!props.message.groupId || sessionStore.currentSelectedItem?.type === "group";
+  const isGroup =
+    !!props.message.isGroupMessage ||
+    !!props.message.groupId ||
+    sessionStore.currentSelectedItem?.type === "group";
   const itemId = isGroup
-    ? (props.message.groupId || sessionStore.currentSelectedItem?.id)
-    : (props.message.agentId || props.agentId);
+    ? props.message.groupId || sessionStore.currentSelectedItem?.id
+    : props.message.agentId || props.agentId;
 
   const topicId = sessionStore.currentTopicId;
   if (!itemId || !topicId) return false;
 
-  return streamStore.isMessageActiveInSession(itemId, topicId, props.message.id);
+  return streamStore.isMessageActiveInSession(
+    itemId,
+    topicId,
+    props.message.id
+  );
 });
 
 // === <!--brk--> 消息分条拆分算法 ===
 
 function isBrkNode(node: any): boolean {
-  if ((node.type === "raw_html" || node.type === "raw_html_inline") && node.content) {
+  if (
+    (node.type === "raw_html" || node.type === "raw_html_inline") &&
+    node.content
+  ) {
     const trimmed = node.content.trim().replace(/\s+/g, "");
     return trimmed === "<!--brk-->";
   }
@@ -169,14 +186,27 @@ function isBrkBlock(block: ContentBlock): boolean {
   return false;
 }
 
+function trimWhitespaceNodes(nodes: any[]): any[] {
+  let start = 0;
+  while (start < nodes.length && isWhitespaceNode(nodes[start])) {
+    start++;
+  }
+  let end = nodes.length;
+  while (end > start && isWhitespaceNode(nodes[end - 1])) {
+    end--;
+  }
+  return nodes.slice(start, end);
+}
+
 function splitMarkdownNodes(nodes: any[]): any[][] {
   const result: any[][] = [];
   let currentGroup: any[] = [];
 
   for (const node of nodes) {
     if (isBrkNode(node)) {
-      if (currentGroup.length > 0) {
-        result.push(currentGroup);
+      const trimmed = trimWhitespaceNodes(currentGroup);
+      if (trimmed.length > 0) {
+        result.push(trimmed);
         currentGroup = [];
       }
     } else {
@@ -184,8 +214,9 @@ function splitMarkdownNodes(nodes: any[]): any[][] {
     }
   }
 
-  if (currentGroup.length > 0) {
-    result.push(currentGroup);
+  const trimmed = trimWhitespaceNodes(currentGroup);
+  if (trimmed.length > 0) {
+    result.push(trimmed);
   }
   return result;
 }
@@ -205,7 +236,7 @@ const messageBubbles = computed(() => {
     if (currentBlocks.length > 0) {
       list.push({
         id: `${props.message.id}-bubble-${bubbleIndex++}`,
-        blocks: [...currentBlocks]
+        blocks: [...currentBlocks],
       });
       currentBlocks = [];
     }
@@ -233,7 +264,10 @@ const messageBubbles = computed(() => {
             const newBlock: ContentBlock = {
               ...block,
               nodes: groupNodes,
-              hash: block.hash !== undefined ? `${block.hash}-split-${idx}` : undefined
+              hash:
+                block.hash !== undefined
+                  ? `${block.hash}-split-${idx}`
+                  : undefined,
             };
             currentBlocks.push(newBlock);
             if (idx < nodeGroups.length - 1) {
@@ -255,15 +289,18 @@ const messageBubbles = computed(() => {
   pushCurrentGroup();
 
   // 🆕 流式状态下，如果最后一个稳定块是个 brk 块，我们需要额外追加一个空的气泡组以供 tailBlock 打字渲染
-  const lastBlockIsBrk = props.message.blocks && props.message.blocks.length > 0 && (() => {
-    const last = props.message.blocks[props.message.blocks.length - 1];
-    return last ? isBrkBlock(last) : false;
-  })();
+  const lastBlockIsBrk =
+    props.message.blocks &&
+    props.message.blocks.length > 0 &&
+    (() => {
+      const last = props.message.blocks[props.message.blocks.length - 1];
+      return last ? isBrkBlock(last) : false;
+    })();
 
   if (isStreaming.value && props.message.tailBlock && lastBlockIsBrk) {
     list.push({
       id: `${props.message.id}-bubble-${bubbleIndex++}`,
-      blocks: []
+      blocks: [],
     });
   }
 
@@ -271,7 +308,7 @@ const messageBubbles = computed(() => {
   if (list.length === 0) {
     list.push({
       id: `${props.message.id}-bubble-0`,
-      blocks: []
+      blocks: [],
     });
   }
 
@@ -284,12 +321,7 @@ useMessageEvents(messageContentRef);
 
 // === Block Rendering Helper ===
 function isPlainBlock(type: string): boolean {
-  return [
-    "markdown",
-    "diary",
-    "role-divider",
-    "button-click",
-  ].includes(type);
+  return ["markdown", "diary", "role-divider", "button-click"].includes(type);
 }
 
 function renderBlockHtml(block: ContentBlock): string {
@@ -303,18 +335,27 @@ function renderBlockHtml(block: ContentBlock): string {
         ) {
           const content = block.nodes[0].content;
           let cssContent = "";
-          content.replace(/<style\b[^>]*>([\s\S]*?)(?:<\/style>|$)/gi, (_, css) => {
-            cssContent += css.trim() + "\n";
-            return "";
-          });
+          content.replace(
+            /<style\b[^>]*>([\s\S]*?)(?:<\/style>|$)/gi,
+            (_, css) => {
+              cssContent += css.trim() + "\n";
+              return "";
+            }
+          );
           if (cssContent.trim().length > 0) {
             injectScopedCss(cssContent, props.message.id);
           }
           return "";
         }
-        return `<div class="vcp-markdown-block">${renderMarkdownNodes(block.nodes, props.message.id, block.hash)}</div>`;
+        return `<div class="vcp-markdown-block">${renderMarkdownNodes(
+          block.nodes,
+          props.message.id,
+          block.hash
+        )}</div>`;
       }
-      return `<div class="vcp-markdown-block"><p>${escapeHtml(block.content || "")}</p></div>`;
+      return `<div class="vcp-markdown-block"><p>${escapeHtml(
+        block.content || ""
+      )}</p></div>`;
 
     case "diary":
       return renderDailyNoteBlock(block);
@@ -351,7 +392,11 @@ function renderBlockHtml(block: ContentBlock): string {
   }
 }
 
-function renderMarkdownField(nodes: ContentBlock["nodes"], raw: string | undefined, fallback: string): string {
+function renderMarkdownField(
+  nodes: ContentBlock["nodes"],
+  raw: string | undefined,
+  fallback: string
+): string {
   if (nodes && nodes.length > 0) {
     return renderMarkdownNodes(nodes, props.message.id, raw || fallback);
   }
@@ -361,7 +406,8 @@ function renderMarkdownField(nodes: ContentBlock["nodes"], raw: string | undefin
 
 function renderDailyNoteBlock(block: ContentBlock): string {
   const agentType = block.agent_type === "valet" ? "valet" : "maid";
-  const agentLabel = block.agent_label || (agentType === "valet" ? "Valet" : "Maid");
+  const agentLabel =
+    block.agent_label || (agentType === "valet" ? "Valet" : "Maid");
   const defaultTitle = agentType === "valet" ? "Valet's Diary" : "Maid's Diary";
   const title = block.file_name || defaultTitle;
   const agentName = block.maid || "";
@@ -369,19 +415,47 @@ function renderDailyNoteBlock(block: ContentBlock): string {
   const mode = block.mode || "legacy";
 
   if (mode === "update") {
-    const targetHtml = renderMarkdownField(block.target_nodes, block.target, "原文解析失败");
-    const replaceHtml = renderMarkdownField(block.replace_nodes, block.replace, "替换内容解析失败");
+    const targetHtml = renderMarkdownField(
+      block.target_nodes,
+      block.target,
+      "原文解析失败"
+    );
+    const replaceHtml = renderMarkdownField(
+      block.replace_nodes,
+      block.replace,
+      "替换内容解析失败"
+    );
     return `
       <div class="maid-diary-update-bubble ${agentType}-diary-update-bubble" data-vcp-block-type="maid-diary-update">
         <div class="diary-update-header">
           <span class="diary-update-title">DailyNote Update</span>
-          ${(agentName || folder) ? `
+          ${
+            agentName || folder
+              ? `
             <span class="diary-update-meta">
-              ${agentName ? `<span class="diary-maid-name">${escapeHtml(agentName)}</span>` : ""}
-              ${(agentName && folder) ? `<span class="diary-meta-separator">·</span>` : ""}
-              ${folder ? `<span class="diary-folder-name">${escapeHtml(folder)}</span>` : ""}
+              ${
+                agentName
+                  ? `<span class="diary-maid-name">${escapeHtml(
+                      agentName
+                    )}</span>`
+                  : ""
+              }
+              ${
+                agentName && folder
+                  ? `<span class="diary-meta-separator">·</span>`
+                  : ""
+              }
+              ${
+                folder
+                  ? `<span class="diary-folder-name">${escapeHtml(
+                      folder
+                    )}</span>`
+                  : ""
+              }
             </span>
-          ` : ""}
+          `
+              : ""
+          }
         </div>
         <div class="diary-update-body">
           <div class="diary-update-side diary-update-before">
@@ -398,28 +472,62 @@ function renderDailyNoteBlock(block: ContentBlock): string {
     `;
   }
 
-  const diaryContent = renderMarkdownField(block.nodes, block.content, "[日记内容解析失败]");
+  const diaryContent = renderMarkdownField(
+    block.nodes,
+    block.content,
+    "[日记内容解析失败]"
+  );
   return `
     <div class="maid-diary-bubble ${agentType}-diary-bubble vcp-diary-block" data-vcp-block-type="maid-diary">
       <div class="diary-header">
         <span class="diary-title">${escapeHtml(title)}</span>
-        ${block.date ? `<span class="diary-date">${escapeHtml(block.date)}</span>` : ""}
+        ${
+          block.date
+            ? `<span class="diary-date">${escapeHtml(block.date)}</span>`
+            : ""
+        }
       </div>
-      ${(agentName || folder || block.tag) ? `
+      ${
+        agentName || folder || block.tag
+          ? `
         <div class="diary-maid-info">
-          ${agentName ? `
+          ${
+            agentName
+              ? `
             <span class="diary-maid-label">${escapeHtml(agentLabel)}:</span>
             <span class="diary-maid-name">${escapeHtml(agentName)}</span>
-          ` : ""}
-          ${(agentName && folder) ? `<span class="diary-meta-separator">·</span>` : ""}
-          ${folder ? `
+          `
+              : ""
+          }
+          ${
+            agentName && folder
+              ? `<span class="diary-meta-separator">·</span>`
+              : ""
+          }
+          ${
+            folder
+              ? `
             <span class="diary-folder-label">Folder:</span>
             <span class="diary-folder-name">${escapeHtml(folder)}</span>
-          ` : ""}
-          ${((agentName || folder) && block.tag) ? `<span class="diary-meta-separator">·</span>` : ""}
-          ${block.tag ? `<span class="diary-folder-label">Tag:</span> <span class="diary-folder-name">${escapeHtml(block.tag)}</span>` : ""}
+          `
+              : ""
+          }
+          ${
+            (agentName || folder) && block.tag
+              ? `<span class="diary-meta-separator">·</span>`
+              : ""
+          }
+          ${
+            block.tag
+              ? `<span class="diary-folder-label">Tag:</span> <span class="diary-folder-name">${escapeHtml(
+                  block.tag
+                )}</span>`
+              : ""
+          }
         </div>
-      ` : ""}
+      `
+          : ""
+      }
       <div class="diary-content vcp-markdown-block">${diaryContent}</div>
     </div>
   `;
@@ -449,41 +557,43 @@ const openMermaidFullScreen = (svgHtml: string, sourceCode: string) => {
 };
 
 function enhanceMermaid(el: HTMLElement, sourceCode: string) {
-  if (!el || el.dataset.vcpMermaidEnhanced === 'true') return;
+  if (!el || el.dataset.vcpMermaidEnhanced === "true") return;
 
-  const svg = el.querySelector('svg');
+  const svg = el.querySelector("svg");
   if (!svg) return;
 
-  el.dataset.vcpMermaidEnhanced = 'true';
+  el.dataset.vcpMermaidEnhanced = "true";
 
   // 给 SVG 设置基础样式，使其自适应显示
-  svg.removeAttribute('style');
-  svg.style.maxWidth = '100%';
-  svg.style.height = 'auto';
-  svg.style.display = 'block';
-  svg.style.margin = '0 auto';
+  svg.removeAttribute("style");
+  svg.style.maxWidth = "100%";
+  svg.style.height = "auto";
+  svg.style.display = "block";
+  svg.style.margin = "0 auto";
 
   // 创建包裹层
-  const wrapper = document.createElement('div');
-  wrapper.className = 'vcp-mermaid-wrapper group relative my-3 overflow-hidden rounded-xl border border-black/5 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4 transition-all duration-300 active:scale-[0.99] cursor-pointer';
+  const wrapper = document.createElement("div");
+  wrapper.className =
+    "vcp-mermaid-wrapper group relative my-3 overflow-hidden rounded-xl border border-black/5 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4 transition-all duration-300 active:scale-[0.99] cursor-pointer";
 
   // 创建全屏按钮
-  const fullscreenBtn = document.createElement('button');
-  fullscreenBtn.type = 'button';
-  fullscreenBtn.className = 'absolute top-3 right-3 z-10 flex items-center justify-center w-8 h-8 rounded-lg border border-black/5 dark:border-white/10 bg-white/80 dark:bg-black/80 text-gray-500 dark:text-gray-400 opacity-0 group-hover:opacity-100 active:scale-90 transition-all duration-200 cursor-pointer shadow-sm';
+  const fullscreenBtn = document.createElement("button");
+  fullscreenBtn.type = "button";
+  fullscreenBtn.className =
+    "absolute top-3 right-3 z-10 flex items-center justify-center w-8 h-8 rounded-lg border border-black/5 dark:border-white/10 bg-white/80 dark:bg-black/80 text-gray-500 dark:text-gray-400 opacity-0 group-hover:opacity-100 active:scale-90 transition-all duration-200 cursor-pointer shadow-sm";
   fullscreenBtn.innerHTML = '<div class="i-ph:arrows-out-bold w-4 h-4"></div>';
-  fullscreenBtn.title = '全屏查看图表';
+  fullscreenBtn.title = "全屏查看图表";
 
-  wrapper.addEventListener('click', (e) => {
+  wrapper.addEventListener("click", (e) => {
     e.stopPropagation();
     openMermaidFullScreen(svg.outerHTML, sourceCode);
   });
 
-  wrapper.addEventListener('dblclick', (e) => {
+  wrapper.addEventListener("dblclick", (e) => {
     e.stopPropagation();
   });
 
-  el.textContent = '';
+  el.textContent = "";
   wrapper.appendChild(fullscreenBtn);
   wrapper.appendChild(svg);
   el.appendChild(wrapper);
@@ -496,18 +606,20 @@ const renderHeavyContent = async () => {
 
   // 1. KaTeX math (inline + display mode, rendered inside markdown blocks via v-html)
   const mathElements = Array.from(
-    messageContentRef.value.querySelectorAll('.vcp-math-inline[data-latex], .vcp-math-block[data-latex]')
-  ).filter(el => !el.closest('.streaming-tail'));
+    messageContentRef.value.querySelectorAll(
+      ".vcp-math-inline[data-latex], .vcp-math-block[data-latex]"
+    )
+  ).filter((el) => !el.closest(".streaming-tail"));
 
   if (mathElements.length > 0) {
     try {
-      const katexModule = await import('katex');
+      const katexModule = await import("katex");
       const katex = katexModule.default;
       mathElements.forEach((el) => {
-        if (el.querySelector('.katex')) return; // already rendered
-        const latex = el.getAttribute('data-latex');
+        if (el.querySelector(".katex")) return; // already rendered
+        const latex = el.getAttribute("data-latex");
         if (!latex) return;
-        const isDisplay = el.classList.contains('vcp-math-block');
+        const isDisplay = el.classList.contains("vcp-math-block");
         katex.render(latex, el as HTMLElement, {
           throwOnError: false,
           strict: false,
@@ -515,28 +627,30 @@ const renderHeavyContent = async () => {
         });
       });
     } catch (e) {
-      console.error('[MessageRenderer] KaTeX render failed:', e);
+      console.error("[MessageRenderer] KaTeX render failed:", e);
     }
   }
 
   // 2. Mermaid diagrams
   const mermaidPlaceholders = Array.from(
-    messageContentRef.value.querySelectorAll('.mermaid-placeholder, pre.mermaid, code.language-mermaid')
-  ).filter(el => !el.closest('.streaming-tail'));
+    messageContentRef.value.querySelectorAll(
+      ".mermaid-placeholder, pre.mermaid, code.language-mermaid"
+    )
+  ).filter((el) => !el.closest(".streaming-tail"));
 
   if (mermaidPlaceholders.length > 0) {
     try {
-      const mermaidModule = await import('mermaid');
+      const mermaidModule = await import("mermaid");
       const mermaid = mermaidModule.default;
       if (!mermaidInitialized) {
-        mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+        mermaid.initialize({ startOnLoad: false, theme: "dark" });
         mermaidInitialized = true;
       }
       for (const el of Array.from(mermaidPlaceholders)) {
         const placeholder = el as HTMLElement;
-        const wrapper = placeholder.closest('.vcp-mermaid-wrapper');
-        if (wrapper && wrapper.querySelector('svg')) continue; // already rendered & enhanced
-        if (placeholder.querySelector('svg')) continue; // already rendered
+        const wrapper = placeholder.closest(".vcp-mermaid-wrapper");
+        if (wrapper && wrapper.querySelector("svg")) continue; // already rendered & enhanced
+        if (placeholder.querySelector("svg")) continue; // already rendered
 
         // Use innerHTML as stable cache key
         const codeKey = placeholder.innerHTML;
@@ -549,19 +663,19 @@ const renderHeavyContent = async () => {
         if (mermaidCache.has(codeKey)) {
           const cachedSvg = mermaidCache.get(codeKey)!;
           placeholder.innerHTML = cachedSvg;
-          placeholder.classList.remove('mermaid-placeholder');
-          placeholder.classList.add('mermaid');
-          enhanceMermaid(placeholder, placeholder.dataset.mermaidSource || '');
+          placeholder.classList.remove("mermaid-placeholder");
+          placeholder.classList.add("mermaid");
+          enhanceMermaid(placeholder, placeholder.dataset.mermaidSource || "");
           continue;
         }
 
         renderingMermaids.add(codeKey);
         try {
-          const sourceCode = placeholder.textContent || '';
+          const sourceCode = placeholder.textContent || "";
           placeholder.dataset.mermaidSource = sourceCode; // 保存原始源码
 
-          placeholder.classList.remove('mermaid-placeholder');
-          placeholder.classList.add('mermaid');
+          placeholder.classList.remove("mermaid-placeholder");
+          placeholder.classList.add("mermaid");
           await mermaid.run({ nodes: [placeholder] });
 
           const renderedSvg = placeholder.innerHTML;
@@ -570,14 +684,20 @@ const renderHeavyContent = async () => {
           enhanceMermaid(placeholder, sourceCode);
         } catch (e: any) {
           const errorMsg = e?.str || e?.message || String(e);
-          console.error('[MessageRenderer] Mermaid render failed:', errorMsg, e);
-          placeholder.innerHTML = `<div class="text-red-500 text-[10px] p-4 rounded-xl border border-red-500/10 bg-red-500/5">图表渲染失败: ${escapeHtml(errorMsg)}</div>`;
+          console.error(
+            "[MessageRenderer] Mermaid render failed:",
+            errorMsg,
+            e
+          );
+          placeholder.innerHTML = `<div class="text-red-500 text-[10px] p-4 rounded-xl border border-red-500/10 bg-red-500/5">图表渲染失败: ${escapeHtml(
+            errorMsg
+          )}</div>`;
         } finally {
           renderingMermaids.delete(codeKey);
         }
       }
     } catch (e) {
-      console.error('[MessageRenderer] Mermaid load failed:', e);
+      console.error("[MessageRenderer] Mermaid load failed:", e);
     }
   }
 
@@ -600,14 +720,11 @@ watch(
 );
 
 // 消息真正离开活跃流后统一执行一次重渲染，确保 KaTeX/Mermaid/Emoticon 正确渲染
-watch(
-  isMessageInActiveStream,
-  (inStream, wasInStream) => {
-    if (wasInStream && !inStream) {
-      renderHeavyContent();
-    }
+watch(isMessageInActiveStream, (inStream, wasInStream) => {
+  if (wasInStream && !inStream) {
+    renderHeavyContent();
   }
-);
+});
 
 // === Context Menu ===
 const showMessageContextMenu = async () => {
@@ -636,7 +753,8 @@ const showMessageContextMenu = async () => {
         const fullText = await getFullText();
         overlayStore.openEditor({
           initialValue: fullText || "",
-          onSave: (newContent: string) => historyStore.updateMessageContent(props.message.id, newContent),
+          onSave: (newContent: string) =>
+            historyStore.updateMessageContent(props.message.id, newContent),
         });
       },
     });
@@ -667,7 +785,10 @@ const showMessageContextMenu = async () => {
         try {
           await historyStore.reRenderMessage(
             props.message.id,
-            props.message.topicId || props.message.topic_id || sessionStore.currentTopicId || ""
+            props.message.topicId ||
+              props.message.topic_id ||
+              sessionStore.currentTopicId ||
+              ""
           );
           notificationStore.addNotification({
             type: "success",
@@ -715,7 +836,10 @@ const showMessageContextMenu = async () => {
     },
   });
 
-  overlayStore.openContextMenu(actions, shell.value?.isUser ? "User" : "Assistant");
+  overlayStore.openContextMenu(
+    actions,
+    shell.value?.isUser ? "User" : "Assistant"
+  );
 };
 
 function formatTime(ts: number) {
@@ -750,15 +874,12 @@ const fallbackTailSignature = computed(() => {
   const block = props.message.tailBlock;
   if (!block) return "";
 
-  const contentSignal = block.hash !== undefined && block.hash !== null
-    ? String(block.hash)
-    : block.content || "";
+  const contentSignal =
+    block.hash !== undefined && block.hash !== null
+      ? String(block.hash)
+      : block.content || "";
 
-  return [
-    block.type,
-    contentSignal,
-    block.nodes?.length ?? 0,
-  ].join("|");
+  return [block.type, contentSignal, block.nodes?.length ?? 0].join("|");
 });
 
 watch(
@@ -823,8 +944,10 @@ watch(
             if (fromEl.tagName === "IMG") {
               const fromImg = fromEl as HTMLImageElement;
               const toImg = toEl as HTMLImageElement;
-              if (fromImg.onerror && !toImg.onerror) toImg.onerror = fromImg.onerror;
-              if (fromImg.onload && !toImg.onload) toImg.onload = fromImg.onload;
+              if (fromImg.onerror && !toImg.onerror)
+                toImg.onerror = fromImg.onerror;
+              if (fromImg.onload && !toImg.onload)
+                toImg.onload = fromImg.onload;
               if (fromImg.style.visibility) {
                 toImg.style.visibility = fromImg.style.visibility;
               }
@@ -832,16 +955,15 @@ watch(
             }
 
             return true;
-          }
+          },
         });
       } catch (e) {
-        console.debug('[TailMorphdom] Skipped frame:', e);
+        console.debug("[TailMorphdom] Skipped frame:", e);
       }
     });
   },
-  { immediate: true, flush: 'post' }
+  { immediate: true, flush: "post" }
 );
-
 
 // === AST Diff Executor ===
 
@@ -852,12 +974,18 @@ watch(
     tailSandboxRef,
   ],
   ([frame, _snapshot, sandbox]) => {
-    astDebugLog(`[AST Diff Watch] Msg ${props.message.id} frame=${frame ? frame.frameSeq : 'none'}, mutations=${frame?.mutations?.length || 0}, sandbox=${sandbox ? 'Ready' : 'Null'}, epoch=${frame?.epoch}, revision=${frame?.revision}`);
+    astDebugLog(
+      `[AST Diff Watch] Msg ${props.message.id} frame=${
+        frame ? frame.frameSeq : "none"
+      }, mutations=${frame?.mutations?.length || 0}, sandbox=${
+        sandbox ? "Ready" : "Null"
+      }, epoch=${frame?.epoch}, revision=${frame?.revision}`
+    );
 
     if (!useAstForCurrentTail.value || !sandbox) {
       if (lastSandbox) {
         cleanupRegistry(props.message.id);
-        lastSandbox.innerHTML = '';
+        lastSandbox.innerHTML = "";
         lastSandbox = null;
       }
       return;
@@ -865,7 +993,7 @@ watch(
 
     if (lastSandbox !== sandbox) {
       cleanupRegistry(props.message.id);
-      sandbox.innerHTML = '';
+      sandbox.innerHTML = "";
       lastAppliedFrameSeq = 0;
       localTailEpoch = -1;
       localTailRevision = -1;
@@ -890,7 +1018,7 @@ watch(
     const explicitReset = frame.reset === true || epochChanged;
 
     if (explicitReset) {
-      sandbox.innerHTML = '';
+      sandbox.innerHTML = "";
       cleanupRegistry(props.message.id);
       localTailEpoch = incomingEpoch;
       localTailRevision = incomingRevision;
@@ -911,14 +1039,19 @@ watch(
       return;
     }
 
-    astDebugLog(`[AST Diff Apply] Executing frame ${frame.frameSeq} (${mutations.length} mutations) for ${props.message.id}`);
+    astDebugLog(
+      `[AST Diff Apply] Executing frame ${frame.frameSeq} (${mutations.length} mutations) for ${props.message.id}`
+    );
     const result = applyFrame(mutations, props.message.id, sandbox);
     if (result.ok) {
       lastAppliedFrameSeq = frame.frameSeq;
       localTailRevision = incomingRevision;
       astFailureCount = 0;
     } else {
-      handleAstFrameFailure(sandbox, result.failed?.reason || "applyFrame failed");
+      handleAstFrameFailure(
+        sandbox,
+        result.failed?.reason || "applyFrame failed"
+      );
     }
   },
   { flush: "post", immediate: true }
@@ -931,9 +1064,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="messageContentRef" v-longpress="showMessageContextMenu"
-    class="vcp-message-item flex flex-col w-full mb-6 animate-fade-in px-1 min-w-0" :data-message-id="message.id"
-    :data-role="message.role">
+  <div
+    ref="messageContentRef"
+    v-longpress="showMessageContextMenu"
+    class="vcp-message-item flex flex-col w-full mb-6 animate-fade-in px-1 min-w-0"
+    :data-message-id="message.id"
+    :data-role="message.role"
+  >
     <!-- 统一的气泡循环渲染列表 -->
     <template v-for="(bubble, bubbleIndex) in messageBubbles" :key="bubble.id">
       <template v-if="shell">
@@ -942,24 +1079,38 @@ onUnmounted(() => {
           :display-name="shell.displayName"
           :name-style="{ color: shell.avatarColor }"
           :owner-type="shell.isUser ? 'user' : 'agent'"
-          :owner-id="shell.isUser ? 'user_avatar' : (message.agentId || agentId)"
+          :owner-id="shell.isUser ? 'user_avatar' : message.agentId || agentId"
           :avatar-dominant-color="shell.avatarColor"
         />
 
         <ChatBubble
           :is-user="shell.isUser"
-          :is-streaming="isStreaming && (bubbleIndex === messageBubbles.length - 1)"
+          :is-streaming="
+            isStreaming && bubbleIndex === messageBubbles.length - 1
+          "
           :bubble-style="{
             '--dynamic-color': shell.avatarColor,
           }"
           :class="bubbleIndex > 0 ? 'mt-2' : ''"
         >
           <!-- 初始思考指示灯：仅在活跃气泡没有任何已确认 blocks，且仍在流式并未吐出 tail 时显示 -->
-          <ThinkingIndicator v-if="isStreaming && (bubbleIndex === messageBubbles.length - 1) && (!message.blocks || message.blocks.length === 0) && !message.tailBlock" />
+          <ThinkingIndicator
+            v-if="
+              isStreaming &&
+              bubbleIndex === messageBubbles.length - 1 &&
+              (!message.blocks || message.blocks.length === 0) &&
+              !message.tailBlock
+            "
+          />
 
-          <div class="vcp-content-blocks space-y-2 min-w-0 w-full overflow-hidden">
+          <div
+            class="vcp-content-blocks space-y-2 min-w-0 w-full overflow-hidden"
+          >
             <template v-if="bubble.blocks && bubble.blocks.length > 0">
-              <template v-for="(block, index) in bubble.blocks" :key="getBlockKey(block, index)">
+              <template
+                v-for="(block, index) in bubble.blocks"
+                :key="getBlockKey(block, index)"
+              >
                 <!-- v-memo=[index] 保证已稳定块零开销：Vue 缓存 VNode 子树，不重渲染、不触碰 DOM -->
                 <div v-memo="[getBlockKey(block, index)]">
                   <div
@@ -968,7 +1119,9 @@ onUnmounted(() => {
                   />
 
                   <ToolBlock
-                    v-else-if="block.type === 'tool-use' || block.type === 'tool-result'"
+                    v-else-if="
+                      block.type === 'tool-use' || block.type === 'tool-result'
+                    "
                     :type="block.type"
                     :content="block.content"
                     :block="block"
@@ -998,42 +1151,83 @@ onUnmounted(() => {
                 </div>
               </template>
             </template>
-            <template v-else-if="bubbleIndex === 0 && message.content && (!isStreaming || !message.tailBlock)">
+            <template
+              v-else-if="
+                bubbleIndex === 0 &&
+                message.content &&
+                (!isStreaming || !message.tailBlock)
+              "
+            >
               <div class="vcp-markdown-block select-text">
                 <p>{{ message.content }}</p>
               </div>
             </template>
 
             <!-- 尾部流式推测渲染（只对最后一个活跃气泡生效） -->
-            <div v-if="isStreaming && (bubbleIndex === messageBubbles.length - 1) && message.tailBlock" class="streaming-tail opacity-90">
-              <div v-if="useAstForCurrentTail && isPlainBlock(message.tailBlock.type)">
+            <div
+              v-if="
+                isStreaming &&
+                bubbleIndex === messageBubbles.length - 1 &&
+                message.tailBlock
+              "
+              class="streaming-tail opacity-90"
+            >
+              <div
+                v-if="
+                  useAstForCurrentTail && isPlainBlock(message.tailBlock.type)
+                "
+              >
                 <div
                   :ref="(el) => { tailSandboxRef = el as HTMLElement | null }"
                   class="vcp-markdown-block vcp-ast-sandbox"
                 />
               </div>
               <div
-                v-else-if="!useAstForCurrentTail && isPlainBlock(message.tailBlock.type)"
+                v-else-if="
+                  !useAstForCurrentTail && isPlainBlock(message.tailBlock.type)
+                "
                 :ref="(el) => { tailRootRef = el as HTMLElement | null }"
                 class="vcp-markdown-block"
               />
             </div>
-            <div v-if="isStreaming && (bubbleIndex === messageBubbles.length - 1) && message.tailContent && message.blocks && message.blocks.length > 0 && (!message.tailBlock || !isPlainBlock(message.tailBlock.type))" class="opacity-70 italic animate-pulse">
+            <div
+              v-if="
+                isStreaming &&
+                bubbleIndex === messageBubbles.length - 1 &&
+                message.tailContent &&
+                message.blocks &&
+                message.blocks.length > 0 &&
+                (!message.tailBlock || !isPlainBlock(message.tailBlock.type))
+              "
+              class="opacity-70 italic animate-pulse"
+            >
               {{ message.tailContent }}
             </div>
           </div>
 
           <AttachmentPreview
-            v-if="bubbleIndex === 0 && message.attachments && message.attachments.length > 0"
+            v-if="
+              bubbleIndex === 0 &&
+              message.attachments &&
+              message.attachments.length > 0
+            "
             :attachments="message.attachments"
+            :message-id="message.id"
+            :topic-id="
+              message.topicId || sessionStore.currentTopicId || undefined
+            "
             class="pt-3 border-t border-black/5 dark:border-white/5"
           />
 
-          <StreamingTag v-if="isStreaming && (bubbleIndex === messageBubbles.length - 1)" />
+          <StreamingTag
+            v-if="isStreaming && bubbleIndex === messageBubbles.length - 1"
+          />
 
           <template #footer>
-            <div class="text-[9px] mt-1.5 px-1 opacity-50 font-mono tracking-tighter w-full"
-              :class="shell.isUser ? 'text-right' : 'text-left'">
+            <div
+              class="text-[9px] mt-1.5 px-1 opacity-50 font-mono tracking-tighter w-full"
+              :class="shell.isUser ? 'text-right' : 'text-left'"
+            >
               {{ formatTime(message.timestamp) }}
             </div>
           </template>
@@ -1063,7 +1257,13 @@ onUnmounted(() => {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 </style>

@@ -20,7 +20,7 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
-        if (!StreamKeepaliveService.isDistributedKeepaliveRequested(context)) {
+        if (!StreamKeepaliveService.isDistributedKeepalivePersisted(context)) {
             Log.i(TAG, "Distributed keepalive was not requested before $action; skipping boot recovery.")
             return
         }

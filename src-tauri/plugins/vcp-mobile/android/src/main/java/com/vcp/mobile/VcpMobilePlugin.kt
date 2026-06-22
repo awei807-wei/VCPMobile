@@ -470,18 +470,38 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             val intent = StreamKeepaliveService.createIntent(activity, args.agentName, args.isKeepaliveMode)
             val hasKeepaliveParam = args.isKeepaliveMode != null
             val isKeepalive = args.isKeepaliveMode ?: false
+            val wasKeepaliveRequested = StreamKeepaliveService.isDistributedKeepaliveRequested ||
+                StreamKeepaliveService.isKeepaliveModeRequested
 
             if (args.agentName.isEmpty()) {
                 if (hasKeepaliveParam) {
                     if (!isKeepalive) {
+                        StreamKeepaliveService.isDistributedKeepaliveRequested = false
+                        StreamKeepaliveService.isTemporaryWakeLockServiceActive = false
+                        StreamKeepaliveService.isKeepaliveModeRequested = false
                         Log.i(TAG, "startStreamingService: both agentName and keepaliveMode are inactive. Stopping service directly.")
                         activity.stopService(intent)
                         invoke.resolve()
                         return
                     }
+                    if (wasKeepaliveRequested && StreamKeepaliveService.isServiceRunning) {
+                        updateRunningService(intent, "startStreamingService: keepalive already active. Updating service without duplicate foreground start.")
+                        StreamKeepaliveService.isDistributedKeepaliveRequested = true
+                        StreamKeepaliveService.isTemporaryWakeLockServiceActive = false
+                        StreamKeepaliveService.isKeepaliveModeRequested = true
+                        invoke.resolve()
+                        return
+                    }
                 } else {
-                    if (StreamKeepaliveService.isServiceRunning) {
-                        startServiceCompatible(intent)
+                    if (StreamKeepaliveService.isKeepaliveModeRequested) {
+                        if (StreamKeepaliveService.isServiceRunning) {
+                            updateRunningService(intent, "startStreamingService: keepalive is active. Clearing stream name without stopping service.")
+                        } else {
+                            Log.i(TAG, "startStreamingService: keepalive is requested but service is not running. Ignoring empty stream stop update.")
+                        }
+                    } else if (StreamKeepaliveService.isServiceRunning) {
+                        Log.i(TAG, "startStreamingService: empty stream update without keepalive. Stopping service directly.")
+                        activity.stopService(intent)
                     }
                     invoke.resolve()
                     return
@@ -489,6 +509,11 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             }
 
             startServiceCompatible(intent)
+            if (hasKeepaliveParam && isKeepalive) {
+                StreamKeepaliveService.isDistributedKeepaliveRequested = true
+                StreamKeepaliveService.isTemporaryWakeLockServiceActive = false
+                StreamKeepaliveService.isKeepaliveModeRequested = true
+            }
             invoke.resolve()
         } catch (e: Exception) {
             Log.e(TAG, "startStreamingService failed", e)
@@ -497,29 +522,61 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun startServiceCompatible(intent: Intent) {
+        val needsForegroundStart = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !StreamKeepaliveService.isServiceRunning
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (needsForegroundStart) {
                 activity.startForegroundService(intent)
             } else {
                 activity.startService(intent)
             }
-        } catch (e: IllegalStateException) {
-            Log.e(
-                TAG,
-                "Foreground service start rejected (ForegroundServiceStartNotAllowedException/IllegalStateException). Waiting for foreground or network recovery retry.",
-                e
-            )
-            throw e
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Foreground service start rejected by missing permission or service type policy", e)
+        } catch (e: Exception) {
+            if (!needsForegroundStart) {
+                Log.e(TAG, "startService update failed", e)
+                throw e
+            }
+
+            Log.w(TAG, "startForegroundService failed, trying normal service start", e)
+            try {
+                activity.startService(intent)
+            } catch (fallback: Exception) {
+                Log.e(TAG, "startService fallback failed", fallback)
+                throw fallback
+            }
+        }
+    }
+
+    private fun updateRunningService(intent: Intent, message: String) {
+        Log.i(TAG, message)
+        try {
+            activity.startService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update running StreamKeepaliveService", e)
             throw e
         }
+    }
+
+    private fun shouldKeepDistributedService(): Boolean {
+        return StreamKeepaliveService.isDistributedKeepaliveRequested ||
+            (StreamKeepaliveService.isKeepaliveModeRequested &&
+                !StreamKeepaliveService.isTemporaryWakeLockServiceActive)
     }
 
     @Command
     fun stopStreamingService(invoke: Invoke) {
         try {
             val intent = StreamKeepaliveService.createIntent(activity, "")
+            val keepDistributedService = shouldKeepDistributedService()
+
+            if (keepDistributedService) {
+                if (StreamKeepaliveService.isServiceRunning) {
+                    updateRunningService(intent, "stopStreamingService: distributed keepalive is active. Clearing stream name without stopping service.")
+                } else {
+                    Log.i(TAG, "stopStreamingService: distributed keepalive is requested but service is not running.")
+                }
+                invoke.resolve()
+                return
+            }
+
             activity.stopService(intent)
             invoke.resolve()
         } catch (e: Exception) {

@@ -47,6 +47,15 @@ class StreamKeepaliveService : Service() {
         @Volatile
         var isServiceRunning = false
 
+        @Volatile
+        var isKeepaliveModeRequested = false
+
+        @Volatile
+        var isDistributedKeepaliveRequested = false
+
+        @Volatile
+        var isTemporaryWakeLockServiceActive = false
+
         /**
          * 构造启动该服务的 Intent
          */
@@ -68,7 +77,7 @@ class StreamKeepaliveService : Service() {
         }
 
         @JvmStatic
-        fun isDistributedKeepaliveRequested(context: Context): Boolean {
+        fun isDistributedKeepalivePersisted(context: Context): Boolean {
             return context
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(PREF_DISTRIBUTED_KEEPALIVE, false)
@@ -83,16 +92,17 @@ class StreamKeepaliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
-            isKeepaliveModeActive = isDistributedKeepaliveRequested(this)
+            isKeepaliveModeActive = isDistributedKeepalivePersisted(this)
         } else {
             if (
                 intent.action == ACTION_RECOVER_KEEPALIVE &&
                 !intent.hasExtra(EXTRA_IS_KEEPALIVE_MODE)
             ) {
-                isKeepaliveModeActive = isDistributedKeepaliveRequested(this)
+                isKeepaliveModeActive = isDistributedKeepalivePersisted(this)
             }
             if (intent.hasExtra(EXTRA_IS_KEEPALIVE_MODE)) {
                 isKeepaliveModeActive = intent.getBooleanExtra(EXTRA_IS_KEEPALIVE_MODE, false)
+                isKeepaliveModeRequested = isKeepaliveModeActive
                 persistDistributedKeepaliveMode(isKeepaliveModeActive)
             }
             if (intent.hasExtra(EXTRA_AGENT_NAME)) {
@@ -100,30 +110,32 @@ class StreamKeepaliveService : Service() {
             }
         }
 
-        if (!isKeepaliveModeActive && currentStreamName.isEmpty()) {
-            Log.i(TAG, "No active streams and keepalive mode is inactive. Stopping service safely.")
-            val notification = buildNotification("", false)
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
-                    )
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to startForeground during shutdown fallback", e)
-            }
-            stopSelf()
+        val shouldStop = !isKeepaliveModeActive && currentStreamName.isEmpty()
+        val notification = buildNotification(currentStreamName, isKeepaliveModeActive)
+
+        if (!promoteToForeground(notification)) {
+            Log.e(TAG, "Foreground promotion failed. Stopping service to satisfy Android foreground-service contract.")
+            stopSelf(startId)
             return START_NOT_STICKY
         }
 
-        val notification = buildNotification(currentStreamName, isKeepaliveModeActive)
+        if (shouldStop) {
+            Log.i(TAG, "No active streams and keepalive mode is inactive. Stopping service safely.")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
 
-        // Android 14+ 必须声明前台服务类型，且加 try-catch 兜底，防止 ForegroundServiceStartNotAllowedException
-        try {
+        Log.i(TAG, "Foreground service active: stream='$currentStreamName', keepalive=$isKeepaliveModeActive")
+
+        if (isKeepaliveModeActive || currentStreamName.isNotEmpty()) {
+            refreshWakeLock()
+        }
+
+        return START_STICKY
+    }
+
+    private fun promoteToForeground(notification: Notification): Boolean {
+        return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
                     NOTIFICATION_ID,
@@ -133,20 +145,16 @@ class StreamKeepaliveService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to startForeground, falling back to basic background service", e)
+            Log.e(TAG, "startForeground failed", e)
+            false
         }
-
-        if (isKeepaliveModeActive || currentStreamName.isNotEmpty()) {
-            refreshWakeLock()
-        }
-
-        return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        if (!isKeepaliveModeActive && !isDistributedKeepaliveRequested(this)) {
+        if (!isKeepaliveModeActive && !isDistributedKeepalivePersisted(this)) {
             return
         }
 
@@ -181,7 +189,11 @@ class StreamKeepaliveService : Service() {
             }
         }
         wakeLock = null
+
         isServiceRunning = false
+        isKeepaliveModeRequested = false
+        isDistributedKeepaliveRequested = false
+        isTemporaryWakeLockServiceActive = false
         super.onDestroy()
     }
 

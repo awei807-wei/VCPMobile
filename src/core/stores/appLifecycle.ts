@@ -5,6 +5,9 @@ import { useAssistantStore } from "./assistant";
 import { useSettingsStore } from "./settings";
 import { useThemeStore } from "./theme";
 import { useNotificationStore } from "./notification";
+import { useChatSessionStore } from "./chatSessionStore";
+import { useChatHistoryStore } from "./chatHistoryStore";
+import { useTopicStore } from "./topicListManager";
 import { updateDistributedState } from "../../features/distributed/composables/useDistributed";
 
 export type AppState =
@@ -35,6 +38,8 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
   const settingsStore = useSettingsStore();
   const themeStore = useThemeStore();
   const notificationStore = useNotificationStore();
+  const sessionStore = useChatSessionStore();
+  const topicStore = useTopicStore();
 
   let bootstrapPromise: Promise<void> | null = null;
   let coreReadyUnlisten: (() => void) | null = null;
@@ -144,10 +149,36 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
       );
       updatePhaseLabel("核心数据预加载完成");
 
+      // 启动预加载：若 Pinia 恢复了活跃会话，提前拉取首屏聊天历史
+      // 让 DB + IPC 开销与 Vue 组件挂载并行，ChatView mount 后直接命中缓存（零延迟）
+      if (sessionStore.currentSelectedItem?.id && sessionStore.currentTopicId) {
+        const historyStore = useChatHistoryStore();
+        const ownerId = sessionStore.currentSelectedItem.id;
+        const ownerType = sessionStore.currentSelectedItem.type || "agent";
+        const topicId = sessionStore.currentTopicId;
+        console.log(
+          `[Lifecycle] Preloading chat history for ${ownerType} ${ownerId}, topic: ${topicId}`
+        );
+        await historyStore.preloadHistory(ownerId, ownerType, topicId, 5);
+      }
+
       hasBootstrapped.value = true;
       isBootstrapping.value = false;
       bootstrapPromise = null;
       setState("READY", "应用就绪");
+
+      // 话题列表延迟到 READY 后异步加载，不阻塞首屏渲染
+      // 首屏只需 currentTopicId（Pinia persist 已恢复），话题列表仅侧边栏需要
+      if (sessionStore.currentSelectedItem?.id) {
+        const ownerId = sessionStore.currentSelectedItem.id;
+        const ownerType = sessionStore.currentSelectedItem.type || "agent";
+        console.log(
+          `[Lifecycle] Restored session detected, deferring topic list load for ${ownerType} ${ownerId}...`
+        );
+        topicStore.loadTopicList(ownerId, ownerType).catch((err) => {
+          console.error(`[Lifecycle] Deferred topic list load failed:`, err);
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       fail(`预加载失败: ${message}`);
@@ -314,12 +345,10 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
         // --- 核心优化：先拿快照，再跑流程 ---
         await hydrateSystemStatus();
 
-        updatePhaseLabel("初始化主题资源...");
-        await themeStore.initTheme();
-        console.log("[Lifecycle] Theme initialization complete");
-
+        // --- 并行优化：主题初始化与核心就绪等待无数据依赖，并行执行 ---
         setState("CONNECTING", "等待后端核心服务就绪");
-        await waitForCoreReady();
+        await Promise.all([themeStore.initTheme(), waitForCoreReady()]);
+        console.log("[Lifecycle] Theme init + core ready complete");
         await startPreloading();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

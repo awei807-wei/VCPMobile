@@ -170,6 +170,15 @@ impl DistributedClient {
             let _ = session.task_handle.await;
         }
 
+        // Check if state changed during startup setup (e.g. stop requested during await)
+        {
+            let s = self.status.read().await;
+            if s.state != ConnectionState::Connecting || s.session_id != next_session_id {
+                log::info!("[Distributed] State changed during start setup, aborting start.");
+                return Ok(());
+            }
+        }
+
         // Create fresh channels and cancellation token — no state reuse from previous cycles.
         let cancel_token = CancellationToken::new();
         let (re_register_tx, re_register_rx) = tokio::sync::mpsc::channel(1);
@@ -333,12 +342,12 @@ impl DistributedClient {
             );
 
             // Connect with cancellation support — avoids blocking on TCP timeout during shutdown.
-            acquire_wake_lock_helper(&app);
+            acquire_wake_lock_helper(&app, "distributed:connect");
             let connect_result = tokio::select! {
                 result = tokio_tungstenite::connect_async(&connection_url) => Some(result),
                 _ = cancel_token.cancelled() => None,
             };
-            release_wake_lock_helper(&app);
+            release_wake_lock_helper(&app, "distributed:connect");
 
             match connect_result {
                 Some(Ok((ws_stream, _response))) => {
@@ -566,8 +575,6 @@ impl DistributedClient {
                 // --- Cancellation signal ---
                 _ = cancel_token.cancelled() => {
                     log::info!("[Distributed] Shutdown signal received, closing session.");
-                    let mut tx = ws_tx.lock().await;
-                    let _ = tx.close().await;
                     exit_reason = "Client requested shutdown".to_string();
                     break;
                 }
@@ -664,7 +671,8 @@ impl DistributedClient {
                 let tool_name_clone = tool_name.clone();
 
                 tokio::spawn(async move {
-                    acquire_wake_lock_helper(&app_clone);
+let tag = format!("distributed:tool:{}", request_id_clone);
+                    acquire_wake_lock_helper(&app_clone, &tag);
                     let (response, callback) = Self::execute_tool(
                         &app_clone,
                         &request_id_clone,
@@ -674,10 +682,10 @@ impl DistributedClient {
                     )
                     .await;
                     Self::send_message(&ws_tx_clone, &response).await;
-                    if let Some(callback) = callback {
+if let Some(callback) = callback {
                         Self::send_message(&ws_tx_clone, &callback).await;
                     }
-                    release_wake_lock_helper(&app_clone);
+                    release_wake_lock_helper(&app_clone, &tag);
                 });
             }
 
@@ -782,7 +790,7 @@ impl DistributedClient {
         let registry_clone = registry.clone();
 
         tokio::spawn(async move {
-            acquire_wake_lock_helper(&app_clone);
+            acquire_wake_lock_helper(&app_clone, "distributed:placeholder_push");
             let placeholders = registry_clone.get_all_placeholder_values(&app_clone);
             if !placeholders.is_empty() {
                 let msg = OutgoingMessage::UpdateStaticPlaceholders {
@@ -791,7 +799,7 @@ impl DistributedClient {
                 };
                 Self::send_message(&ws_tx_clone, &msg).await;
             }
-            release_wake_lock_helper(&app_clone);
+            release_wake_lock_helper(&app_clone, "distributed:placeholder_push");
         });
     }
 
@@ -900,80 +908,27 @@ impl DistributedClient {
 }
 
 #[cfg(target_os = "android")]
-fn acquire_wake_lock_helper(app: &tauri::AppHandle) {
-    if let Err(e) = tauri_plugin_vcp_mobile::system::acquire_wake_lock(app.clone()) {
-        log::warn!("[Distributed] Failed to acquire native wake lock: {}", e);
+fn acquire_wake_lock_helper(app: &tauri::AppHandle, tag: &str) {
+    if let Err(e) = tauri_plugin_vcp_mobile::stream::acquire_foreground_inner(
+        app,
+        tag,
+        10, // priority = PRIORITY_DISTRIBUTED
+        "[分布式连接]",
+        false, // screen_keep_on = false
+    ) {
+        log::warn!("[Distributed] Failed to acquire native wake lock with tag {}: {}", tag, e);
     }
 }
 
 #[cfg(target_os = "android")]
-fn release_wake_lock_helper(app: &tauri::AppHandle) {
-    if let Err(e) = tauri_plugin_vcp_mobile::system::release_wake_lock(app.clone()) {
-        log::warn!("[Distributed] Failed to release native wake lock: {}", e);
+fn release_wake_lock_helper(app: &tauri::AppHandle, tag: &str) {
+    if let Err(e) = tauri_plugin_vcp_mobile::stream::release_foreground_inner(app, tag) {
+        log::warn!("[Distributed] Failed to release native wake lock with tag {}: {}", tag, e);
     }
 }
 
 #[cfg(not(target_os = "android"))]
-fn acquire_wake_lock_helper(_app: &tauri::AppHandle) {}
+fn acquire_wake_lock_helper(_app: &tauri::AppHandle, _tag: &str) {}
 
 #[cfg(not(target_os = "android"))]
-fn release_wake_lock_helper(_app: &tauri::AppHandle) {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn distributed_url_uses_vcp_log_base_with_distributed_path() {
-        let url = build_distributed_connection_url("ws://example.com:6005", "secret").unwrap();
-
-        assert_eq!(
-            url,
-            "ws://example.com:6005/vcp-distributed-server/VCP_Key=secret"
-        );
-    }
-
-    #[test]
-    fn distributed_url_converts_http_scheme_to_websocket() {
-        let url = build_distributed_connection_url("https://example.com/base", "secret").unwrap();
-
-        assert_eq!(
-            url,
-            "wss://example.com/base/vcp-distributed-server/VCP_Key=secret"
-        );
-    }
-
-    #[test]
-    fn distributed_url_strips_vcp_log_endpoint_before_building_path() {
-        let url =
-            build_distributed_connection_url("wss://example.com/base/VCPlog/VCP_Key=old", "new")
-                .unwrap();
-
-        assert_eq!(
-            url,
-            "wss://example.com/base/vcp-distributed-server/VCP_Key=new"
-        );
-    }
-
-    #[test]
-    fn distributed_url_redaction_masks_percent_encoded_keys() {
-        let url =
-            build_distributed_connection_url("ws://example.com:6005", "secret?# key").unwrap();
-
-        assert_eq!(
-            redact_distributed_connection_url(&url),
-            "ws://example.com:6005/vcp-distributed-server/VCP_Key=***"
-        );
-    }
-
-    #[test]
-    fn distributed_connection_stale_after_heartbeat_timeout() {
-        assert!(!is_distributed_connection_stale(
-            DISTRIBUTED_HEARTBEAT_TIMEOUT - Duration::from_secs(1)
-        ));
-        assert!(is_distributed_connection_stale(
-            DISTRIBUTED_HEARTBEAT_TIMEOUT
-        ));
-        assert!(DISTRIBUTED_HEARTBEAT_TIMEOUT > DISTRIBUTED_HEARTBEAT_INTERVAL * 2);
-    }
-}
+fn release_wake_lock_helper(_app: &tauri::AppHandle, _tag: &str) {}

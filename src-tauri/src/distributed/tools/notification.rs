@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::distributed::tool_registry::OneShotTool;
 use crate::distributed::types::ToolManifest;

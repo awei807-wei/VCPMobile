@@ -34,4 +34,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-common:2.7.0")
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
     implementation("com.github.topjohnwu.libsu:core:5.0.3")
+
+    // 原生轻量级推送监听器所需的 SSE 长连接支持
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 }

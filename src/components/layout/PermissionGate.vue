@@ -84,6 +84,9 @@ const hasClickedAutoStart = ref(false);
 const userConfirmedAutoStart = ref(false);
 const hasClickedPower = ref(false);
 const userConfirmedPower = ref(false);
+const isNotificationListenerReady = ref(false);
+const hasClickedListener = ref(false);
+const userConfirmedListener = ref(false);
 
 // Step 3 状态
 const freeDiskSpaceGB = ref(0);
@@ -101,8 +104,16 @@ const isPowerReady = computed(() => {
   return userConfirmedPower.value;
 });
 
+// 通知监听是否配置好
+const isListenerReady = computed(() => {
+  if (isNotificationListenerReady.value) return true;
+  return userConfirmedListener.value;
+});
+
 // Step 2 是否满足要求
-const step2Ready = computed(() => isAutoStartReady.value && isPowerReady.value);
+const step2Ready = computed(
+  () => isAutoStartReady.value && isPowerReady.value && isListenerReady.value
+);
 
 // Step 3 存储检测是否合格 (要求 >= 5.0 GB)
 const isStorageSpaceOk = computed(() => freeDiskSpaceGB.value >= 5.0);
@@ -119,6 +130,7 @@ const check = async () => {
     // 如果已经授予存储权限，检测内部存储空间和自启动状态
     await checkDiskSpace();
     await checkAutoStart();
+    await checkNotificationListener();
   } catch (e) {
     console.error("[PermissionGate] Failed to check permissions:", e);
   }
@@ -210,6 +222,32 @@ const triggerPowerManagementSettings = async () => {
   } catch (e) {
     console.error(
       "[PermissionGate] Failed to request power management settings:",
+      e
+    );
+  }
+};
+
+const checkNotificationListener = async () => {
+  try {
+    const res = await invoke<{ enabled: boolean }>(
+      "plugin:vcp-mobile|check_notification_listener_permission"
+    );
+    isNotificationListenerReady.value = res.enabled;
+  } catch (e) {
+    console.error(
+      "[PermissionGate] Failed to check notification listener permission:",
+      e
+    );
+  }
+};
+
+const triggerNotificationListenerSettings = async () => {
+  try {
+    await invoke("plugin:vcp-mobile|request_notification_listener_permission");
+    hasClickedListener.value = true;
+  } catch (e) {
+    console.error(
+      "[PermissionGate] Failed to request notification listener settings:",
       e
     );
   }
@@ -606,6 +644,59 @@ onUnmounted(() => {
                     for="chkPower"
                     class="text-xs text-gray-700 font-bold select-none cursor-pointer"
                     >我已将本应用省电策略改为「无限制」</label
+                  >
+                </div>
+              </div>
+
+              <!-- 卡片 3：通知栏监听守护 (极度稳定的后台常驻) -->
+              <div
+                class="flex flex-col gap-2 p-4 rounded-2xl bg-gray-100/50 border border-gray-200"
+              >
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0"
+                  >
+                    <div
+                      class="i-heroicons-shield-check text-blue-500 text-lg"
+                    ></div>
+                  </div>
+                  <div class="flex-1">
+                    <span class="font-semibold text-gray-900 text-sm"
+                      >通知栏监听守护</span
+                    >
+                    <span
+                      v-if="isNotificationListenerReady"
+                      class="ml-2 text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-600 rounded-md font-bold uppercase tracking-wider"
+                      >自动感应 OK</span
+                    >
+                  </div>
+                  <button
+                    @click="triggerNotificationListenerSettings"
+                    class="px-3 py-1.5 bg-gray-900 text-white text-[12px] font-bold rounded-lg active:scale-95 transition-all shrink-0"
+                  >
+                    去设置
+                  </button>
+                </div>
+                <p class="text-xs text-gray-500 leading-relaxed pl-11">
+                  启用通知使用权，使应用在系统底层获得极高的后台网络与运行豁免特权：
+                  <span class="block mt-1 text-[11px] text-[#8B7D6B] font-bold">
+                    请在列表中找到『VCP Mobile』并开启『允许访问通知』
+                  </span>
+                </p>
+                <div
+                  v-if="!isNotificationListenerReady && hasClickedListener"
+                  class="mt-2 pl-11 flex items-center gap-2"
+                >
+                  <input
+                    type="checkbox"
+                    id="chkListener"
+                    v-model="userConfirmedListener"
+                    class="rounded border-gray-300 text-gray-900 focus:ring-gray-900 w-4 h-4 cursor-pointer"
+                  />
+                  <label
+                    for="chkListener"
+                    class="text-xs text-gray-700 font-bold select-none cursor-pointer"
+                    >我已开启通知栏监听</label
                   >
                 </div>
               </div>

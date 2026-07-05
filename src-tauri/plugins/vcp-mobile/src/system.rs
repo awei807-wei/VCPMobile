@@ -166,6 +166,60 @@ pub fn check_auto_start_permission<R: Runtime>(app: AppHandle<R>) -> Result<Stri
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ListenerPermissionResponse {
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub fn check_notification_listener_permission<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<ListenerPermissionResponse, String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+
+        let res = plugin_handle
+            .run_mobile_plugin::<ListenerPermissionResponse>(
+                "check_notification_listener_permission",
+                serde_json::json!({}),
+            )
+            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
+        Ok(res)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(ListenerPermissionResponse { enabled: true })
+    }
+}
+
+#[tauri::command]
+pub fn request_notification_listener_permission<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+
+        plugin_handle
+            .run_mobile_plugin::<serde_json::Value>(
+                "request_notification_listener_permission",
+                serde_json::json!({}),
+            )
+            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiskSpaceInfo {
     pub free_bytes: u64,

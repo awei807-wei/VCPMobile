@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -38,6 +40,8 @@ class StreamKeepaliveService : Service() {
         var isServiceRunning = false
     }
 
+    private var mediaPlayer: MediaPlayer? = null
+
     override fun onCreate() {
         super.onCreate()
         isServiceRunning = true
@@ -54,6 +58,9 @@ class StreamKeepaliveService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+
+        // 启动静音音频循环播放保活
+        startSilentPlayback()
 
         return START_NOT_STICKY
     }
@@ -88,6 +95,9 @@ class StreamKeepaliveService : Service() {
             stopForeground(true)
         }
         
+        // 停止静音音频播放
+        stopSilentPlayback()
+        
         // 关键安全闭环：前台服务销毁（包括被系统/用户强杀）时，强行释放全部进程级物理锁，防止电量泄露
         ForegroundGuardian.releaseAllLocks()
 
@@ -96,6 +106,86 @@ class StreamKeepaliveService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    // ==================================================================
+    // Silent Audio Keep-Alive
+    // ==================================================================
+
+    private fun ensureSilentAudioFile(): java.io.File {
+        val file = java.io.File(cacheDir, "silent.wav")
+        if (file.exists() && file.length() > 0) {
+            return file
+        }
+        try {
+            file.outputStream().use { out ->
+                // RIFF Header
+                out.write(byteArrayOf(0x52, 0x49, 0x46, 0x46)) // "RIFF"
+                out.write(byteArrayOf(0x64, 0x06, 0x00, 0x00)) // Size: 1636
+                out.write(byteArrayOf(0x57, 0x41, 0x56, 0x45)) // "WAVE"
+                
+                // fmt Chunk
+                out.write(byteArrayOf(0x66, 0x6d, 0x74, 0x20)) // "fmt "
+                out.write(byteArrayOf(0x10, 0x00, 0x00, 0x00)) // Chunk size: 16
+                out.write(byteArrayOf(0x01, 0x00))             // Format: 1 (PCM)
+                out.write(byteArrayOf(0x01, 0x00))             // Channels: 1 (Mono)
+                out.write(byteArrayOf(0x40, 0x1F, 0x00, 0x00)) // Sample rate: 8000
+                out.write(byteArrayOf(0x40, 0x1F, 0x00, 0x00)) // Byte rate: 8000
+                out.write(byteArrayOf(0x01, 0x00))             // Block align: 1
+                out.write(byteArrayOf(0x08, 0x00))             // Bits per sample: 8
+                
+                // data Chunk
+                out.write(byteArrayOf(0x64, 0x61, 0x74, 0x61)) // "data"
+                out.write(byteArrayOf(0x40, 0x06, 0x00, 0x00)) // Data size: 1600
+                
+                // 1600 bytes of silence (0x80 for 8-bit PCM)
+                val silence = ByteArray(1600) { 0x80.toByte() }
+                out.write(silence)
+            }
+            Log.i(TAG, "Created silent.wav in cache directory.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create silent.wav", e)
+        }
+        return file
+    }
+
+    private fun startSilentPlayback() {
+        if (mediaPlayer != null) return
+        try {
+            val silentFile = ensureSilentAudioFile()
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(silentFile.absolutePath)
+                isLooping = true
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                }
+                
+                prepare()
+                start()
+            }
+            Log.i(TAG, "Silent playback started.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start silent playback", e)
+        }
+    }
+
+    private fun stopSilentPlayback() {
+        mediaPlayer?.let {
+            try {
+                if (it.isPlaying) {
+                    it.stop()
+                }
+                it.release()
+            } catch (ignored: Exception) {}
+        }
+        mediaPlayer = null
+        Log.i(TAG, "Silent playback stopped.")
+    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

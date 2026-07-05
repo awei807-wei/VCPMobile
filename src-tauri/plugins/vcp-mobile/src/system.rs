@@ -5,18 +5,9 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri::{AppHandle, Runtime};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemNotificationDelivery {
-    pub attempted: bool,
-    pub delivered: bool,
-    pub error: Option<String>,
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct PermissionStatus {
     pub notification: bool,
-    pub ring: bool,
     pub storage: bool,
     pub battery: bool,
     pub microphone: bool,
@@ -43,7 +34,6 @@ pub fn check_all_permissions<R: Runtime>(app: AppHandle<R>) -> Result<Permission
         let _ = app;
         Ok(PermissionStatus {
             notification: true,
-            ring: true,
             storage: true,
             battery: true,
             microphone: true,
@@ -99,72 +89,6 @@ pub fn move_task_to_back<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn request_auto_start_permission<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
-    #[cfg(target_os = "android")]
-    {
-        let state = app.state::<VcpMobileState<R>>();
-        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
-        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
-
-        let res = plugin_handle
-            .run_mobile_plugin::<serde_json::Value>("requestAutoStartPermission", serde_json::json!({}))
-            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
-        
-        let success = res.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-        Ok(success)
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = app;
-        Ok(true)
-    }
-}
-
-#[tauri::command]
-pub fn request_power_management_permission<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
-    #[cfg(target_os = "android")]
-    {
-        let state = app.state::<VcpMobileState<R>>();
-        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
-        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
-
-        let res = plugin_handle
-            .run_mobile_plugin::<serde_json::Value>("requestPowerManagementPermission", serde_json::json!({}))
-            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
-        
-        let success = res.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-        Ok(success)
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = app;
-        Ok(true)
-    }
-}
-
-#[tauri::command]
-pub fn check_auto_start_permission<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    #[cfg(target_os = "android")]
-    {
-        let state = app.state::<VcpMobileState<R>>();
-        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
-        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
-
-        let res = plugin_handle
-            .run_mobile_plugin::<serde_json::Value>("checkAutoStartPermission", serde_json::json!({}))
-            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
-        
-        let status = res.get("status").and_then(|v| v.as_str()).unwrap_or("unsupported").to_string();
-        Ok(status)
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = app;
-        Ok("unsupported".to_string())
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct ListenerPermissionResponse {
     pub enabled: bool,
@@ -217,6 +141,91 @@ pub fn request_notification_listener_permission<R: Runtime>(
         let _ = app;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn request_auto_start_permission<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+
+        let res = plugin_handle
+            .run_mobile_plugin::<serde_json::Value>(
+                "requestAutoStartPermission",
+                serde_json::json!({}),
+            )
+            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
+
+        let success = res
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(success)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+pub fn request_power_management_permission<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+
+        let res = plugin_handle
+            .run_mobile_plugin::<serde_json::Value>(
+                "requestPowerManagementPermission",
+                serde_json::json!({}),
+            )
+            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
+
+        let success = res
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(success)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+pub fn check_auto_start_permission<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+
+        let res = plugin_handle
+            .run_mobile_plugin::<serde_json::Value>(
+                "checkAutoStartPermission",
+                serde_json::json!({}),
+            )
+            .map_err(|e| format!("run_mobile_plugin failed: {}", e))?;
+
+        let status = res
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unsupported")
+            .to_string();
+        Ok(status)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok("unsupported".to_string())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -513,6 +522,30 @@ pub fn write_temp_file<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn delete_temp_file<R: Runtime>(app: AppHandle<R>, file_path: String) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        use std::path::Path;
+        let path = Path::new(&file_path);
+
+        // 安全防护：限制仅允许删除 App 自身的 cache_dir 缓存目录下的文件，防路径遍历越权
+        use tauri::Manager;
+        let cache_dir = app.path().cache_dir().map_err(|e| e.to_string())?;
+
+        if path.starts_with(&cache_dir) && path.exists() && path.is_file() {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let _ = file_path;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 pub fn start_download_notification<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
@@ -582,74 +615,6 @@ pub fn cancel_download_notification<R: Runtime>(app: AppHandle<R>) -> Result<(),
         let _ = app;
     }
     Ok(())
-}
-
-#[tauri::command]
-pub fn show_system_notification<R: Runtime>(
-    app: AppHandle<R>,
-    title: String,
-    body: String,
-) -> Result<(), String> {
-    let delivery = dispatch_system_notification(app, title, body);
-    if delivery.delivered {
-        Ok(())
-    } else {
-        Err(delivery
-            .error
-            .unwrap_or_else(|| "Android system notification delivery failed".to_string()))
-    }
-}
-
-pub fn dispatch_system_notification<R: Runtime>(
-    app: AppHandle<R>,
-    title: String,
-    body: String,
-) -> SystemNotificationDelivery {
-    #[cfg(target_os = "android")]
-    {
-        let state = app.state::<VcpMobileState<R>>();
-        let delivery = match state.plugin_handle.lock() {
-            Ok(handle) => match handle.as_ref() {
-                Some(plugin_handle) => match plugin_handle.run_mobile_plugin::<serde_json::Value>(
-                    "showSystemNotification",
-                    serde_json::json!({ "title": title, "body": body }),
-                ) {
-                    Ok(_) => SystemNotificationDelivery {
-                        attempted: true,
-                        delivered: true,
-                        error: None,
-                    },
-                    Err(error) => SystemNotificationDelivery {
-                        attempted: true,
-                        delivered: false,
-                        error: Some(format!("run_mobile_plugin failed: {}", error)),
-                    },
-                },
-                None => SystemNotificationDelivery {
-                    attempted: true,
-                    delivered: false,
-                    error: Some("Plugin handle not initialized".to_string()),
-                },
-            },
-            Err(error) => SystemNotificationDelivery {
-                attempted: true,
-                delivered: false,
-                error: Some(error.to_string()),
-            },
-        };
-        delivery
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = app;
-        let _ = title;
-        let _ = body;
-        SystemNotificationDelivery {
-            attempted: false,
-            delivered: false,
-            error: Some("show_system_notification is only supported on Android".to_string()),
-        }
-    }
 }
 
 #[tauri::command]
@@ -941,6 +906,76 @@ pub fn run_root_command<R: Runtime>(
     }
 }
 
+#[derive(Deserialize)]
+pub struct ClipboardReadResult {
+    pub content: String,
+}
+
+pub fn write_clipboard_native<R: Runtime>(
+    app: AppHandle<R>,
+    content: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+        plugin_handle
+            .run_mobile_plugin::<()>("writeClipboard", serde_json::json!({ "content": content }))
+            .map_err(|e| format!("JNI writeClipboard failed: {}", e))?;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let _ = content;
+    }
+    Ok(())
+}
+
+pub fn read_clipboard_native<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+        let res = plugin_handle
+            .run_mobile_plugin::<ClipboardReadResult>("readClipboard", serde_json::json!({}))
+            .map_err(|e| format!("JNI readClipboard failed: {}", e))?;
+        Ok(res.content)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok("Desktop Clipboard Placeholder".to_string())
+    }
+}
+
+pub fn send_notification_native<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+        plugin_handle
+            .run_mobile_plugin::<()>(
+                "sendLocalNotification",
+                serde_json::json!({ "title": title, "body": body }),
+            )
+            .map_err(|e| format!("JNI sendLocalNotification failed: {}", e))?;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let _ = title;
+        let _ = body;
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchRootManagerResult {
@@ -1033,4 +1068,113 @@ pub fn start_network_monitoring<R: Runtime>(app: AppHandle<R>) -> Result<(), Str
         let _ = app;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_pending_notification<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let handle = state.plugin_handle.lock().map_err(|e| e.to_string())?;
+        let plugin_handle = handle.as_ref().ok_or("Plugin handle not initialized")?;
+
+        let notification_data = plugin_handle
+            .run_mobile_plugin::<serde_json::Value>(
+                "getPendingNotification",
+                serde_json::Value::Null,
+            )
+            .map_err(|e| format!("run_mobile_plugin getPendingNotification failed: {}", e))?;
+        Ok(notification_data)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(serde_json::json!({}))
+    }
+}
+
+// ============================================================================
+// 向后兼容垫片 (Backward Compatibility Shims)
+// 上游已移除 show_system_notification / dispatch_system_notification，
+// 改用 get_pending_notification + 通知监听器方案。
+// 本地 fork 的 distributed/tools/agent_message.rs、notification.rs 和
+// vcp_log_service.rs 仍引用旧接口，此处保留兼容实现。
+// ============================================================================
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemNotificationDelivery {
+    pub attempted: bool,
+    pub delivered: bool,
+    pub error: Option<String>,
+}
+
+/// 兼容旧接口：发送系统通知（已由通知监听器方案替代，此处保留向后兼容）
+pub fn dispatch_system_notification<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+) -> SystemNotificationDelivery {
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        let delivery = match state.plugin_handle.lock() {
+            Ok(handle) => match handle.as_ref() {
+                Some(plugin_handle) => match plugin_handle.run_mobile_plugin::<serde_json::Value>(
+                    "showSystemNotification",
+                    serde_json::json!({ "title": title, "body": body }),
+                ) {
+                    Ok(_) => SystemNotificationDelivery {
+                        attempted: true,
+                        delivered: true,
+                        error: None,
+                    },
+                    Err(error) => SystemNotificationDelivery {
+                        attempted: true,
+                        delivered: false,
+                        error: Some(format!("run_mobile_plugin failed: {}", error)),
+                    },
+                },
+                None => SystemNotificationDelivery {
+                    attempted: false,
+                    delivered: false,
+                    error: Some("Plugin handle not initialized".to_string()),
+                },
+            },
+            Err(error) => SystemNotificationDelivery {
+                attempted: false,
+                delivered: false,
+                error: Some(format!("Lock error: {}", error)),
+            },
+        };
+        delivery
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, title, body);
+        SystemNotificationDelivery {
+            attempted: false,
+            delivered: false,
+            error: Some("show_system_notification is only supported on Android".to_string()),
+        }
+    }
+}
+
+/// 兼容旧接口：发送系统通知（Tauri command 形式）
+#[tauri::command]
+pub fn show_system_notification<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let delivery = dispatch_system_notification(app, title, body);
+    if delivery.delivered {
+        Ok(())
+    } else {
+        Err(delivery
+            .error
+            .unwrap_or_else(|| "Android system notification delivery failed".to_string()))
+    }
 }

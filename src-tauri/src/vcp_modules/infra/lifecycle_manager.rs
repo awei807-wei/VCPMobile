@@ -41,6 +41,14 @@ impl LifecycleState {
     }
 }
 
+/// 检查应用当前是否在前台。
+/// 本地 fork 暂未实现完整的前后台状态追踪，默认返回 true。
+/// 上游使用 lifecycle_controller 模块追踪 is_foreground 状态。
+pub fn is_app_in_foreground<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+    let _ = app;
+    true
+}
+
 /// 根据设置决定启动或停止划词助手本地服务器
 pub async fn reconcile_local_server(
     app_handle: &AppHandle,

@@ -499,8 +499,8 @@ async fn ensure_attachments_locally<R: tauri::Runtime>(
 pub async fn append_single_message<R: tauri::Runtime>(
     app_handle: AppHandle<R>,
     db_pool: &sqlx::Pool<sqlx::Sqlite>,
-    _owner_id: &str,
-    _owner_type: &str,
+    owner_id: &str,
+    owner_type: &str,
     topic_id: String,
     mut message: ChatMessage,
 ) -> Result<Vec<ContentBlock>, String> {
@@ -515,6 +515,22 @@ pub async fn append_single_message<R: tauri::Runtime>(
 
     let mut tx = db_pool.begin().await.map_err(|e| e.to_string())?;
     MessageRepository::upsert_message(&mut tx, &message, &topic_id, &render_bytes, false).await?;
+
+    // 如果是助手消息，且为流式生成初始状态（finish_reason 为空），注册到活跃生成表中
+    if message.role == "assistant" && message.finish_reason.is_none() {
+        sqlx::query(
+            "INSERT OR REPLACE INTO active_generations (msg_id, topic_id, owner_id, owner_type, created_at) \
+             VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(&message.id)
+        .bind(&topic_id)
+        .bind(owner_id)
+        .bind(owner_type)
+        .bind(message.timestamp as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
 
     let msg_count: i32 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages WHERE topic_id = ? AND deleted_at IS NULL",
@@ -700,6 +716,20 @@ pub async fn delete_messages(
         .await
         .map_err(|e| e.to_string())?;
 
+    // 级联清除活跃生成注册表，杜绝已删除消息复活
+    let delete_active_gen_query = format!(
+        "DELETE FROM active_generations WHERE topic_id = ? AND msg_id IN ({})",
+        msg_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+    );
+    let mut q_active = sqlx::query(&delete_active_gen_query).bind(topic_id);
+    for id in &msg_ids {
+        q_active = q_active.bind(id);
+    }
+    q_active
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
     let msg_count: i32 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages WHERE topic_id = ? AND deleted_at IS NULL",
     )
@@ -877,6 +907,14 @@ pub async fn finalize_stream_message<R: tauri::Runtime>(
             }
         }
     };
+
+    // ⚡ 注销活跃生成注册表中的记录 (清除断点续传事务日志)
+    if !message_id.is_empty() {
+        let _ = sqlx::query("DELETE FROM active_generations WHERE msg_id = ?")
+            .bind(&message_id)
+            .execute(pool)
+            .await;
+    }
 
     if let Some(chan) = stream_channel {
         let context = if owner_id.is_empty() || topic_id.is_empty() {

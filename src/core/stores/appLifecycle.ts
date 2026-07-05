@@ -29,6 +29,7 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
   const hasBootstrapped = ref(false);
   const currentPhaseLabel = ref("准备启动...");
   const lastTransitionAt = ref<number | null>(null);
+  const isBackground = ref(false);
 
   const assistantStore = useAssistantStore();
   const settingsStore = useSettingsStore();
@@ -338,6 +339,7 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
     isBootstrapping,
     hasBootstrapped,
     lastTransitionAt,
+    isBackground,
     coreStatus: computed(() => notificationStore.vcpCoreStatus),
     bootstrap,
     hydrateSystemStatus,

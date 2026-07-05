@@ -20,6 +20,13 @@ impl DeleteExecutor {
             .await
             .map_err(|e| e.to_string())?;
 
+        // 级联清除该 Agent 下的所有活跃生成，杜绝已删除消息复活
+        sqlx::query("DELETE FROM active_generations WHERE owner_id = ? AND owner_type = 'agent'")
+            .bind(agent_id)
+            .execute(&db.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
         let mut tx = db.pool.begin().await.map_err(|e| e.to_string())?;
         HashAggregator::bubble_agent_hash(&mut tx, agent_id).await?;
         tx.commit().await.map_err(|e| e.to_string())?;
@@ -36,6 +43,13 @@ impl DeleteExecutor {
 
         sqlx::query("UPDATE groups SET deleted_at = ? WHERE group_id = ?")
             .bind(now)
+            .bind(group_id)
+            .execute(&db.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 级联清除该 Group 下的所有活跃生成，杜绝已删除消息复活
+        sqlx::query("DELETE FROM active_generations WHERE owner_id = ? AND owner_type = 'group'")
             .bind(group_id)
             .execute(&db.pool)
             .await
@@ -63,6 +77,13 @@ impl DeleteExecutor {
 
         sqlx::query("UPDATE topics SET deleted_at = ? WHERE topic_id = ?")
             .bind(now)
+            .bind(topic_id)
+            .execute(&db.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 级联清除活跃生成注册表，杜绝已删除消息复活
+        sqlx::query("DELETE FROM active_generations WHERE topic_id = ?")
             .bind(topic_id)
             .execute(&db.pool)
             .await

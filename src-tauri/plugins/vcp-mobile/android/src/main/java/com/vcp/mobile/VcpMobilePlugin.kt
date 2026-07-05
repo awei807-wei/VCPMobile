@@ -31,7 +31,6 @@ import androidx.core.content.ContextCompat
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.Invoke
-import com.vcp.mobile.service.StreamKeepaliveService
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.content.ContentValues
@@ -63,6 +62,36 @@ import com.topjohnwu.superuser.Shell
 ])
 class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
+    private val activityLifecycleCallbacks = object : android.app.Application.ActivityLifecycleCallbacks {
+        override fun onActivityResumed(a: Activity) {
+            if (a === activity) {
+                isAppInForeground = true
+
+                if (com.vcp.mobile.service.ForegroundGuardian.isScreenKeepOnRequired) {
+                    activity.runOnUiThread {
+                        activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
+            }
+        }
+        override fun onActivityPaused(a: Activity) {
+            if (a === activity) {
+                isAppInForeground = false
+
+                if (com.vcp.mobile.service.ForegroundGuardian.isScreenKeepOnRequired) {
+                    activity.runOnUiThread {
+                        activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
+            }
+        }
+        override fun onActivityCreated(a: Activity, savedInstanceState: android.os.Bundle?) {}
+        override fun onActivityStarted(a: Activity) {}
+        override fun onActivityStopped(a: Activity) {}
+        override fun onActivitySaveInstanceState(a: Activity, outState: android.os.Bundle) {}
+        override fun onActivityDestroyed(a: Activity) {}
+    }
+
     init {
         instanceRef = java.lang.ref.WeakReference(this)
         activity.application.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
@@ -80,6 +109,40 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
     val pluginActivity: Activity get() = activity
     var webViewRef: WebView? = null
+    private var isAppInForeground = true
+    private var pendingNotificationData: JSObject? = null
+
+    private fun handleNotificationIntent(intent: Intent) {
+        val topicId = intent.getStringExtra("topicId")
+        val ownerId = intent.getStringExtra("ownerId")
+        val requestId = intent.getStringExtra("requestId")
+        if (topicId != null && ownerId != null) {
+            Log.i(TAG, "[handleNotificationIntent] Found notification click: topicId=$topicId, ownerId=$ownerId, requestId=$requestId")
+            val data = JSObject().apply {
+                put("topicId", topicId)
+                put("ownerId", ownerId)
+                put("requestId", requestId ?: "")
+            }
+            pendingNotificationData = data
+            
+            val webView = webViewRef
+            if (webView != null) {
+                val dataJson = data.toString()
+                val safeJson = escapeJsonForJsString(dataJson)
+                val script = "window.dispatchEvent(new CustomEvent('vcp-notification-click', { detail: JSON.parse(\\"$safeJson\\") }))"
+                activity.runOnUiThread {
+                    webView.evaluateJavascript(script, null)
+                }
+            } else {
+                Log.w(TAG, "[handleNotificationIntent] WebView not ready, caching notification data")
+            }
+            
+            // Consume the intent extras so they don't fire again
+            intent.removeExtra("topicId")
+            intent.removeExtra("ownerId")
+            intent.removeExtra("requestId")
+        }
+    }
     private val keyboardInsetsManager = KeyboardInsetsManager(activity)
     private val lifecycleBridge = LifecycleBridge(
         onResumeHook = {
@@ -99,8 +162,6 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     private val shareIntentHandler = ShareIntentHandler(this)
     private val fileIoExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var cameraTempFile: java.io.File? = null
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var lastConnected: Boolean? = null
     private var isNetworkMonitoringStarted = false
@@ -691,59 +752,96 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     // ==================================================================
-    // Stream Service
+    // Foreground Guardian & Stream Service
     // ==================================================================
+    @Command
+    fun acquireForeground(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(AcquireForegroundArgs::class.java)
+            com.vcp.mobile.service.ForegroundGuardian.acquire(activity, args.tag, args.priority, args.label, args.screenKeepOn)
+            if (args.screenKeepOn) {
+                activity.runOnUiThread {
+                    activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+            invoke.resolve()
+        } catch (e: Exception) {
+            Log.e(TAG, "acquireForeground failed", e)
+            invoke.reject(e.message ?: "Unknown error")
+        }
+    }
+
+    @Command
+    fun releaseForeground(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(ReleaseForegroundArgs::class.java)
+            com.vcp.mobile.service.ForegroundGuardian.release(activity, args.tag)
+            if (!com.vcp.mobile.service.ForegroundGuardian.isScreenKeepOnRequired) {
+                activity.runOnUiThread {
+                    activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+            invoke.resolve()
+        } catch (e: Exception) {
+            Log.e(TAG, "releaseForeground failed", e)
+            invoke.reject(e.message ?: "Unknown error")
+        }
+    }
+
     @Command
     fun startStreamingService(invoke: Invoke) {
         try {
             val args = invoke.parseArgs(StartStreamArgs::class.java)
-            val intent = StreamKeepaliveService.createIntent(activity, args.agentName, args.isKeepaliveMode)
             val hasKeepaliveParam = args.isKeepaliveMode != null
             val isKeepalive = args.isKeepaliveMode ?: false
-            val wasKeepaliveRequested = StreamKeepaliveService.isDistributedKeepaliveRequested ||
-                StreamKeepaliveService.isKeepaliveModeRequested
 
             if (args.agentName.isEmpty()) {
                 if (hasKeepaliveParam) {
                     if (!isKeepalive) {
-                        StreamKeepaliveService.isDistributedKeepaliveRequested = false
-                        StreamKeepaliveService.isTemporaryWakeLockServiceActive = false
-                        StreamKeepaliveService.isKeepaliveModeRequested = false
-                        Log.i(TAG, "startStreamingService: both agentName and keepaliveMode are inactive. Stopping service directly.")
-                        activity.stopService(intent)
-                        invoke.resolve()
-                        return
-                    }
-                    if (wasKeepaliveRequested && StreamKeepaliveService.isServiceRunning) {
-                        updateRunningService(intent, "startStreamingService: keepalive already active. Updating service without duplicate foreground start.")
-                        StreamKeepaliveService.isDistributedKeepaliveRequested = true
-                        StreamKeepaliveService.isTemporaryWakeLockServiceActive = false
-                        StreamKeepaliveService.isKeepaliveModeRequested = true
-                        invoke.resolve()
-                        return
+                        com.vcp.mobile.service.ForegroundGuardian.release(activity, "distributed")
+                    } else {
+                        com.vcp.mobile.service.ForegroundGuardian.acquire(
+                            activity, "distributed", 
+                            com.vcp.mobile.service.ForegroundGuardian.PRIORITY_DISTRIBUTED, 
+                            "distributed"
+                        )
                     }
                 } else {
-                    if (StreamKeepaliveService.isKeepaliveModeRequested) {
-                        if (StreamKeepaliveService.isServiceRunning) {
-                            updateRunningService(intent, "startStreamingService: keepalive is active. Clearing stream name without stopping service.")
-                        } else {
-                            Log.i(TAG, "startStreamingService: keepalive is requested but service is not running. Ignoring empty stream stop update.")
-                        }
-                    } else if (StreamKeepaliveService.isServiceRunning) {
-                        Log.i(TAG, "startStreamingService: empty stream update without keepalive. Stopping service directly.")
-                        activity.stopService(intent)
-                    }
-                    invoke.resolve()
-                    return
+                    // 老版 Rust 停止信号：释放所有流式相关的默认锁
+                    com.vcp.mobile.service.ForegroundGuardian.release(activity, "sync")
+                    com.vcp.mobile.service.ForegroundGuardian.release(activity, "prerender")
+                    com.vcp.mobile.service.ForegroundGuardian.release(activity, "stream_default")
                 }
+                invoke.resolve()
+                return
             }
 
-            startServiceCompatible(intent)
-            if (hasKeepaliveParam && isKeepalive) {
-                StreamKeepaliveService.isDistributedKeepaliveRequested = true
-                StreamKeepaliveService.isTemporaryWakeLockServiceActive = false
-                StreamKeepaliveService.isKeepaliveModeRequested = true
+            if (args.agentName.contains("[数据同步]")) {
+                com.vcp.mobile.service.ForegroundGuardian.acquire(
+                    activity, "sync", 
+                    com.vcp.mobile.service.ForegroundGuardian.PRIORITY_SYNC, 
+                    args.agentName, true
+                )
+                activity.runOnUiThread {
+                    activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            } else if (args.agentName.contains("[预渲染重建]")) {
+                com.vcp.mobile.service.ForegroundGuardian.acquire(
+                    activity, "prerender", 
+                    com.vcp.mobile.service.ForegroundGuardian.PRIORITY_PRERENDER, 
+                    args.agentName, true
+                )
+                activity.runOnUiThread {
+                    activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            } else {
+                com.vcp.mobile.service.ForegroundGuardian.acquire(
+                    activity, "stream:" + args.agentName, 
+                    com.vcp.mobile.service.ForegroundGuardian.PRIORITY_STREAM, 
+                    args.agentName, false
+                )
             }
+
             invoke.resolve()
         } catch (e: Exception) {
             Log.e(TAG, "startStreamingService failed", e)
@@ -751,63 +849,13 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun startServiceCompatible(intent: Intent) {
-        val needsForegroundStart = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !StreamKeepaliveService.isServiceRunning
-        try {
-            if (needsForegroundStart) {
-                activity.startForegroundService(intent)
-            } else {
-                activity.startService(intent)
-            }
-        } catch (e: Exception) {
-            if (!needsForegroundStart) {
-                Log.e(TAG, "startService update failed", e)
-                throw e
-            }
-
-            Log.w(TAG, "startForegroundService failed, trying normal service start", e)
-            try {
-                activity.startService(intent)
-            } catch (fallback: Exception) {
-                Log.e(TAG, "startService fallback failed", fallback)
-                throw fallback
-            }
-        }
-    }
-
-    private fun updateRunningService(intent: Intent, message: String) {
-        Log.i(TAG, message)
-        try {
-            activity.startService(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to update running StreamKeepaliveService", e)
-            throw e
-        }
-    }
-
-    private fun shouldKeepDistributedService(): Boolean {
-        return StreamKeepaliveService.isDistributedKeepaliveRequested ||
-            (StreamKeepaliveService.isKeepaliveModeRequested &&
-                !StreamKeepaliveService.isTemporaryWakeLockServiceActive)
-    }
-
     @Command
     fun stopStreamingService(invoke: Invoke) {
         try {
-            val intent = StreamKeepaliveService.createIntent(activity, "")
-            val keepDistributedService = shouldKeepDistributedService()
-
-            if (keepDistributedService) {
-                if (StreamKeepaliveService.isServiceRunning) {
-                    updateRunningService(intent, "stopStreamingService: distributed keepalive is active. Clearing stream name without stopping service.")
-                } else {
-                    Log.i(TAG, "stopStreamingService: distributed keepalive is requested but service is not running.")
-                }
-                invoke.resolve()
-                return
+            com.vcp.mobile.service.ForegroundGuardian.releaseAllLocks()
+            activity.runOnUiThread {
+                activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
-
-            activity.stopService(intent)
             invoke.resolve()
         } catch (e: Exception) {
             Log.e(TAG, "stopStreamingService failed", e)
@@ -818,33 +866,11 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun acquireWakeLock(invoke: Invoke) {
         try {
-            val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (wakeLock == null) {
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VcpMobile:WakeLock")
-            }
-            if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire(5 * 60 * 1000L) // 最大持有5分钟安全限制
-            }
-
-            try {
-                val wm = activity.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-                if (wifiLock == null) {
-                    @Suppress("DEPRECATION")
-                    wifiLock = wm.createWifiLock(
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
-                            android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                        else
-                            android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                        "VcpMobile:WifiLock"
-                    )
-                }
-                if (wifiLock?.isHeld == false) {
-                    wifiLock?.acquire()
-                }
-            } catch (wifiEx: Exception) {
-                Log.w(TAG, "Failed to acquire WiFi Lock: ${wifiEx.message}")
-            }
-
+            com.vcp.mobile.service.ForegroundGuardian.acquire(
+                activity, "manual_keepalive", 
+                com.vcp.mobile.service.ForegroundGuardian.PRIORITY_DISTRIBUTED, 
+                "[后台保活]"
+            )
             invoke.resolve()
         } catch (e: Exception) {
             Log.e(TAG, "acquireWakeLock failed", e)
@@ -855,12 +881,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun releaseWakeLock(invoke: Invoke) {
         try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-            if (wifiLock?.isHeld == true) {
-                wifiLock?.release()
-            }
+            com.vcp.mobile.service.ForegroundGuardian.release(activity, "manual_keepalive")
             invoke.resolve()
         } catch (e: Exception) {
             Log.e(TAG, "releaseWakeLock failed", e)
@@ -956,15 +977,18 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         webViewRef = webView
 
         keyboardInsetsManager.attach(webView)
-        lifecycleBridge.attach(activity, webView)
+        lifecycleBridge.attach(activity, this)
 
         // 冷启动：处理传递给 Activity 的初始 intent
         shareIntentHandler.handleShareIntent(activity.intent)
         shareIntentHandler.injectShareData(webView)
+        handleNotificationIntent(activity.intent)
     }
 
     override fun onDestroy(activity: AppCompatActivity) {
+        activity.application.unregisterActivityLifecycleCallbacks(activityLifecycleCallbacks)
         webViewRef = null
+        lifecycleBridge.detach()
         try {
             if (networkCallback != null) {
                 val cm = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
@@ -974,8 +998,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             }
         } catch (_: Exception) {}
         try {
-            if (wakeLock?.isHeld == true) wakeLock?.release()
-            if (wifiLock?.isHeld == true) wifiLock?.release()
+            // Locks are managed by ForegroundGuardian
         } catch (_: Exception) {}
         try {
             fileIoExecutor.shutdown()
@@ -991,6 +1014,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         shareIntentHandler.handleShareIntent(intent)
+        handleNotificationIntent(intent)
     }
 
     // ==================================================================
@@ -1102,7 +1126,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 val safeStartDetail = escapeJsonForJsString(startDetail.toString())
                 activity.runOnUiThread {
-                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse(\"$safeStartDetail\") }))", null)
+                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse("$safeStartDetail") }))", null)
                 }
 
                 // 计算 SHA-256 哈希
@@ -1154,7 +1178,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 val safePickedDetail = escapeJsonForJsString(pickedDetail.toString())
-                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse(\"$safePickedDetail\") }))"
+                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse("$safePickedDetail") }))"
                 activity.runOnUiThread {
                     webViewRef?.evaluateJavascript(pickedScript, null)
                 }
@@ -1212,7 +1236,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 val safeStartDetail = escapeJsonForJsString(startDetail.toString())
                 activity.runOnUiThread {
-                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse(\"$safeStartDetail\") }))", null)
+                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse("$safeStartDetail") }))", null)
                 }
 
                 // 4. 流式安全拷贝至 cacheDir 并同步计算 SHA-256 (64KB buffer)
@@ -1250,7 +1274,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                                     put("mime", mimeType)
                                 }
                                 val safeProgressDetail = escapeJsonForJsString(progressDetail.toString())
-                                val progressScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-progress', { detail: JSON.parse(\"$safeProgressDetail\") }))"
+                                val progressScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-progress', { detail: JSON.parse("$safeProgressDetail") }))"
                                 activity.runOnUiThread {
                                     webViewRef?.evaluateJavascript(progressScript, null)
                                 }
@@ -1309,7 +1333,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 val safePickedDetail = escapeJsonForJsString(pickedDetail.toString())
-                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse(\"$safePickedDetail\") }))"
+                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse("$safePickedDetail") }))"
                 activity.runOnUiThread {
                     webViewRef?.evaluateJavascript(pickedScript, null)
                 }
@@ -1391,8 +1415,8 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
     private fun escapeJsonForJsString(json: String): String {
         return json
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
+            .replace("\", "\\\")
+            .replace(""", "\\"")
             .replace("\'", "\\'")
             .replace("\n", "\\n")
             .replace("\r", "\\r")
@@ -1440,7 +1464,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 val safeStartDetail = escapeJsonForJsString(startDetail.toString())
                 activity.runOnUiThread {
-                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse(\"$safeStartDetail\") }))", null)
+                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse("$safeStartDetail") }))", null)
                 }
 
                 // 计算 SHA-256 哈希 (复用现有 pickFile 的流式拷贝+哈希模式)
@@ -1509,7 +1533,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 val safePickedDetail = escapeJsonForJsString(pickedDetail.toString())
-                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse(\"$safePickedDetail\") }))"
+                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse("$safePickedDetail") }))"
                 activity.runOnUiThread {
                     webViewRef?.evaluateJavascript(pickedScript, null)
                 }
@@ -1875,7 +1899,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val rawName = providedName?.takeIf { it.isNotBlank() } ?: fromUrl ?: "vcp_image_$timestamp"
-        val sanitized = rawName.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_").trim().ifBlank { "vcp_image_$timestamp" }
+        val sanitized = rawName.replace(Regex("[\\\\/:*?"<>|\\u0000-\\u001F]"), "_").trim().ifBlank { "vcp_image_$timestamp" }
         val base = sanitized.substringBeforeLast('.', sanitized).take(96).ifBlank { "vcp_image_$timestamp" }
         val ext = sanitized.substringAfterLast('.', "").lowercase(Locale.US).takeIf { it.isNotBlank() } ?: extensionForMime(mimeType)
         return "$base.$ext"
@@ -2320,4 +2344,17 @@ class GetSensorDataArgs {
 @InvokeArg
 class RunRootCommandArgs {
     lateinit var command: String
+}
+
+@InvokeArg
+class AcquireForegroundArgs {
+    lateinit var tag: String
+    var priority: Int = 0
+    lateinit var label: String
+    var screenKeepOn: Boolean = false
+}
+
+@InvokeArg
+class ReleaseForegroundArgs {
+    lateinit var tag: String
 }

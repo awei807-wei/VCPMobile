@@ -1,15 +1,15 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
 
 // ==================================================================
 // Screen
 // ==================================================================
 
 export function setKeepScreenOn(): Promise<void> {
-  return invoke('plugin:vcp-mobile|set_keep_screen_on');
+  return invoke("plugin:vcp-mobile|set_keep_screen_on");
 }
 
 export function clearKeepScreenOn(): Promise<void> {
-  return invoke('plugin:vcp-mobile|clear_keep_screen_on');
+  return invoke("plugin:vcp-mobile|clear_keep_screen_on");
 }
 
 // ==================================================================
@@ -17,11 +17,32 @@ export function clearKeepScreenOn(): Promise<void> {
 // ==================================================================
 
 export function startStreamService(agentName: string): Promise<void> {
-  return invoke('plugin:vcp-mobile|start_streaming_service', { agentName });
+  return invoke("plugin:vcp-mobile|start_streaming_service", { agentName });
+}
+export function stopStreamService(): Promise<void> {
+  return invoke("plugin:vcp-mobile|stop_streaming_service");
 }
 
-export function stopStreamService(): Promise<void> {
-  return invoke('plugin:vcp-mobile|stop_streaming_service');
+// ==================================================================
+// Foreground Guardian
+// ==================================================================
+
+export function acquireForeground(
+  tag: string,
+  priority: number,
+  label: string,
+  screenKeepOn: boolean = false
+): Promise<void> {
+  return invoke("plugin:vcp-mobile|acquire_foreground", {
+    tag,
+    priority,
+    label,
+    screenKeepOn,
+  });
+}
+
+export function releaseForeground(tag: string): Promise<void> {
+  return invoke("plugin:vcp-mobile|release_foreground", { tag });
 }
 
 // ==================================================================
@@ -38,11 +59,11 @@ export interface PickedFile {
 }
 
 export function pickFile(): Promise<PickedFile> {
-  return invoke<PickedFile>('plugin:vcp-mobile|pick_file');
+  return invoke<PickedFile>("plugin:vcp-mobile|pick_file");
 }
 
 export function openFileNative(path: string): Promise<void> {
-  return invoke('plugin:vcp-mobile|open_file_native', { path });
+  return invoke("plugin:vcp-mobile|open_file_native", { path });
 }
 
 export interface GallerySaveResult {
@@ -52,16 +73,34 @@ export interface GallerySaveResult {
   size: number;
 }
 
-export function saveImageToGallery(sourceUrl: string, fileName?: string): Promise<GallerySaveResult> {
-  return invoke<GallerySaveResult>('plugin:vcp-mobile|save_image_to_gallery', { sourceUrl, fileName });
+export function saveImageToGallery(
+  sourceUrl: string,
+  fileName?: string
+): Promise<GallerySaveResult> {
+  return invoke<GallerySaveResult>("plugin:vcp-mobile|save_image_to_gallery", {
+    sourceUrl,
+    fileName,
+  });
 }
 
-export function saveImageFromPath(imagePath: string, fileName?: string): Promise<GallerySaveResult> {
-  return invoke<GallerySaveResult>('plugin:vcp-mobile|save_image_from_path', { imagePath, fileName });
+export function saveImageFromPath(
+  imagePath: string,
+  fileName?: string
+): Promise<GallerySaveResult> {
+  return invoke<GallerySaveResult>("plugin:vcp-mobile|save_image_from_path", {
+    imagePath,
+    fileName,
+  });
 }
 
-export function writeTempFile(bytes: Uint8Array, fileName: string): Promise<string> {
-  return invoke<string>('plugin:vcp-mobile|write_temp_file', { bytes: Array.from(bytes), fileName });
+export function writeTempFile(
+  bytes: Uint8Array,
+  fileName: string
+): Promise<string> {
+  return invoke<string>("plugin:vcp-mobile|write_temp_file", {
+    bytes: Array.from(bytes),
+    fileName,
+  });
 }
 
 export interface RootAccessStatus {
@@ -69,7 +108,7 @@ export interface RootAccessStatus {
 }
 
 export function checkRootAccess(): Promise<RootAccessStatus> {
-  return invoke<RootAccessStatus>('plugin:vcp-mobile|check_root_access');
+  return invoke<RootAccessStatus>("plugin:vcp-mobile|check_root_access");
 }
 
 export interface RootCommandResult {
@@ -78,7 +117,9 @@ export interface RootCommandResult {
 }
 
 export function runRootCommand(command: string): Promise<RootCommandResult> {
-  return invoke<RootCommandResult>('plugin:vcp-mobile|run_root_command', { command });
+  return invoke<RootCommandResult>("plugin:vcp-mobile|run_root_command", {
+    command,
+  });
 }
 
 export interface LaunchRootManagerResult {
@@ -88,6 +129,7 @@ export interface LaunchRootManagerResult {
 }
 
 export function launchRootManager(): Promise<LaunchRootManagerResult> {
-  return invoke<LaunchRootManagerResult>('plugin:vcp-mobile|launch_root_manager');
+  return invoke<LaunchRootManagerResult>(
+    "plugin:vcp-mobile|launch_root_manager"
+  );
 }
-

@@ -96,6 +96,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         instanceRef = java.lang.ref.WeakReference(this)
         activity.application.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
         startOomScoreGuard()
+        startHelperServiceInternal()
     }
 
     companion object {
@@ -165,6 +166,26 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var lastConnected: Boolean? = null
     private var isNetworkMonitoringStarted = false
+
+    // ==================================================================
+    // SSE Proxy Service Binder & IPC (Messenger)
+    // ==================================================================
+    // ==================================================================
+    // SSE Proxy Service Lifecycle
+    // ==================================================================
+    private fun startHelperServiceInternal() {
+        try {
+            val intent = Intent(activity, com.vcp.mobile.service.SseProxyService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                activity.startForegroundService(intent)
+            } else {
+                activity.startService(intent)
+            }
+            Log.i(TAG, "SseProxyService start initiated.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start SseProxyService: ", e)
+        }
+    }
 
     // ==================================================================
     // Permissions & App Control
@@ -2287,6 +2308,17 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve()
         } catch (e: Exception) {
             Log.e(TAG, "cancelDownloadNotification failed", e)
+            invoke.reject(e.message ?: "Unknown error")
+        }
+    }
+
+    @Command
+    fun startHelperService(invoke: Invoke) {
+        try {
+            startHelperServiceInternal()
+            invoke.resolve()
+        } catch (e: Exception) {
+            Log.e(TAG, "startHelperService failed", e)
             invoke.reject(e.message ?: "Unknown error")
         }
     }

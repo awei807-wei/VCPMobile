@@ -2,9 +2,9 @@ name: CI Check
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
 
 jobs:
   check:
@@ -15,18 +15,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22' # 建议使用 LTS 版本
-
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
           version: 10
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22" # 建议使用 LTS 版本
+          cache: pnpm
+
       - name: Install Node Dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Vue & TypeScript Type Check
         run: pnpm exec vue-tsc --noEmit

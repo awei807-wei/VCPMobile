@@ -162,9 +162,7 @@ impl DistributedClient {
         };
 
         // Gracefully shut down any existing session before creating a new one.
-        let old_session = {
-            self.session.lock().await.take()
-        };
+        let old_session = { self.session.lock().await.take() };
         if let Some(session) = old_session {
             session.cancel_token.cancel();
             let _ = session.task_handle.await;
@@ -243,9 +241,7 @@ impl DistributedClient {
         }
 
         // Take the session out and gracefully shut it down.
-        let old_session = {
-            self.session.lock().await.take()
-        };
+        let old_session = { self.session.lock().await.take() };
         if let Some(session) = old_session {
             session.cancel_token.cancel();
             let _ = session.task_handle.await;
@@ -663,7 +659,7 @@ impl DistributedClient {
                     request_id
                 );
 
-// Execute and return result asynchronously to avoid blocking the main WS receiver loop.
+                // Execute and return result asynchronously to avoid blocking the main WS receiver loop.
                 let app_clone = app.clone();
                 let ws_tx_clone = ws_tx.clone();
                 let registry_clone = registry.clone();
@@ -671,7 +667,7 @@ impl DistributedClient {
                 let tool_name_clone = tool_name.clone();
 
                 tokio::spawn(async move {
-let tag = format!("distributed:tool:{}", request_id_clone);
+                    let tag = format!("distributed:tool:{}", request_id_clone);
                     acquire_wake_lock_helper(&app_clone, &tag);
                     let (response, callback) = Self::execute_tool(
                         &app_clone,
@@ -682,7 +678,7 @@ let tag = format!("distributed:tool:{}", request_id_clone);
                     )
                     .await;
                     Self::send_message(&ws_tx_clone, &response).await;
-if let Some(callback) = callback {
+                    if let Some(callback) = callback {
                         Self::send_message(&ws_tx_clone, &callback).await;
                     }
                     release_wake_lock_helper(&app_clone, &tag);
@@ -916,14 +912,22 @@ fn acquire_wake_lock_helper(app: &tauri::AppHandle, tag: &str) {
         "[分布式连接]",
         false, // screen_keep_on = false
     ) {
-        log::warn!("[Distributed] Failed to acquire native wake lock with tag {}: {}", tag, e);
+        log::warn!(
+            "[Distributed] Failed to acquire native wake lock with tag {}: {}",
+            tag,
+            e
+        );
     }
 }
 
 #[cfg(target_os = "android")]
 fn release_wake_lock_helper(app: &tauri::AppHandle, tag: &str) {
     if let Err(e) = tauri_plugin_vcp_mobile::stream::release_foreground_inner(app, tag) {
-        log::warn!("[Distributed] Failed to release native wake lock with tag {}: {}", tag, e);
+        log::warn!(
+            "[Distributed] Failed to release native wake lock with tag {}: {}",
+            tag,
+            e
+        );
     }
 }
 

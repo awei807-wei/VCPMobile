@@ -17,7 +17,9 @@ use crate::vcp_modules::vcp_log_service::init_vcp_log_connection_internal;
 /// 检查应用当前是否在前台。
 pub fn is_app_in_foreground<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     match app.try_state::<LifecycleState>() {
-        Some(lifecycle) => lifecycle.is_foreground.load(std::sync::atomic::Ordering::Relaxed),
+        Some(lifecycle) => lifecycle
+            .is_foreground
+            .load(std::sync::atomic::Ordering::Relaxed),
         None => true,
     }
 }
@@ -330,9 +332,11 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
             let mut should_cleanup = true;
             {
                 use sqlx::Row;
-                if let Ok(Some(row)) = sqlx::query("SELECT value FROM settings WHERE key = 'delete_executor_last_cleanup'")
-                    .fetch_optional(pool)
-                    .await
+                if let Ok(Some(row)) = sqlx::query(
+                    "SELECT value FROM settings WHERE key = 'delete_executor_last_cleanup'",
+                )
+                .fetch_optional(pool)
+                .await
                 {
                     let last_cleanup_str: String = row.get("value");
                     if let Ok(last_cleanup) = last_cleanup_str.parse::<i64>() {
@@ -348,7 +352,10 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
 
             if should_cleanup {
                 use crate::vcp_modules::sync_executor::delete_executor::DeleteExecutor;
-                if DeleteExecutor::cleanup_old_deleted_records(&h, 30).await.is_ok() {
+                if DeleteExecutor::cleanup_old_deleted_records(&h, 30)
+                    .await
+                    .is_ok()
+                {
                     let now = crate::vcp_modules::infra::utils::now_millis();
                     let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('delete_executor_last_cleanup', ?, ?)")
                         .bind(&now.to_string())
@@ -361,7 +368,10 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
             loop {
                 tokio::time::sleep(Duration::from_secs(86400)).await;
                 use crate::vcp_modules::sync_executor::delete_executor::DeleteExecutor;
-                if DeleteExecutor::cleanup_old_deleted_records(&h, 30).await.is_ok() {
+                if DeleteExecutor::cleanup_old_deleted_records(&h, 30)
+                    .await
+                    .is_ok()
+                {
                     let now = crate::vcp_modules::infra::utils::now_millis();
                     let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('delete_executor_last_cleanup', ?, ?)")
                         .bind(&now.to_string())
@@ -413,9 +423,11 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
             let mut skip_check = false;
             {
                 use sqlx::Row;
-                if let Ok(Some(row)) = sqlx::query("SELECT value FROM settings WHERE key = 'frontend_update_last_check'")
-                    .fetch_optional(pool)
-                    .await
+                if let Ok(Some(row)) = sqlx::query(
+                    "SELECT value FROM settings WHERE key = 'frontend_update_last_check'",
+                )
+                .fetch_optional(pool)
+                .await
                 {
                     let last_check_str: String = row.get("value");
                     if let Ok(last_check) = last_check_str.parse::<i64>() {
@@ -431,8 +443,10 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
 
             if !skip_check {
                 info!("[FrontendUpdate] Starting background check...");
-                match crate::vcp_modules::frontend_update_manager::check_for_frontend_update(h.clone())
-                    .await
+                match crate::vcp_modules::frontend_update_manager::check_for_frontend_update(
+                    h.clone(),
+                )
+                .await
                 {
                     Ok(info) => {
                         // 更新最后检查时间戳

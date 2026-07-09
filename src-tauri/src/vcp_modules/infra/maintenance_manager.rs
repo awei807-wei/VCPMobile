@@ -92,7 +92,7 @@ pub async fn cleanup_orphaned_attachments(
     let mut deleted_count = 0;
     let mut freed_size = 0u64;
 
-// 1.5 将已逻辑删除或所属消息/话题/智能体/群组已删除的 message_attachments 记录清空为无害的墓碑态 (清空敏感正文、src路径等)，但保留主键条目
+    // 1.5 将已逻辑删除或所属消息/话题/智能体/群组已删除的 message_attachments 记录清空为无害的墓碑态 (清空敏感正文、src路径等)，但保留主键条目
     let _ = sqlx::query(
         "UPDATE message_attachments \
          SET display_name = '[附件已删除]', src = NULL, status = 'removed' \

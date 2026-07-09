@@ -9,7 +9,9 @@ use vcp_modules::agent_service::{
     create_agent, delete_agent, get_agents, get_assistants_snapshot, read_agent_config,
     save_agent_config, update_agent_config,
 };
-use vcp_modules::avatar_service::{get_avatar, save_avatar_data, store_dominant_color, batch_get_avatars};
+use vcp_modules::avatar_service::{
+    batch_get_avatars, get_avatar, save_avatar_data, store_dominant_color,
+};
 use vcp_modules::chat_manager::{
     append_single_message, delete_messages, load_chat_history, load_chat_history_streamed,
     patch_single_message, truncate_history_after_timestamp,
@@ -43,12 +45,12 @@ use vcp_modules::group_service::{
     update_group_config,
 };
 use vcp_modules::high_speed_channel::prepare_vcp_upload;
+use vcp_modules::infra::lifecycle_state::LifecycleState;
 use vcp_modules::lifecycle_manager::{
     bootstrap, get_core_status, get_last_error, get_system_snapshot,
     reconcile_distributed_node_cmd, reconcile_local_server_cmd,
     recover_distributed_node_after_network_restore,
 };
-use vcp_modules::infra::lifecycle_state::LifecycleState;
 use vcp_modules::maintenance_manager::{
     cleanup_orphaned_attachments, cleanup_single_orphaned_attachment, clear_webview_cache,
     init_automatic_maintenance, reconstruct_system_cache,
@@ -57,7 +59,8 @@ use vcp_modules::message_repository::{process_message_content, rebuild_all_pre_r
 use vcp_modules::message_service::{fetch_raw_message_content, re_render_message};
 use vcp_modules::model_manager::{
     get_cached_models, get_favorite_models, get_hot_models, invalidate_model_cache,
-    record_model_usage, refresh_models, toggle_favorite_model, test_model_connectivity, start_batch_model_test, stop_all_model_tests,
+    record_model_usage, refresh_models, start_batch_model_test, stop_all_model_tests,
+    test_model_connectivity, toggle_favorite_model,
 };
 
 use vcp_modules::sync_service::{

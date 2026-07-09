@@ -444,12 +444,12 @@ pub async fn start_batch_model_test<R: Runtime>(
 
     // 3. 启动全新的后台异步任务管理队列
     let handle = tokio::spawn(async move {
-        log::info!("[ModelManager] Starting new batch model test for {} models...", model_ids.len());
+        log::info!(
+            "[ModelManager] Starting new batch model test for {} models...",
+            model_ids.len()
+        );
 
-        let chunks: Vec<Vec<String>> = model_ids
-            .chunks(5)
-            .map(|chunk| chunk.to_vec())
-            .collect();
+        let chunks: Vec<Vec<String>> = model_ids.chunks(5).map(|chunk| chunk.to_vec()).collect();
 
         for chunk in chunks {
             // 通知前端这批 5 个模型进入测试状态
@@ -526,9 +526,7 @@ pub async fn start_batch_model_test<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn stop_all_model_tests(
-    state: State<'_, ModelManagerState>,
-) -> Result<(), String> {
+pub async fn stop_all_model_tests(state: State<'_, ModelManagerState>) -> Result<(), String> {
     let mut active_task = state.active_batch_task.write().await;
     if let Some(handle) = active_task.take() {
         log::info!("[ModelManager] Stop command received, aborting active batch test...");

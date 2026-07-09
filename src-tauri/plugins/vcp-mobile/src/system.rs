@@ -8,6 +8,7 @@ use tauri::{AppHandle, Runtime};
 #[derive(Serialize, Deserialize)]
 pub struct PermissionStatus {
     pub notification: bool,
+    pub ring: bool,
     pub storage: bool,
     pub battery: bool,
     pub microphone: bool,
@@ -34,6 +35,7 @@ pub fn check_all_permissions<R: Runtime>(app: AppHandle<R>) -> Result<Permission
         let _ = app;
         Ok(PermissionStatus {
             notification: true,
+            ring: true,
             storage: true,
             battery: true,
             microphone: true,

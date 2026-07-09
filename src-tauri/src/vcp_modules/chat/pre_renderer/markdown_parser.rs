@@ -7,13 +7,13 @@ use std::borrow::Cow;
 
 lazy_static! {
     static ref FENCE_RE: Regex =
-        Regex::new(r"(?m)^[ \t]*```[a-zA-Z0-9-]*[ \t]*\r?$").unwrap();
+        Regex::new(r"(?m)^[ \t]*(`{3,})[a-zA-Z0-9-]*[ \t]*\r?$").unwrap();
 
     // 合并 LaTeX 匹配：[ ... ] 和 ( ... )
     static ref MATH_RE: Regex = Regex::new(r"(?s)\\\[(?P<display>.*?)\\\]|\\\((?P<inline>.*?)\\\)").unwrap();
 
     static ref MAGIC_RE: Regex =
-        Regex::new(r##"(?s)(["“”](?:[^"“”]|\\.)+?["“”])|(@![^\s@!]+)|(@[^\s@]+)"##).unwrap();
+        Regex::new(r##"(@![^\s@!]+)|(@[^\s@]+)"##).unwrap();
 
     static ref HTML_CONTAINER_PLACEHOLDER_RE: Regex =
         Regex::new(r"<!--VCP_HTML_CONTAINER:(\d+)-->").unwrap();
@@ -24,10 +24,6 @@ lazy_static! {
 
     static ref COMMENT_RE: Regex = Regex::new(r"(?s)<!--[\s\S]*?(?:-->|$)").unwrap();
 
-<<<<<<< HEAD
-    static ref PLACEHOLDER_RE: Regex =
-        Regex::new(r"VcpMagic(?:Quote|Alert|Tag)X(\d+)X").unwrap();
-=======
     // 匹配行首 ≥4 空格/Tab 缩进后紧跟 $$ 的模式（块级公式被误判为缩进代码块的根因）
     static ref INDENTED_DOLLAR_RE: Regex =
         Regex::new(r"(?m)^[ \t]{4,}(\$\$)").unwrap();
@@ -429,7 +425,6 @@ fn strip_display_math_indent(text: &str) -> Cow<'_, str> {
     result.push_str(INDENTED_DOLLAR_RE.replace_all(tail, "$1").as_ref());
 
     Cow::Owned(result)
->>>>>>> 7a629ae (feat: Add support for multimodal attachment handling and caching)
 }
 
 fn preprocess_latex_math(text: &str) -> Cow<'_, str> {
@@ -439,30 +434,17 @@ fn preprocess_latex_math(text: &str) -> Cow<'_, str> {
 
     let mut result = String::with_capacity(text.len());
     let mut last_end = 0;
-    let mut in_fence = false;
+    let ranges = get_fence_ranges(text);
 
-    // 1. 扫描代码围栏
-    for m in FENCE_RE.find_iter(text) {
-        let segment = &text[last_end..m.start()];
-        if !in_fence {
-            // 在围栏外：执行极速公式替换
-            push_math_replaced(&mut result, segment);
-        } else {
-            // 在围栏内：直接追加
-            result.push_str(segment);
-        }
-        result.push_str(m.as_str());
-        last_end = m.end();
-        in_fence = !in_fence;
+    for range in &ranges {
+        let segment = &text[last_end..range.start];
+        push_math_replaced(&mut result, segment);
+        result.push_str(&text[range.start..range.end]);
+        last_end = range.end;
     }
 
-    // 2. 处理尾部
     let tail = &text[last_end..];
-    if !in_fence {
-        push_math_replaced(&mut result, tail);
-    } else {
-        result.push_str(tail);
-    }
+    push_math_replaced(&mut result, tail);
 
     Cow::Owned(result)
 }
@@ -503,10 +485,8 @@ fn extract_html_containers(text: &str) -> (Cow<'_, str>, Vec<(String, Vec<Markdo
     let mut containers: Vec<(String, Vec<MarkdownNode>, String)> = Vec::new();
     let mut last_pos = 0;
 
-    // 预先收集所有代码围栏的位置以供快速查询 (标准 regex find_iter)
-    let fences: Vec<regex::Match> = FENCE_RE.find_iter(text).collect();
-    let mut fence_cursor = 0;
-    let mut in_fence = false;
+    // 预先收集所有代码围栏的物理范围
+    let fences = get_fence_ranges(text);
 
     // 预先收集所有内联反引号的范围以跳过误提取
     let inline_codes: Vec<(usize, usize)> = INLINE_CODE_RE
@@ -530,13 +510,8 @@ fn extract_html_containers(text: &str) -> (Cow<'_, str>, Vec<(String, Vec<Markdo
             continue;
         }
 
-        // 高效同步围栏状态：跳过当前匹配位置之前的围栏切换
-        while fence_cursor < fences.len() && fences[fence_cursor].start() <= m.start() {
-            in_fence = !in_fence;
-            fence_cursor += 1;
-        }
-
-        if in_fence {
+        // 健壮性防御：如果当前标签处于代码围栏内部，直接跳过
+        if fences.iter().any(|range| range.contains(&m.start())) {
             continue;
         }
 
@@ -559,12 +534,6 @@ fn extract_html_containers(text: &str) -> (Cow<'_, str>, Vec<(String, Vec<Markdo
             containers.push((open_tag, inner_nodes, close_tag));
 
             last_pos = close_end;
-
-            // 由于 last_pos 跳跃了，同步围栏游标状态
-            while fence_cursor < fences.len() && fences[fence_cursor].start() < last_pos {
-                in_fence = !in_fence;
-                fence_cursor += 1;
-            }
         }
     }
 
@@ -667,15 +636,13 @@ pub(crate) fn find_matching_close_tag(
     let search_area = &text[start_pos..];
 
     // 预先收集 search_area 中所有标准代码围栏的物理范围（支持流式未闭合边界）
-    let mut fence_ranges = Vec::new();
-    let mut fence_iter = FENCE_RE.find_iter(search_area);
-    while let Some(start) = fence_iter.next() {
-        if let Some(end) = fence_iter.next() {
-            fence_ranges.push(start.start()..end.end());
-        } else {
-            fence_ranges.push(start.start()..search_area.len());
-        }
-    }
+    let fence_ranges = get_fence_ranges(search_area);
+
+    // 预先收集 search_area 中所有行内代码范围
+    let inline_codes: Vec<(usize, usize)> = INLINE_CODE_RE
+        .find_iter(search_area)
+        .map(|m| (m.start(), m.end()))
+        .collect();
 
     // 预先收集 search_area 中所有 HTML 注释的物理范围（支持流式未闭合注释边界）
     let mut comment_ranges = Vec::new();
@@ -697,6 +664,14 @@ pub(crate) fn find_matching_close_tag(
 
         // 健壮性防御：如果当前扫描到的 HTML 标签处于代码块围栏内部，直接跳过
         if fence_ranges.iter().any(|range| range.contains(&cap_start)) {
+            continue;
+        }
+
+        // 健壮性防御：如果当前扫描到的 HTML 标签处于行内代码内部，直接跳过
+        let is_in_inline = inline_codes
+            .iter()
+            .any(|&(start, end)| cap_start >= start && cap_start < end);
+        if is_in_inline {
             continue;
         }
 
@@ -786,11 +761,10 @@ fn parse_markdown_to_ast_opt(text: &str, is_streaming: bool) -> Vec<MarkdownNode
 }
 
 fn parse_markdown_to_ast_impl(text: &str, is_streaming: bool) -> Vec<MarkdownNode> {
-    let text = preprocess_latex_math(text);
+    let text_fixed = fix_flanking_delimiters(text);
+    let text = preprocess_latex_math(&text_fixed);
+    let text = strip_display_math_indent(text.as_ref());
     let (text, containers) = extract_html_containers(text.as_ref());
-
-    // 提取 VCP Magic 占位符以规避标点与字母交界处的 flanking 判定失效问题，并同步返回 magic_raws 原始串
-    let (text, magic_nodes, magic_raws) = extract_vcp_magic(text.as_ref());
 
     let mut nodes = Vec::new();
     let parser = Parser::new_ext(
@@ -799,23 +773,36 @@ fn parse_markdown_to_ast_impl(text: &str, is_streaming: bool) -> Vec<MarkdownNod
     );
 
     let mut stack: Vec<PartialNode> = Vec::new();
+    let mut accumulated_text = String::new();
 
-    for event in parser {
-        match event {
-            Event::Start(tag) => {
-                stack.push(PartialNode::from_tag(tag));
-            }
-            Event::Text(text) => {
+    let flush_accumulated_text =
+        |accumulated: &mut String, stack: &mut Vec<PartialNode>, nodes: &mut Vec<MarkdownNode>| {
+            if !accumulated.is_empty() {
                 let inline_nodes = if matches!(stack.last(), Some(PartialNode::CodeBlock { .. })) {
-                    vec![InlineNode::text(text.to_string())]
+                    vec![InlineNode::text(accumulated.clone())]
                 } else {
-                    process_text_magic(&text)
+                    process_text_magic(accumulated)
                 };
                 if let Some(top) = stack.last_mut() {
                     top.push_inlines(inline_nodes);
                 } else {
                     nodes.push(MarkdownNode::paragraph(inline_nodes));
                 }
+                accumulated.clear();
+            }
+        };
+
+    for event in parser {
+        if let Event::Text(text) = event {
+            accumulated_text.push_str(&text);
+            continue;
+        }
+
+        flush_accumulated_text(&mut accumulated_text, &mut stack, &mut nodes);
+
+        match event {
+            Event::Start(tag) => {
+                stack.push(PartialNode::from_tag(tag));
             }
             Event::Code(code) => {
                 if let Some(top) = stack.last_mut() {
@@ -946,14 +933,9 @@ fn parse_markdown_to_ast_impl(text: &str, is_streaming: bool) -> Vec<MarkdownNod
                     top.push_inline(InlineNode::raw_html_inline(html.to_string()));
                 }
             }
-            Event::SoftBreak => {
+            Event::SoftBreak | Event::HardBreak => {
                 if let Some(top) = stack.last_mut() {
-                    top.push_inline(InlineNode::soft_break());
-                }
-            }
-            Event::HardBreak => {
-                if let Some(top) = stack.last_mut() {
-                    top.push_inline(InlineNode::line_break());
+                    top.push_inline(InlineNode::r#break());
                 }
             }
             Event::Rule => {
@@ -963,11 +945,15 @@ fn parse_markdown_to_ast_impl(text: &str, is_streaming: bool) -> Vec<MarkdownNod
         }
     }
 
+    flush_accumulated_text(&mut accumulated_text, &mut stack, &mut nodes);
+
     // 后处理：将 HTML 容器占位符替换为实际的开标签 + 解析后的子节点 + 闭标签
     replace_container_placeholders(&mut nodes, &containers);
 
-    // 后处理：还原 VCP Magic 占位符为真正的内联节点（包含对 RawHtml 节点的原始串级还原）
-    restore_markdown_nodes(&mut nodes, &magic_nodes, &magic_raws);
+    // 运行引号 AST 合并逻辑
+    for node in &mut nodes {
+        apply_quote_merging(node);
+    }
 
     // 计算全量 AST 节点的稳定哈希指纹
     for node in &mut nodes {
@@ -1221,23 +1207,19 @@ impl PartialNode {
             PartialNode::Heading { level, children } => MarkdownNode::heading(level, children),
             PartialNode::CodeBlock { lang, code } => {
                 let lang_str = lang.as_deref().unwrap_or("plaintext");
-                if lang_str == "mermaid" {
-                    MarkdownNode::mermaid(code)
+                let highlighted = if lang_str == "mermaid" || (is_streaming && code.len() > 4096) {
+                    None
                 } else {
-                    let highlighted = if is_streaming && code.len() > 4096 {
-                        None
-                    } else {
-                        highlight_code_block(&code, lang_str)
-                    };
-                    let mut node = MarkdownNode::code_block(lang, code);
-                    if let MarkdownNode::CodeBlock {
-                        highlighted_html, ..
-                    } = &mut node
-                    {
-                        *highlighted_html = highlighted;
-                    }
-                    node
+                    highlight_code_block(&code, lang_str)
+                };
+                let mut node = MarkdownNode::code_block(lang, code);
+                if let MarkdownNode::CodeBlock {
+                    highlighted_html, ..
+                } = &mut node
+                {
+                    *highlighted_html = highlighted;
                 }
+                node
             }
             PartialNode::Blockquote { children } => MarkdownNode::blockquote(children),
             PartialNode::List { ordered, items } => MarkdownNode::list(ordered, items),
@@ -1292,166 +1274,42 @@ impl PartialNode {
 }
 
 fn process_text_magic(text: &str) -> Vec<InlineNode> {
-    // 既然已经在解析前进行了占位符提取，这里就可以直接作为普通 text 返回，不需要进行正则解析了
-    vec![InlineNode::text(text.to_string())]
-}
-
-/// 轻量级 inline-only 解析器：只处理标准 Markdown 内联语法（strong/emphasis/strikethrough/code/link/image/math），
-/// 不解析 VCP Magic 引号，避免 process_vcp_magic 的无限递归。
-fn parse_inline_standard(text: &str) -> Vec<InlineNode> {
-    let wrapped = format!("{}\n", text);
-    let parser = Parser::new_ext(
-        &wrapped,
-        Options::ENABLE_MATH | Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH,
-    );
+    if !text.contains('@') {
+        return vec![InlineNode::text(text.to_string())];
+    }
 
     let mut nodes = Vec::new();
-    let mut in_paragraph = false;
-    let mut stack: Vec<PartialInlineNode> = Vec::new();
+    let mut last_end = 0;
 
-    for event in parser {
-        match event {
-            Event::Start(Tag::Paragraph) => in_paragraph = true,
-            Event::End(TagEnd::Paragraph) => in_paragraph = false,
-            Event::Text(t) if in_paragraph || !stack.is_empty() => {
-                let node = InlineNode::text(t.to_string());
-                push_inline_to_context(&mut stack, &mut nodes, node);
-            }
-            Event::Code(code) => {
-                let node = InlineNode::code(code.to_string());
-                push_inline_to_context(&mut stack, &mut nodes, node);
-            }
-            Event::InlineMath(math) => {
-                let node = InlineNode::inline_math(math.to_string(), false);
-                push_inline_to_context(&mut stack, &mut nodes, node);
-            }
-            Event::DisplayMath(math) => {
-                let node = InlineNode::inline_math(math.to_string(), true);
-                push_inline_to_context(&mut stack, &mut nodes, node);
-            }
-            Event::Start(Tag::Strong) => stack.push(PartialInlineNode::Strong { children: vec![] }),
-            Event::End(TagEnd::Strong) => {
-                if let Some(PartialInlineNode::Strong { children }) = stack.pop() {
-                    let node = InlineNode::strong(children);
-                    push_inline_to_context(&mut stack, &mut nodes, node);
-                }
-            }
-            Event::Start(Tag::Emphasis) => {
-                stack.push(PartialInlineNode::Emphasis { children: vec![] })
-            }
-            Event::End(TagEnd::Emphasis) => {
-                if let Some(PartialInlineNode::Emphasis { children }) = stack.pop() {
-                    let node = InlineNode::emphasis(children);
-                    push_inline_to_context(&mut stack, &mut nodes, node);
-                }
-            }
-            Event::Start(Tag::Strikethrough) => {
-                stack.push(PartialInlineNode::Strikethrough { children: vec![] })
-            }
-            Event::End(TagEnd::Strikethrough) => {
-                if let Some(PartialInlineNode::Strikethrough { children }) = stack.pop() {
-                    let node = InlineNode::strikethrough(children);
-                    push_inline_to_context(&mut stack, &mut nodes, node);
-                }
-            }
-            Event::Start(Tag::Link {
-                dest_url, title, ..
-            }) => {
-                stack.push(PartialInlineNode::Link {
-                    href: dest_url.to_string(),
-                    title: if title.is_empty() {
-                        None
-                    } else {
-                        Some(title.to_string())
-                    },
-                    children: vec![],
-                });
-            }
-            Event::End(TagEnd::Link) => {
-                if let Some(PartialInlineNode::Link {
-                    href,
-                    title,
-                    children,
-                }) = stack.pop()
-                {
-                    let node = InlineNode::link(href, title, children);
-                    push_inline_to_context(&mut stack, &mut nodes, node);
-                }
-            }
-            Event::Start(Tag::Image {
-                dest_url, title, ..
-            }) => {
-                stack.push(PartialInlineNode::Image {
-                    src: dest_url.to_string(),
-                    alt: String::new(),
-                    title: if title.is_empty() {
-                        None
-                    } else {
-                        Some(title.to_string())
-                    },
-                });
-            }
-            Event::End(TagEnd::Image) => {
-                if let Some(PartialInlineNode::Image { src, alt, title }) = stack.pop() {
-                    let node = InlineNode::image(src, alt, title);
-                    push_inline_to_context(&mut stack, &mut nodes, node);
-                }
-            }
-            Event::SoftBreak => {
-                let node = InlineNode::SoftBreak;
-                push_inline_to_context(&mut stack, &mut nodes, node);
-            }
-            Event::HardBreak => {
-                let node = InlineNode::LineBreak;
-                push_inline_to_context(&mut stack, &mut nodes, node);
-            }
-            _ => {}
+    for cap in MAGIC_RE.captures_iter(text) {
+        let m = cap.get(0).unwrap();
+        if m.start() > last_end {
+            nodes.push(InlineNode::text(text[last_end..m.start()].to_string()));
         }
+
+        let node = if let Some(alert) = cap.get(1) {
+            InlineNode::vcp_custom("alert".to_string(), Some(alert.as_str().to_string()), None)
+        } else if let Some(tag) = cap.get(2) {
+            InlineNode::vcp_custom(
+                "highlight".to_string(),
+                Some(tag.as_str().to_string()),
+                None,
+            )
+        } else {
+            unreachable!()
+        };
+
+        nodes.push(node);
+        last_end = m.end();
+    }
+
+    if last_end < text.len() {
+        nodes.push(InlineNode::text(text[last_end..].to_string()));
     }
 
     nodes
 }
 
-<<<<<<< HEAD
-enum PartialInlineNode {
-    Strong {
-        children: Vec<InlineNode>,
-    },
-    Emphasis {
-        children: Vec<InlineNode>,
-    },
-    Strikethrough {
-        children: Vec<InlineNode>,
-    },
-    Link {
-        href: String,
-        title: Option<String>,
-        children: Vec<InlineNode>,
-    },
-    Image {
-        src: String,
-        alt: String,
-        title: Option<String>,
-    },
-}
-
-#[allow(clippy::ptr_arg)]
-fn push_inline_to_context(
-    stack: &mut Vec<PartialInlineNode>,
-    nodes: &mut Vec<InlineNode>,
-    node: InlineNode,
-) {
-    if let Some(top) = stack.last_mut() {
-        match top {
-            PartialInlineNode::Strong { children } => children.push(node),
-            PartialInlineNode::Emphasis { children } => children.push(node),
-            PartialInlineNode::Strikethrough { children } => children.push(node),
-            PartialInlineNode::Link { children, .. } => children.push(node),
-            PartialInlineNode::Image { alt, .. } => {
-                if let InlineNode::Text { value } = &node {
-                    alt.push_str(value);
-                }
-=======
 fn split_text_by_quotes(inlines: Vec<InlineNode>) -> Vec<InlineNode> {
     let mut result = Vec::new();
     for node in inlines {
@@ -1508,6 +1366,7 @@ fn split_text_by_quotes(inlines: Vec<InlineNode>) -> Vec<InlineNode> {
     result
 }
 
+#[allow(clippy::needless_range_loop)]
 fn merge_quote_nodes(inlines: Vec<InlineNode>) -> Vec<InlineNode> {
     let mut result = Vec::new();
     let mut i = 0;
@@ -1524,145 +1383,27 @@ fn merge_quote_nodes(inlines: Vec<InlineNode>) -> Vec<InlineNode> {
             } else if value.starts_with('"') {
                 start_idx = Some(i);
                 open_char = Some('"');
->>>>>>> 7a629ae (feat: Add support for multimodal attachment handling and caching)
             }
         }
-    } else {
-        nodes.push(node);
-    }
-}
 
-/// 预替换 VCP Magic（引号、警报、高亮标签）为普通字母数字占位符，规避 Flanking 判定边界缺陷
-fn extract_vcp_magic(text: &str) -> (Cow<'_, str>, Vec<InlineNode>, Vec<String>) {
-    if !text.contains('@') && !text.contains('"') && !text.contains('“') && !text.contains('”')
-    {
-        return (Cow::Borrowed(text), Vec::new(), Vec::new());
-    }
-
-    let mut result = String::with_capacity(text.len());
-    let mut magic_nodes = Vec::new();
-    let mut magic_raws = Vec::new();
-    let mut last_end = 0;
-
-    let fences: Vec<regex::Match> = FENCE_RE.find_iter(text).collect();
-    let mut fence_cursor = 0;
-    let mut in_fence = false;
-
-    let inline_codes: Vec<(usize, usize)> = INLINE_CODE_RE
-        .find_iter(text)
-        .map(|m| (m.start(), m.end()))
-        .collect();
-
-    for cap in MAGIC_RE.captures_iter(text) {
-        let m = cap.get(0).unwrap();
-
-        let is_in_inline = inline_codes
-            .iter()
-            .any(|&(start, end)| m.start() >= start && m.end() <= end);
-        if is_in_inline {
-            continue;
-        }
-
-        while fence_cursor < fences.len() && fences[fence_cursor].start() <= m.start() {
-            in_fence = !in_fence;
-            fence_cursor += 1;
-        }
-
-        if in_fence {
-            continue;
-        }
-
-        if m.start() > last_end {
-            result.push_str(&text[last_end..m.start()]);
-        }
-
-        let node = if let Some(quote) = cap.get(1) {
-            let quote_text = quote.as_str();
-            let children = if quote_text.is_empty() {
-                vec![]
-            } else {
-                parse_inline_standard(quote_text)
-            };
-            InlineNode::quoted_text(children)
-        } else if let Some(alert) = cap.get(2) {
-            InlineNode::alert_tag(alert.as_str().to_string())
-        } else if let Some(tag) = cap.get(3) {
-            InlineNode::highlight_tag(tag.as_str().to_string())
-        } else {
-            unreachable!()
-        };
-
-        let type_str = match &node {
-            InlineNode::QuotedText { .. } => "Quote",
-            InlineNode::AlertTag { .. } => "Alert",
-            InlineNode::HighlightTag { .. } => "Tag",
-            _ => "Unknown",
-        };
-        let placeholder = format!("VcpMagic{}X{}X", type_str, magic_nodes.len());
-        result.push_str(&placeholder);
-        magic_nodes.push(node);
-        magic_raws.push(m.as_str().to_string());
-
-        last_end = m.end();
-    }
-
-    if last_end < text.len() {
-        result.push_str(&text[last_end..]);
-    }
-
-    (Cow::Owned(result), magic_nodes, magic_raws)
-}
-
-/// 深度优先递归还原 AST 树中的 VCP Magic 占位符
-fn restore_markdown_nodes(
-    nodes: &mut Vec<MarkdownNode>,
-    magic_nodes: &[InlineNode],
-    magic_raws: &[String],
-) {
-    for node in nodes {
-        match node {
-            MarkdownNode::Paragraph { children, .. } => {
-                restore_inline_nodes(children, magic_nodes, magic_raws);
-            }
-            MarkdownNode::Heading { children, .. } => {
-                restore_inline_nodes(children, magic_nodes, magic_raws);
-            }
-            MarkdownNode::Blockquote { children, .. } => {
-                restore_markdown_nodes(children, magic_nodes, magic_raws);
-            }
-            MarkdownNode::List { items, .. } => {
-                for item in items {
-                    restore_markdown_nodes(item, magic_nodes, magic_raws);
-                }
-            }
-            MarkdownNode::Table { header, rows, .. } => {
-                for cell in header {
-                    restore_inline_nodes(cell, magic_nodes, magic_raws);
-                }
-                for row in rows {
-                    for cell in row {
-                        restore_inline_nodes(cell, magic_nodes, magic_raws);
+        if let (Some(s_idx), Some(op_c)) = (start_idx, open_char) {
+            let cl_c = if op_c == '“' { '”' } else { '"' };
+            let mut end_idx = None;
+            for j in s_idx..len {
+                if let InlineNode::Text { value } = &inlines[j] {
+                    if j == s_idx {
+                        if value.len() >= 2 && value.ends_with(cl_c) {
+                            end_idx = Some(j);
+                            break;
+                        }
+                    } else {
+                        if value.ends_with(cl_c) {
+                            end_idx = Some(j);
+                            break;
+                        }
                     }
                 }
             }
-<<<<<<< HEAD
-            MarkdownNode::RawHtml {
-                ref mut content, ..
-            } => {
-                let mut replaced = content.clone();
-                let mut has_placeholder = false;
-                for cap in PLACEHOLDER_RE.captures_iter(content.as_str()) {
-                    has_placeholder = true;
-                    let m = cap.get(0).unwrap();
-                    let index: usize = cap.get(1).unwrap().as_str().parse().unwrap();
-                    if index < magic_raws.len() {
-                        replaced = replaced.replace(m.as_str(), &magic_raws[index]);
-                    }
-                }
-                if has_placeholder {
-                    *content = replaced;
-                }
-=======
 
             if let Some(e_idx) = end_idx {
                 let mut children = Vec::new();
@@ -1682,9 +1423,7 @@ fn restore_markdown_nodes(
                         }
                     }
 
-                    for k in (s_idx + 1)..e_idx {
-                        children.push(inlines[k].clone());
-                    }
+                    children.extend(inlines[(s_idx + 1)..e_idx].iter().cloned());
 
                     if let InlineNode::Text { value } = &inlines[e_idx] {
                         let inner_val = &value[..value.len() - cl_c.len_utf8()];
@@ -1732,110 +1471,83 @@ fn restore_markdown_nodes(
                 ..
             } => {
                 *children = merge_quote_nodes(children.clone());
->>>>>>> 7a629ae (feat: Add support for multimodal attachment handling and caching)
             }
             _ => {}
         }
+        result.push(node);
+        i += 1;
+    }
+
+    result
+}
+
+fn apply_quote_merging(node: &mut MarkdownNode) {
+    match node {
+        MarkdownNode::Paragraph { children, .. } => {
+            let split = split_text_by_quotes(children.clone());
+            *children = merge_quote_nodes(split);
+        }
+        MarkdownNode::Heading { children, .. } => {
+            let split = split_text_by_quotes(children.clone());
+            *children = merge_quote_nodes(split);
+        }
+        MarkdownNode::Blockquote { children, .. } => {
+            for child in children {
+                apply_quote_merging(child);
+            }
+        }
+        MarkdownNode::List { items, .. } => {
+            for item in items {
+                for child in item {
+                    apply_quote_merging(child);
+                }
+            }
+        }
+        MarkdownNode::Table { header, rows, .. } => {
+            for cell in header {
+                let split = split_text_by_quotes(cell.clone());
+                *cell = merge_quote_nodes(split);
+            }
+            for row in rows {
+                for cell in row {
+                    let split = split_text_by_quotes(cell.clone());
+                    *cell = merge_quote_nodes(split);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
-/// 还原并按需拆分 InlineNode 列表中的文本占位符
-fn restore_inline_nodes(
-    inlines: &mut Vec<InlineNode>,
-    magic_nodes: &[InlineNode],
-    magic_raws: &[String],
-) {
-    let mut new_inlines = Vec::with_capacity(inlines.len());
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    for mut inline in std::mem::take(inlines) {
-        match inline {
-            InlineNode::Text { value } => {
-                let mut last_end = 0;
-                let mut has_placeholder = false;
+    #[test]
+    fn test_is_punctuation() {
+        assert!(is_punctuation('“'));
+        assert!(is_punctuation('”'));
+        assert!(is_punctuation('，'));
+        assert!(is_punctuation('。'));
+        assert!(is_punctuation('【'));
+        assert!(is_punctuation('·'));
+    }
 
-                for cap in PLACEHOLDER_RE.captures_iter(&value) {
-                    has_placeholder = true;
-                    let m = cap.get(0).unwrap();
-                    let index: usize = cap.get(1).unwrap().as_str().parse().unwrap();
+    #[test]
+    fn test_fix_flanking_delimiters() {
+        // 1. “**加粗**” 本身能完美闭合，不应该注入任何字符
+        assert_eq!(fix_flanking_delimiters("“**加粗**”"), "“**加粗**”");
 
-<<<<<<< HEAD
-                    if m.start() > last_end {
-                        new_inlines.push(InlineNode::text(value[last_end..m.start()].to_string()));
-                    }
-=======
         // 2. 这很**“重要”**的 -> 应该在开启后注入，闭合前注入
         assert_eq!(
             fix_flanking_delimiters("这很**“重要”**的"),
             "这很**\u{200B}“重要”\u{200B}**的"
         );
->>>>>>> 7a629ae (feat: Add support for multimodal attachment handling and caching)
 
-                    if index < magic_nodes.len() {
-                        new_inlines.push(magic_nodes[index].clone());
-                    }
+        // 3. 代码块内部的加粗不应该被处理
+        let code_text = "```\n这很**“重要”**的\n```";
+        assert_eq!(fix_flanking_delimiters(code_text), code_text);
 
-<<<<<<< HEAD
-                    last_end = m.end();
-                }
-
-                if has_placeholder {
-                    if last_end < value.len() {
-                        new_inlines.push(InlineNode::text(value[last_end..].to_string()));
-                    }
-                } else {
-                    new_inlines.push(InlineNode::Text { value });
-                }
-            }
-            InlineNode::Strong { mut children, .. } => {
-                restore_inline_nodes(&mut children, magic_nodes, magic_raws);
-                new_inlines.push(InlineNode::strong(children));
-            }
-            InlineNode::Emphasis { mut children, .. } => {
-                restore_inline_nodes(&mut children, magic_nodes, magic_raws);
-                new_inlines.push(InlineNode::emphasis(children));
-            }
-            InlineNode::Strikethrough { mut children, .. } => {
-                restore_inline_nodes(&mut children, magic_nodes, magic_raws);
-                new_inlines.push(InlineNode::strikethrough(children));
-            }
-            InlineNode::Link {
-                href,
-                title,
-                mut children,
-                needs_asset_conversion,
-                ..
-            } => {
-                restore_inline_nodes(&mut children, magic_nodes, magic_raws);
-                let mut restored_link = InlineNode::link(href, title, children);
-                if let InlineNode::Link {
-                    needs_asset_conversion: nac,
-                    ..
-                } = &mut restored_link
-                {
-                    *nac = needs_asset_conversion;
-                }
-                new_inlines.push(restored_link);
-            }
-            InlineNode::QuotedText { mut children, .. } => {
-                restore_inline_nodes(&mut children, magic_nodes, magic_raws);
-                new_inlines.push(InlineNode::quoted_text(children));
-            }
-            InlineNode::RawHtmlInline {
-                ref mut content, ..
-            } => {
-                let mut replaced = content.clone();
-                let mut has_placeholder = false;
-                for cap in PLACEHOLDER_RE.captures_iter(content.as_str()) {
-                    has_placeholder = true;
-                    let m = cap.get(0).unwrap();
-                    let index: usize = cap.get(1).unwrap().as_str().parse().unwrap();
-                    if index < magic_raws.len() {
-                        replaced = replaced.replace(m.as_str(), &magic_raws[index]);
-                    }
-                }
-                if has_placeholder {
-                    *content = replaced;
-=======
         // 4. 并排复杂的加粗引号：看哪些**“应该加粗的部分没有加粗”**，或者**“不该加粗的部分泄漏了”**
         assert_eq!(
             fix_flanking_delimiters("看哪些**“应该加粗的部分没有加粗”**，或者**“不该加粗的部分泄漏了”**"),
@@ -2037,12 +1749,8 @@ fn restore_inline_nodes(
 
     #[test]
     fn test_user_reproduce() {
-        let text = std::fs::read_to_string("G:\\VCPMobile\\scripts\\tail-test\\Strong.txt")
-            .unwrap_or_else(|_| {
-                include_str!("../../../../../scripts/tail-test/Strong.txt").to_string()
-            });
-
-        let nodes = parse_markdown_to_ast(&text);
+        let text = include_str!("../fixtures/Strong.txt");
+        let nodes = parse_markdown_to_ast(text);
 
         // 查找包含“自愈判定阀”的 Strong 节点
         let mut found = false;
@@ -2084,31 +1792,15 @@ fn restore_inline_nodes(
     }
 
     #[test]
-    fn test_pre_txt_16() {
-        let text = std::fs::read_to_string("G:\\VCPMobile\\scripts\\tail-test\\pre.txt").unwrap();
-        let nodes = parse_markdown_to_ast(&text);
-        for (i, node) in nodes.iter().enumerate() {
-            if let MarkdownNode::CodeBlock { lang, code, .. } = node {
-                println!(
-                    "CodeBlock [{}]: lang={:?}, code_len={}",
-                    i,
-                    lang,
-                    code.len()
-                );
-                if code.contains("nested") {
-                    println!("FOUND NESTED CODEBLOCK:\n{:#?}", node);
->>>>>>> 7a629ae (feat: Add support for multimodal attachment handling and caching)
-                }
-                new_inlines.push(InlineNode::RawHtmlInline {
-                    content: content.clone(),
-                    hash: None,
-                });
-            }
-            _ => {
-                new_inlines.push(inline);
-            }
-        }
+    fn test_brk_text_37() {
+        // 真实样本 brk.txt，覆盖 parse_content 切分（include_str! 编译期内嵌，杜绝绝对路径）
+        let text = include_str!("../fixtures/brk.txt");
+        // 模拟 content_parser.rs 的 parse_content 切分
+        let blocks = crate::vcp_modules::content_parser::parse_content(text);
+        // 断言切分出至少一个块（原诊断 println 已转为 assert）
+        assert!(
+            !blocks.is_empty(),
+            "brk.txt 经 parse_content 后应至少切分出一个块"
+        );
     }
-
-    *inlines = new_inlines;
 }

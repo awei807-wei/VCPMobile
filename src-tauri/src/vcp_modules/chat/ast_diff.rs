@@ -334,12 +334,12 @@ fn diff_single_inline_node(
             }
         }
         (
-            InlineNode::QuotedText {
-                children: old_children,
+            InlineNode::VcpCustom {
+                children: Some(old_children),
                 ..
             },
-            InlineNode::QuotedText {
-                children: new_children,
+            InlineNode::VcpCustom {
+                children: Some(new_children),
                 ..
             },
         ) => {

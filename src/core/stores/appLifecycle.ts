@@ -137,10 +137,22 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
         "[Lifecycle] [Concurrent] START Preloading Settings and AgentsAndGroups"
       );
 
-      await Promise.all([
+      const promises: Promise<any>[] = [
         settingsStore.fetchSettings(),
         assistantStore.fetchAgentsAndGroups(),
-      ]);
+      ];
+
+      // 如果从 Pinia 中恢复了活跃会话，在预加载阶段同步加载其对应的话题列表
+      if (sessionStore.currentSelectedItem?.id) {
+        const ownerId = sessionStore.currentSelectedItem.id;
+        const ownerType = sessionStore.currentSelectedItem.type || "agent";
+        console.log(
+          `[Lifecycle] Restored session detected for ${ownerType} ${ownerId}, preloading topic list...`
+        );
+        promises.push(topicStore.loadTopicList(ownerId, ownerType));
+      }
+
+      await Promise.all(promises);
 
       console.log(
         `[Lifecycle] [Concurrent] DONE Preloading in ${
@@ -166,19 +178,6 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
       isBootstrapping.value = false;
       bootstrapPromise = null;
       setState("READY", "应用就绪");
-
-      // 话题列表延迟到 READY 后异步加载，不阻塞首屏渲染
-      // 首屏只需 currentTopicId（Pinia persist 已恢复），话题列表仅侧边栏需要
-      if (sessionStore.currentSelectedItem?.id) {
-        const ownerId = sessionStore.currentSelectedItem.id;
-        const ownerType = sessionStore.currentSelectedItem.type || "agent";
-        console.log(
-          `[Lifecycle] Restored session detected, deferring topic list load for ${ownerType} ${ownerId}...`
-        );
-        topicStore.loadTopicList(ownerId, ownerType).catch((err) => {
-          console.error(`[Lifecycle] Deferred topic list load failed:`, err);
-        });
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       fail(`预加载失败: ${message}`);

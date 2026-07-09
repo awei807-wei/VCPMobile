@@ -24,6 +24,13 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
   // 用于防止并发加载与话题切换导致竞态的消息拉取中止控制器
   let currentLoadAbortController: AbortController | null = null;
 
+  // 启动预加载缓存：PRELOADING 阶段提前拉取首屏历史，ChatView mount 后直接消费
+  const preloadedHistory = ref<{
+    topicId: string;
+    messages: ChatMessage[];
+  } | null>(null);
+  let preloadConsumed = false;
+
   // 用于拦截重新生成时的输入框补全
   const editMessageContent = ref("");
   // 用于标记当前是否正在“编辑重发”某条历史消息
@@ -45,6 +52,34 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
   };
 
   /**
+   * 启动预加载：在 PRELOADING 阶段提前拉取首屏聊天历史
+   * 让 DB + IPC 开销与 Vue 组件挂载并行，ChatView mount 后直接命中缓存
+   */
+  const preloadHistory = async (
+    ownerId: string,
+    ownerType: string,
+    topicId: string,
+    limit: number = 5
+  ) => {
+    try {
+      const messages = await invoke<ChatMessage[]>("load_chat_history", {
+        ownerId,
+        ownerType,
+        topicId,
+        limit,
+        offset: 0,
+      });
+      preloadedHistory.value = { topicId, messages };
+      console.log(
+        `[ChatHistoryStore] Preloaded ${messages.length} messages for topic ${topicId}`
+      );
+    } catch (e) {
+      console.error("[ChatHistoryStore] Preload failed:", e);
+      preloadedHistory.value = null;
+    }
+  };
+
+  /**
    * 尝试为话题生成 AI 总结标题
    * 触发条件：消息数 >= 4 且标题仍为初始的 "新话题 HH:MM:SS" 格式
    */
@@ -60,12 +95,12 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     const isDefaultName =
       topic && /^(新话题|新会话) \d{2}:\d{2}:\d{2}$/.test(topic.name);
     const messageCount = currentChatHistory.value.filter(
-      (m) => m.role !== "system",
+      (m) => m.role !== "system"
     ).length;
 
     if (isDefaultName && messageCount >= 4) {
       console.log(
-        `[ChatHistoryStore] Triggering AI summary for topic: ${topicId}`,
+        `[ChatHistoryStore] Triggering AI summary for topic: ${topicId}`
       );
       try {
         const agentName =
@@ -84,7 +119,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
             ownerId,
             ownerType,
             topicId,
-            newTitle,
+            newTitle
           );
         }
       } catch (e) {
@@ -101,11 +136,10 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     ownerType: string,
     topicId: string,
     limit: number = 15,
-    offset: number = 0,
+    offset: number = 0
   ) => {
-    const loadType = offset === 0 ? "initial" : "pagination";
     console.log(
-      `[ChatHistoryStore] Loading history [${loadType}] for ${ownerId}, topic: ${topicId}, limit: ${limit}, offset: ${offset}`,
+      `[ChatHistoryStore] Loading history for ${ownerId}, topic: ${topicId}, limit: ${limit}, offset: ${offset}`
     );
     loading.value = true;
     isLoadingHistory.value = true;
@@ -117,91 +151,83 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     currentLoadAbortController = controller;
     const { signal } = controller;
 
-    let pendingHistory: ChatMessage[] = [];
-    let flushRafId: number | null = null;
-
     try {
-      const requestedTopicId = sessionStore.currentTopicId;
+      // Fast Path: offset=0 initial load uses batch invoke (skip Channel + RAF)
+      if (offset === 0) {
+        let messages: ChatMessage[];
+
+        // Check preloaded cache from PRELOADING phase - zero-latency if hit
+        if (!preloadConsumed && preloadedHistory.value?.topicId === topicId) {
+          messages = preloadedHistory.value.messages;
+          preloadedHistory.value = null;
+          preloadConsumed = true;
+          console.log(
+            `[ChatHistoryStore] Using preloaded cache: ${messages.length} messages`
+          );
+        } else {
+          // Normal invoke path
+          preloadConsumed = true;
+          messages = await invoke<ChatMessage[]>("load_chat_history", {
+            ownerId,
+            ownerType,
+            topicId,
+            limit,
+            offset,
+          });
+        }
+
+        if (signal.aborted || sessionStore.currentTopicId !== topicId) {
+          console.warn(
+            `[ChatHistoryStore] Topic changed/aborted during batch load, discarding.`
+          );
+          return;
+        }
+
+        // Object hydration: prefer reactive proxy from active streams
+        const hydrated = messages.map(
+          (msg) => streamStore.activeStreamMessages.get(msg.id) || msg
+        );
+
+        currentChatHistory.value = hydrated;
+        historyOffset.value = hydrated.length;
+        hasMoreHistory.value = hydrated.length >= limit;
+
+        // Resolve attachment paths (sync, no IPC)
+        hydrated.forEach((msg) => attachmentStore.resolveMessageAssets(msg));
+
+        console.log(
+          `[ChatHistoryStore] Loaded ${hydrated.length} messages [initial]`
+        );
+        return;
+      }
+
+      // Channel Path: pagination (offset > 0) streaming logic unchanged
       const channel = new Channel<HistoryChunk>();
       const buffer: ChatMessage[] = [];
-      let receivedCount = 0;
       let resolveComplete: (() => void) | null = null;
       const completePromise = new Promise<void>((resolve) => {
         resolveComplete = resolve;
       });
 
-      let lastFlushTime = 0;
-      const FLUSH_INTERVAL = 33.3; // 30Hz
-
-      const flushHistory = (force = false) => {
-        if (pendingHistory.length === 0) return;
-        const now = performance.now();
-        if (force || now - lastFlushTime >= FLUSH_INTERVAL) {
-          currentChatHistory.value = [...currentChatHistory.value, ...pendingHistory];
-          pendingHistory = [];
-          lastFlushTime = now;
-        }
-      };
-
-      const scheduleHistoryFlush = () => {
-        if (flushRafId) return;
-        flushRafId = requestAnimationFrame(() => {
-          flushRafId = null;
-          flushHistory(false);
-          if (pendingHistory.length > 0) {
-            scheduleHistoryFlush();
-          }
-        });
-      };
-
       channel.onmessage = (chunk) => {
-        // 1. 会话一致性校验：如果用户在加载中途切换了话题，丢弃后续消息
-        if (
-          signal.aborted ||
-          (sessionStore.currentTopicId !== requestedTopicId &&
-            requestedTopicId !== null)
-        ) {
+        // 唯一性与话题一致性防御性校验
+        if (signal.aborted || sessionStore.currentTopicId !== topicId) {
           return;
         }
 
-        // 2. [关键修复] 消息对象劫持 (Object Hydration)
-        // 如果该消息正在活跃生成中，则从全局流池中取出“活的”响应式对象
-        // 这确保了即使是刚从 DB 拉回来的骨架，也能瞬间恢复流式动画与渲染状态
+        // 对象劫持 (Object Hydration)：活跃流中的响应式对象优先
         const activeMsg = streamStore.activeStreamMessages.get(
-          chunk.message.id,
+          chunk.message.id
         );
         const msgToUse = activeMsg || chunk.message;
 
-        if (offset === 0) {
-          if (chunk.index === 0) {
-            currentChatHistory.value = [];
-            hasMoreHistory.value = true;
-          }
-          pendingHistory.push(msgToUse);
-          receivedCount++;
-          scheduleHistoryFlush();
-        } else {
-          buffer.push(msgToUse);
-          receivedCount++;
-        }
+        buffer.push(msgToUse);
 
         if (chunk.is_last) {
-          if (offset > 0) {
-            currentChatHistory.value = [...buffer, ...currentChatHistory.value];
-            historyOffset.value += buffer.length;
-            if (buffer.length < limit) {
-              hasMoreHistory.value = false;
-            }
-          } else {
-            if (flushRafId !== null) {
-              cancelAnimationFrame(flushRafId);
-              flushRafId = null;
-            }
-            flushHistory(true);
-            historyOffset.value = receivedCount;
-            if (receivedCount < limit) {
-              hasMoreHistory.value = false;
-            }
+          currentChatHistory.value = [...buffer, ...currentChatHistory.value];
+          historyOffset.value += buffer.length;
+          if (buffer.length < limit) {
+            hasMoreHistory.value = false;
           }
           resolveComplete?.();
         }
@@ -217,48 +243,29 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       });
 
       if (total === 0) {
-        if (offset === 0) {
-          currentChatHistory.value = [];
-          historyOffset.value = 0;
-        }
         hasMoreHistory.value = false;
         (resolveComplete as (() => void) | null)?.();
       }
 
       await completePromise;
 
-      const loadedCount = offset === 0 ? total : buffer.length;
       console.log(
-        `[ChatHistoryStore] Loaded ${loadedCount} messages [${loadType}] for ${ownerId}, topic: ${topicId}`,
+        `[ChatHistoryStore] Loaded ${buffer.length} messages [pagination] for ${ownerId}, topic: ${topicId}`
       );
 
-      if (
-        signal.aborted ||
-        (sessionStore.currentTopicId !== requestedTopicId &&
-          requestedTopicId !== null)
-      ) {
+      if (signal.aborted || sessionStore.currentTopicId !== topicId) {
         console.warn(
-          `[ChatHistoryStore] Topic changed during load, discarding results.`,
+          `[ChatHistoryStore] Topic changed or request aborted during pagination, discarding.`
         );
         return;
       }
 
-      const messagesToResolve =
-        offset === 0 ? currentChatHistory.value : buffer;
-      await Promise.all(
-        messagesToResolve.map(async (msg) => {
-          attachmentStore.resolveMessageAssets(msg);
-        }),
-      );
+      buffer.forEach((msg) => attachmentStore.resolveMessageAssets(msg));
     } catch (e) {
       console.error("[ChatHistoryStore] Failed to stream history:", e);
     } finally {
       if (currentLoadAbortController === controller) {
         currentLoadAbortController = null;
-      }
-      if (flushRafId !== null) {
-        cancelAnimationFrame(flushRafId);
-        flushRafId = null;
       }
       loading.value = false;
       isLoadingHistory.value = false;
@@ -268,7 +275,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
   const loadHistoryPaginated = async (
     ownerId: string,
     ownerType: string,
-    topicId: string,
+    topicId: string
   ) => {
     // 切换话题时强制重置分页状态，避免旧话题状态污染
     historyOffset.value = 0;
@@ -285,7 +292,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       sessionStore.currentSelectedItem.type,
       sessionStore.currentTopicId,
       10,
-      historyOffset.value,
+      historyOffset.value
     );
   };
 
@@ -294,7 +301,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
    */
   const triggerGeneration = async (
     userMsg: ChatMessage,
-    pendingOptions: PendingGenerationOptions = {},
+    pendingOptions: PendingGenerationOptions = {}
   ) => {
     const selectedItem = sessionStore.currentSelectedItem;
     const topicId = sessionStore.currentTopicId;
@@ -307,7 +314,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       streamStore.addPendingGeneration(
         pendingOwnerId,
         pendingTopicId,
-        pendingRequestId,
+        pendingRequestId
       );
     }
 
@@ -316,7 +323,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
         streamStore.removePendingGeneration(
           pendingOwnerId,
           pendingTopicId,
-          pendingRequestId,
+          pendingRequestId
         );
       }
       return;
@@ -337,11 +344,11 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
             ...userMsg,
             blocks: undefined, // 强行设为 undefined，迫使后端执行真正的编译，生成 markdown AST 节点与表情包匹配
           },
-        },
+        }
       );
 
       const targetIndex = currentChatHistory.value.findIndex(
-        (m) => m.id === userMsg.id,
+        (m) => m.id === userMsg.id
       );
       if (targetIndex !== -1) {
         currentChatHistory.value[targetIndex] = {
@@ -363,7 +370,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
             ) {
               currentChatHistory.value.push(msg);
               currentChatHistory.value.sort(
-                (a, b) => a.timestamp - b.timestamp,
+                (a, b) => a.timestamp - b.timestamp
               );
             }
           },
@@ -404,7 +411,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
         streamStore.removePendingGeneration(
           pendingOwnerId,
           pendingTopicId,
-          pendingRequestId,
+          pendingRequestId
         );
       }
     }
@@ -426,7 +433,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       const originalId = editingOriginalMessageId.value;
       editingOriginalMessageId.value = null;
       const targetIndex = currentChatHistory.value.findIndex(
-        (m) => m.id === originalId,
+        (m) => m.id === originalId
       );
       if (targetIndex !== -1) {
         const ownerId = sessionStore.currentSelectedItem.id;
@@ -444,7 +451,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
           });
           currentChatHistory.value = currentChatHistory.value.slice(
             0,
-            targetIndex + 1,
+            targetIndex + 1
           );
           await triggerGeneration(targetMsg, {
             requestId: originalId,
@@ -460,7 +467,9 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     }
 
     const now = Date.now();
-    const userMsgId = `msg_${now}_user_${Math.random().toString(36).substring(2, 9)}`;
+    const userMsgId = `msg_${now}_user_${Math.random()
+      .toString(36)
+      .substring(2, 9)}`;
     const ownerId = sessionStore.currentSelectedItem.id;
     const topicId = sessionStore.currentTopicId;
     streamStore.addPendingGeneration(ownerId, topicId, userMsgId);
@@ -504,13 +513,13 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
    */
   const deleteMessage = async (
     messageId: string,
-    deleteAfter: boolean = false,
+    deleteAfter: boolean = false
   ) => {
     if (!sessionStore.currentSelectedItem || !sessionStore.currentTopicId)
       return;
 
     const targetIndex = currentChatHistory.value.findIndex(
-      (m) => m.id === messageId,
+      (m) => m.id === messageId
     );
     if (targetIndex === -1) return;
 
@@ -527,7 +536,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       if (sessionStore.currentTopicId) {
         topicStore.decrementTopicMsgCount(
           sessionStore.currentTopicId,
-          countToDelete,
+          countToDelete
         );
       }
     } else {
@@ -544,13 +553,37 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     }
   };
 
+  const deleteAttachment = async (
+    topicId: string,
+    messageId: string,
+    hash: string
+  ) => {
+    // 1. 调用后端逻辑删除命令
+    await invoke("delete_message_attachment", {
+      topicId,
+      messageId,
+      hash,
+    });
+
+    // 2. 更新本地状态，以便在界面上实时隐藏该附件
+    const targetIndex = currentChatHistory.value.findIndex(
+      (m) => m.id === messageId
+    );
+    if (targetIndex !== -1) {
+      const msg = currentChatHistory.value[targetIndex];
+      if (msg.attachments) {
+        msg.attachments = msg.attachments.filter((att) => att.hash !== hash);
+      }
+    }
+  };
+
   const updateMessageContent = async (
     messageId: string,
-    newContent: string,
+    newContent: string
   ) => {
     clearMessageCache(messageId);
     const targetIndex = currentChatHistory.value.findIndex(
-      (m) => m.id === messageId,
+      (m) => m.id === messageId
     );
     if (targetIndex === -1) return;
 
@@ -588,7 +621,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
 
   const regenerateResponse = async (targetMessageId: string) => {
     const targetIndex = currentChatHistory.value.findIndex(
-      (m) => m.id === targetMessageId,
+      (m) => m.id === targetMessageId
     );
     if (targetIndex === -1) return;
 
@@ -610,7 +643,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
 
     if (lastUserMsgIndex === -1) {
       console.warn(
-        "[ChatHistoryStore] No user message found to regenerate from.",
+        "[ChatHistoryStore] No user message found to regenerate from."
       );
       return;
     }
@@ -622,7 +655,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
       currentChatHistory.value.length - (lastUserMsgIndex + 1);
     currentChatHistory.value = currentChatHistory.value.slice(
       0,
-      lastUserMsgIndex + 1,
+      lastUserMsgIndex + 1
     );
     topicStore.decrementTopicMsgCount(topicId, countToDelete);
 
@@ -642,7 +675,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
             ) {
               currentChatHistory.value.push(msg);
               currentChatHistory.value.sort(
-                (a, b) => a.timestamp - b.timestamp,
+                (a, b) => a.timestamp - b.timestamp
               );
             }
           },
@@ -669,7 +702,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
 
   const fetchRawContent = async (messageId: string): Promise<string> => {
     const existingMsg = currentChatHistory.value.find(
-      (m) => m.id === messageId,
+      (m) => m.id === messageId
     );
     if (existingMsg && existingMsg.content) return existingMsg.content;
     try {
@@ -685,7 +718,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
 
   const persistMessageBlocks = async (
     messageId: string,
-    blocks: ContentBlock[],
+    blocks: ContentBlock[]
   ) => {
     const msg = currentChatHistory.value.find((m) => m.id === messageId);
     if (
@@ -707,7 +740,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
 
   const reRenderMessage = async (messageId: string, topicId: string) => {
     const targetIndex = currentChatHistory.value.findIndex(
-      (m) => m.id === messageId,
+      (m) => m.id === messageId
     );
     if (targetIndex === -1) {
       throw new Error("消息未在当前历史记录中找到");
@@ -738,11 +771,14 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     isLoadingHistory,
     editMessageContent,
     editingOriginalMessageId,
+    preloadedHistory,
+    preloadHistory,
     loadHistory,
     loadHistoryPaginated,
     loadMoreHistory,
     sendMessage,
     deleteMessage,
+    deleteAttachment,
     triggerGeneration,
     summarizeTopic,
     updateMessageContent,

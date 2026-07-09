@@ -252,7 +252,14 @@ async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), String> {
     migrator
         .run(pool)
         .await
-        .map_err(|e| format!("数据库初始化失败: {}", e))
+        .map_err(|e| format!("数据库初始化失败: {}", e))?;
+
+    // 运行系统内置高级规则的多模态无损同步器
+    crate::vcp_modules::chat::context_injection::sync_system_preset_rules(pool)
+        .await
+        .map_err(|e| format!("[DBManager] Failed to sync preset rules: {}", e))?;
+
+    Ok(())
 }
 
 /// 为 1.1.2 原始用户（有业务表但无迁移追踪表）构建初始迁移状态。

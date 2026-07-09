@@ -23,6 +23,7 @@ commands.allow = [
     "start_download_notification",
     "update_download_notification",
     "cancel_download_notification",
+    "get_pending_notification",
     "show_system_notification",
     "request_overlay_permission",
     "register_shared_files",

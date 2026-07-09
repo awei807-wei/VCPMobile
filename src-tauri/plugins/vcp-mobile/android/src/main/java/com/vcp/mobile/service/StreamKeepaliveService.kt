@@ -35,9 +35,36 @@ class StreamKeepaliveService : Service() {
         const val CHANNEL_ID = "vcp_stream_keepalive"
         const val NOTIFICATION_ID = 0x53545201 // "STR" + 01
         private const val TAG = "VcpMobileService"
+        private const val PREF_NAME = "vcp_keepalive_prefs"
+        private const val KEY_DISTRIBUTED_KEEPALIVE = "distributed_keepalive_persisted"
 
         @Volatile
         var isServiceRunning = false
+
+        /**
+         * Check if distributed keepalive was requested before boot/reboot.
+         */
+        fun isDistributedKeepalivePersisted(context: Context): Boolean {
+            val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            return prefs.getBoolean(KEY_DISTRIBUTED_KEEPALIVE, false)
+        }
+
+        /**
+         * Set/clear the distributed keepalive persisted flag.
+         */
+        fun setDistributedKeepalivePersisted(context: Context, enabled: Boolean) {
+            val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putBoolean(KEY_DISTRIBUTED_KEEPALIVE, enabled).apply()
+        }
+
+        /**
+         * Create an Intent for best-effort recovery after boot.
+         */
+        fun createRecoveryIntent(context: Context): Intent {
+            return Intent(context, StreamKeepaliveService::class.java).apply {
+                putExtra("recovery_mode", true)
+            }
+        }
     }
 
     private var mediaPlayer: MediaPlayer? = null

@@ -95,7 +95,6 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     init {
         instanceRef = java.lang.ref.WeakReference(this)
         activity.application.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
-        startOomScoreGuard()
         startHelperServiceInternal()
     }
 
@@ -130,7 +129,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             if (webView != null) {
                 val dataJson = data.toString()
                 val safeJson = escapeJsonForJsString(dataJson)
-                val script = "window.dispatchEvent(new CustomEvent('vcp-notification-click', { detail: JSON.parse(\\"$safeJson\\") }))"
+                val script = "window.dispatchEvent(new CustomEvent('vcp-notification-click', { detail: JSON.parse(\"$safeJson\") }))"
                 activity.runOnUiThread {
                     webView.evaluateJavascript(script, null)
                 }
@@ -1034,6 +1033,8 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         keyboardInsetsManager.attach(webView)
         lifecycleBridge.attach(activity, this)
 
+        startOomScoreGuard()
+
         // 冷启动：处理传递给 Activity 的初始 intent
         shareIntentHandler.handleShareIntent(activity.intent)
         shareIntentHandler.injectShareData(webView)
@@ -1181,7 +1182,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 val safeStartDetail = escapeJsonForJsString(startDetail.toString())
                 activity.runOnUiThread {
-                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse("$safeStartDetail") }))", null)
+                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse(\"$safeStartDetail\") }))", null)
                 }
 
                 // 计算 SHA-256 哈希
@@ -1233,7 +1234,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 val safePickedDetail = escapeJsonForJsString(pickedDetail.toString())
-                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse("$safePickedDetail") }))"
+                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse(\"$safePickedDetail\") }))"
                 activity.runOnUiThread {
                     webViewRef?.evaluateJavascript(pickedScript, null)
                 }
@@ -1291,7 +1292,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 val safeStartDetail = escapeJsonForJsString(startDetail.toString())
                 activity.runOnUiThread {
-                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse("$safeStartDetail") }))", null)
+                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse(\"$safeStartDetail\") }))", null)
                 }
 
                 // 4. 流式安全拷贝至 cacheDir 并同步计算 SHA-256 (64KB buffer)
@@ -1329,7 +1330,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                                     put("mime", mimeType)
                                 }
                                 val safeProgressDetail = escapeJsonForJsString(progressDetail.toString())
-                                val progressScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-progress', { detail: JSON.parse("$safeProgressDetail") }))"
+                                val progressScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-progress', { detail: JSON.parse(\"$safeProgressDetail\") }))"
                                 activity.runOnUiThread {
                                     webViewRef?.evaluateJavascript(progressScript, null)
                                 }
@@ -1388,7 +1389,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 val safePickedDetail = escapeJsonForJsString(pickedDetail.toString())
-                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse("$safePickedDetail") }))"
+                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse(\"$safePickedDetail\") }))"
                 activity.runOnUiThread {
                     webViewRef?.evaluateJavascript(pickedScript, null)
                 }
@@ -1470,9 +1471,9 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
     private fun escapeJsonForJsString(json: String): String {
         return json
-            .replace("\", "\\\")
-            .replace(""", "\\"")
-            .replace("\'", "\\'")
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\'", "\\\'")
             .replace("\n", "\\n")
             .replace("\r", "\\r")
     }
@@ -1519,7 +1520,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 val safeStartDetail = escapeJsonForJsString(startDetail.toString())
                 activity.runOnUiThread {
-                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse("$safeStartDetail") }))", null)
+                    webViewRef?.evaluateJavascript("window.dispatchEvent(new CustomEvent('vcp-mobile-file-start', { detail: JSON.parse(\"$safeStartDetail\") }))", null)
                 }
 
                 // 计算 SHA-256 哈希 (复用现有 pickFile 的流式拷贝+哈希模式)
@@ -1588,7 +1589,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 val safePickedDetail = escapeJsonForJsString(pickedDetail.toString())
-                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse("$safePickedDetail") }))"
+                val pickedScript = "window.dispatchEvent(new CustomEvent('vcp-mobile-file-picked', { detail: JSON.parse(\"$safePickedDetail\") }))"
                 activity.runOnUiThread {
                     webViewRef?.evaluateJavascript(pickedScript, null)
                 }
@@ -1954,7 +1955,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val rawName = providedName?.takeIf { it.isNotBlank() } ?: fromUrl ?: "vcp_image_$timestamp"
-        val sanitized = rawName.replace(Regex("[\\\\/:*?"<>|\\u0000-\\u001F]"), "_").trim().ifBlank { "vcp_image_$timestamp" }
+        val sanitized = rawName.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_").trim().ifBlank { "vcp_image_$timestamp" }
         val base = sanitized.substringBeforeLast('.', sanitized).take(96).ifBlank { "vcp_image_$timestamp" }
         val ext = sanitized.substringAfterLast('.', "").lowercase(Locale.US).takeIf { it.isNotBlank() } ?: extensionForMime(mimeType)
         return "$base.$ext"

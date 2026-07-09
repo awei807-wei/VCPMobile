@@ -186,6 +186,28 @@ function isBrkBlock(block: ContentBlock): boolean {
   return false;
 }
 
+function isWhitespaceNode(node: any): boolean {
+  if (!node) return true;
+  if (node.type === "text") {
+    return !node.value || node.value.trim() === "";
+  }
+  if (node.type === "paragraph") {
+    return (
+      !node.children ||
+      node.children.length === 0 ||
+      node.children.every(isWhitespaceNode)
+    );
+  }
+  if (
+    node.type === "softbreak" ||
+    node.type === "hardbreak" ||
+    node.type === "break"
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function trimWhitespaceNodes(nodes: any[]): any[] {
   let start = 0;
   while (start < nodes.length && isWhitespaceNode(nodes[start])) {

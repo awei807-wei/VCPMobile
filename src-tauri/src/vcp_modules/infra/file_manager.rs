@@ -42,6 +42,15 @@ pub fn get_thumbnails_root_dir<R: tauri::Runtime>(
     Ok(path)
 }
 
+/// 获取多模态缓存目录 (用于 audio/video extractor 的提取结果缓存)
+pub fn get_multimodal_cache_dir<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
+    let mut path = get_data_root_dir(app_handle)?;
+    path.push("multimodal_cache");
+    Ok(path)
+}
+
 /// 物理安全的文件重命名工具，能够跨越物理挂载分区 (EXDEV) 降级进行物理拷贝+删除
 pub fn safe_rename<P: AsRef<std::path::Path>, Q: AsRef<std::path::Path>>(
     from: P,

@@ -20,6 +20,70 @@ static ref LOG_SENDER: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<Value
 static ref WS_URL_CHANNEL: (watch::Sender<Option<Url>>, watch::Receiver<Option<Url>>) = watch::channel(None);
 static ref CURRENT_LOG_STATUS: Arc<tokio::sync::RwLock<String>> = Arc::new(tokio::sync::RwLock::new("closed".to_string()));
 static ref HEARTBEAT_RESET_TX: Arc<tokio::sync::Mutex<Option<mpsc::Sender<()>>>> = Arc::new(tokio::sync::Mutex::new(None));
+    // 缓存 App 在后台期间接收到的 VCPLog 消息，避免丢弃和 WebView 积压，待返回前台时一并冲刷
+    static ref BACKGROUND_LOG_CACHE: std::sync::Mutex<Vec<serde_json::Value>> = std::sync::Mutex::new(Vec::new());
+}
+
+pub async fn handle_foreground_state_change(_app: &AppHandle, is_foreground: bool) {
+    // 自动根据前后台状态调整并重置心跳
+    let heartbeat_ms = if is_foreground { 15000 } else { 120000 };
+    HEARTBEAT_INTERVAL_MS.store(heartbeat_ms, Ordering::SeqCst);
+    {
+        let tx_lock = HEARTBEAT_RESET_TX.lock().await;
+        if let Some(tx) = tx_lock.as_ref() {
+            let _ = tx.send(()).await;
+        }
+    }
+}
+
+pub async fn disconnect_log_connections(app: &AppHandle) {
+    let _ = init_vcp_log_connection_internal(app.clone(), "".to_string(), "".to_string()).await;
+    let _ = crate::vcp_modules::vcp_info_service::init_vcp_info_connection_internal(
+        app.clone(),
+        "".to_string(),
+        "".to_string(),
+    )
+    .await;
+}
+
+pub async fn reconnect_log_connections(app: &AppHandle, log_url: String, log_key: String) {
+    let _ = init_vcp_log_connection_internal(app.clone(), log_url.clone(), log_key.clone()).await;
+    let _ = crate::vcp_modules::vcp_info_service::init_vcp_info_connection_internal(
+        app.clone(),
+        log_url,
+        log_key,
+    )
+    .await;
+}
+
+fn emit_log_event<R: tauri::Runtime>(app: &AppHandle<R>, payload: serde_json::Value) {
+    if !crate::vcp_modules::infra::lifecycle_manager::is_app_in_foreground(app) {
+        // App 处于后台时，不直接发射到 WebView，而是缓存在 Rust 侧，防止内存泄漏，并在返回前台时补发
+        if let Ok(mut cache) = BACKGROUND_LOG_CACHE.lock() {
+            cache.push(payload);
+        }
+        return;
+    }
+    let _ = app.emit("vcp-system-event", payload);
+}
+
+pub fn flush_background_logs<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let logs = {
+        if let Ok(mut cache) = BACKGROUND_LOG_CACHE.lock() {
+            std::mem::take(&mut *cache)
+        } else {
+            Vec::new()
+        }
+    };
+    if !logs.is_empty() {
+        log::info!(
+            "[VCPLog] Flashing {} cached background logs to WebView.",
+            logs.len()
+        );
+        for log in logs {
+            let _ = app.emit("vcp-system-event", log);
+        }
+    }
 }
 
 #[tauri::command]

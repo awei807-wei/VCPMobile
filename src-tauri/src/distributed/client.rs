@@ -558,12 +558,12 @@ impl DistributedClient {
                         break;
                     }
 
-                    acquire_wake_lock_helper(app);
+                    acquire_wake_lock_helper(app, "distributed:connection");
                     let ping_result = {
                         let mut tx = ws_tx.lock().await;
                         tx.send(Message::Ping(Vec::new().into())).await
                     };
-                    release_wake_lock_helper(app);
+                    release_wake_lock_helper(app, "distributed:connection");
 
                     if let Err(e) = ping_result {
                         exit_reason = format!("Heartbeat ping failed: {}", e);

@@ -1,52 +1,25 @@
 use log::info;
 use serde::Serialize;
-use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::RwLock;
 
 use crate::vcp_modules::db_manager::{init_db, DbState};
 use crate::vcp_modules::emoticon_manager::{
     internal_load_library, refresh_emoticon_library_internal, EmoticonManagerState,
 };
-use crate::vcp_modules::infra::local_server::{self, ServerHandle};
+use crate::vcp_modules::infra::lifecycle_state::{CoreStatus, LifecycleState};
+use crate::vcp_modules::infra::local_server;
 use crate::vcp_modules::model_manager::{init_model_manager, ModelManagerState};
 use crate::vcp_modules::settings_manager::{read_settings, SettingsState};
 use crate::vcp_modules::sync_service::init_sync_service;
 use crate::vcp_modules::vcp_log_service::init_vcp_log_connection_internal;
 
-#[derive(Debug, Serialize, Clone, Copy, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum CoreStatus {
-    Initializing,
-    Ready,
-    // Syncing,
-    Error,
-}
-
-pub struct LifecycleState {
-    pub status: Arc<RwLock<CoreStatus>>,
-    pub last_error: Arc<RwLock<Option<String>>>,
-    /// 划词助手本地服务器句柄：用于根据设置动态启停
-    pub local_server_handle: Arc<tokio::sync::Mutex<Option<ServerHandle>>>,
-}
-
-impl LifecycleState {
-    pub fn new() -> Self {
-        Self {
-            status: Arc::new(RwLock::new(CoreStatus::Initializing)),
-            last_error: Arc::new(RwLock::new(None)),
-            local_server_handle: Arc::new(tokio::sync::Mutex::new(None)),
-        }
-    }
-}
-
 /// 检查应用当前是否在前台。
-/// 本地 fork 暂未实现完整的前后台状态追踪，默认返回 true。
-/// 上游使用 lifecycle_controller 模块追踪 is_foreground 状态。
 pub fn is_app_in_foreground<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    let _ = app;
-    true
+    match app.try_state::<LifecycleState>() {
+        Some(lifecycle) => lifecycle.is_foreground.load(std::sync::atomic::Ordering::Relaxed),
+        None => true,
+    }
 }
 
 /// 根据设置决定启动或停止划词助手本地服务器

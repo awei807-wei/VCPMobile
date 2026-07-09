@@ -45,8 +45,9 @@ use vcp_modules::high_speed_channel::prepare_vcp_upload;
 use vcp_modules::lifecycle_manager::{
     bootstrap, get_core_status, get_last_error, get_system_snapshot,
     reconcile_distributed_node_cmd, reconcile_local_server_cmd,
-    recover_distributed_node_after_network_restore, LifecycleState,
+    recover_distributed_node_after_network_restore,
 };
+use vcp_modules::infra::lifecycle_state::LifecycleState;
 use vcp_modules::maintenance_manager::{
     cleanup_orphaned_attachments, cleanup_single_orphaned_attachment, clear_webview_cache,
     init_automatic_maintenance, reconstruct_system_cache,

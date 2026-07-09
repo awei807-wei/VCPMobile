@@ -104,6 +104,9 @@ pub async fn cleanup_orphaned_attachments(
                    OR owner_id IN (SELECT agent_id FROM agents WHERE deleted_at IS NOT NULL) AND owner_type = 'agent' \
                    OR owner_id IN (SELECT group_id FROM groups WHERE deleted_at IS NOT NULL) AND owner_type = 'group' \
             )",
+    )
+    .execute(&db_state.pool)
+    .await;
 
     // 1.5 先清理已删除消息的 message_attachments 关联 (防线三：GC 阶段关联自愈)
     let _ = sqlx::query(
@@ -128,8 +131,6 @@ pub async fn cleanup_orphaned_attachments(
                AND t.deleted_at IS NULL \
                AND (t.owner_type != 'agent' OR a.deleted_at IS NULL) \
                AND (t.owner_type != 'group' OR g.deleted_at IS NULL)",
-
-             WHERE m.deleted_at IS NULL",
 
     )
     .fetch_all(&db_state.pool)

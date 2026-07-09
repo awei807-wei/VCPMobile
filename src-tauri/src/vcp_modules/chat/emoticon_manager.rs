@@ -285,7 +285,7 @@ pub async fn refresh_emoticon_library_internal<R: Runtime>(
     // 保存最后同步时间戳
     let now = crate::vcp_modules::infra::utils::now_millis();
     sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('emoticon_last_sync', ?, ?)")
-        .bind(&now.to_string())
+        .bind(now.to_string())
         .bind(now)
         .execute(&mut *transaction)
         .await

@@ -323,15 +323,13 @@ pub async fn perform_single_test_internal(
 
     if enable_vcp_tool_injection {
         url.set_path("/v1/chatvcp/completions");
-    } else {
-        if !url.path().ends_with("/chat/completions") {
-            let new_path = if url.path().ends_with('/') {
-                format!("{}v1/chat/completions", url.path())
-            } else {
-                format!("{}/v1/chat/completions", url.path())
-            };
-            url.set_path(&new_path);
-        }
+    } else if !url.path().ends_with("/chat/completions") {
+        let new_path = if url.path().ends_with('/') {
+            format!("{}v1/chat/completions", url.path())
+        } else {
+            format!("{}/v1/chat/completions", url.path())
+        };
+        url.set_path(&new_path);
     }
 
     let final_url = url.to_string();

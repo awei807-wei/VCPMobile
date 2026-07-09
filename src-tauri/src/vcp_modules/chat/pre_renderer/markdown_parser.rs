@@ -1396,11 +1396,9 @@ fn merge_quote_nodes(inlines: Vec<InlineNode>) -> Vec<InlineNode> {
                             end_idx = Some(j);
                             break;
                         }
-                    } else {
-                        if value.ends_with(cl_c) {
-                            end_idx = Some(j);
-                            break;
-                        }
+                    } else if value.ends_with(cl_c) {
+                        end_idx = Some(j);
+                        break;
                     }
                 }
             }

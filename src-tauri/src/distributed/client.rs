@@ -439,6 +439,7 @@ impl DistributedClient {
     // Session handler — processes one WS connection lifetime
     // ================================================================
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_session(
         app: &AppHandle,
         ws_stream: tokio_tungstenite::WebSocketStream<

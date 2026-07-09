@@ -358,7 +358,7 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
                 {
                     let now = crate::vcp_modules::infra::utils::now_millis();
                     let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('delete_executor_last_cleanup', ?, ?)")
-                        .bind(&now.to_string())
+                        .bind(now.to_string())
                         .bind(now)
                         .execute(pool)
                         .await;
@@ -374,7 +374,7 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
                 {
                     let now = crate::vcp_modules::infra::utils::now_millis();
                     let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('delete_executor_last_cleanup', ?, ?)")
-                        .bind(&now.to_string())
+                        .bind(now.to_string())
                         .bind(now)
                         .execute(pool)
                         .await;
@@ -452,7 +452,7 @@ pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
                         // 更新最后检查时间戳
                         let now = crate::vcp_modules::infra::utils::now_millis();
                         let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('frontend_update_last_check', ?, ?)")
-                            .bind(&now.to_string())
+                            .bind(now.to_string())
                             .bind(now)
                             .execute(pool)
                             .await;

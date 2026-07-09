@@ -9,6 +9,7 @@ import { useChatSessionStore } from "./chatSessionStore";
 import { useChatHistoryStore } from "./chatHistoryStore";
 import { useTopicStore } from "./topicListManager";
 import { updateDistributedState } from "../../features/distributed/composables/useDistributed";
+import { useAvatarStore } from "./avatar";
 
 export type AppState =
   | "PERMISSIONS"
@@ -38,6 +39,7 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
   const settingsStore = useSettingsStore();
   const themeStore = useThemeStore();
   const notificationStore = useNotificationStore();
+  const avatarStore = useAvatarStore();
   const sessionStore = useChatSessionStore();
   const topicStore = useTopicStore();
 
@@ -136,10 +138,10 @@ export const useAppLifecycleStore = defineStore("appLifecycle", () => {
       console.log(
         "[Lifecycle] [Concurrent] START Preloading Settings and AgentsAndGroups"
       );
-
       const promises: Promise<any>[] = [
         settingsStore.fetchSettings(),
         assistantStore.fetchAgentsAndGroups(),
+        avatarStore.preloadAll(),
       ];
 
       // 如果从 Pinia 中恢复了活跃会话，在预加载阶段同步加载其对应的话题列表

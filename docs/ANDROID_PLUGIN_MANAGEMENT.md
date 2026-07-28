@@ -169,7 +169,14 @@ webView.evaluateJavascript(script, null)
 
 ### 7.1 插件命令静默拒绝
 
-如果插件命令被调用但没有任何反应（无错误、无返回），**首先检查 `capabilities/default.json` 是否包含 `"vcp-mobile:default"`**。Tauri v2 的能力系统会静默拒绝未授权命令。
+如果出现 `plugin:vcp-mobile|... not allowed by ACL`，需要同时检查两层配置：
+
+1. `capabilities/default.json` 必须包含 `"vcp-mobile:default"`。
+2. `permissions/default.toml` 必须使用 Tauri 保留的 `[default]` 权限集，并在 `permissions` 中引用自动生成的 `allow-*` 权限。
+
+不要把默认权限写成 `[[permission]] identifier = "default"`。Tauri 对 `default` 名称有专门解析分支，`vcp-mobile:default` 只会展开 manifest 的 `default_permission`；同名普通 permission 不会被采用，最终会让默认能力展开为空。执行 `cargo check --manifest-path src-tauri/Cargo.toml` 后，`src-tauri/gen/schemas/acl-manifests.json` 中的 `vcp-mobile.default_permission` 应为非空对象。
+
+仓库内可直接运行 `python3 qa/check_vcp_mobile_acl.py` 检查默认权限能否解析到启动必需的 `check_all_permissions`，并确认系统通知与 Root 命令仍保持独立授权。
 
 ### 7.2 POST_NOTIFICATIONS 是通知的前提
 

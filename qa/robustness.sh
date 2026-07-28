@@ -84,12 +84,13 @@ if rg -q 'title=\$title' src-tauri/plugins/vcp-mobile/android/src/main/java/com/
 fi
 
 log "权限与配置失败关闭哨兵"
+run python3 qa/check_vcp_mobile_acl.py
 rg -q "\"vcp-mobile:allow-show-system-notification\"" src-tauri/capabilities/agent-notifications.json \
   || fail "系统通知命令必须使用单独 capability 授权"
-if rg -q "\"show_system_notification\"" src-tauri/plugins/vcp-mobile/permissions/all.toml src-tauri/plugins/vcp-mobile/permissions/default.toml; then
+if rg -q "show[_-]system[_-]notification" src-tauri/plugins/vcp-mobile/permissions/all.toml src-tauri/plugins/vcp-mobile/permissions/default.toml; then
   fail "show_system_notification 不应进入 vcp-mobile allow-all/default 聚合权限"
 fi
-if rg -q "\"run_root_command\"" src-tauri/plugins/vcp-mobile/permissions/all.toml src-tauri/plugins/vcp-mobile/permissions/default.toml; then
+if rg -q "run[_-]root[_-]command" src-tauri/plugins/vcp-mobile/permissions/all.toml src-tauri/plugins/vcp-mobile/permissions/default.toml; then
   fail "run_root_command 不应进入 vcp-mobile allow-all/default 聚合权限"
 fi
 if rg -q "\"vcp-mobile:allow-run-root-command\"" src-tauri/capabilities/default.json; then

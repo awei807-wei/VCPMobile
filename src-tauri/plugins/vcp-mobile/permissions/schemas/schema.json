@@ -295,10 +295,10 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "Allow all commands in vcp-mobile plugin",
+          "description": "Allow all non-sensitive commands in vcp-mobile plugin",
           "type": "string",
           "const": "allow-all",
-          "markdownDescription": "Allow all commands in vcp-mobile plugin"
+          "markdownDescription": "Allow all non-sensitive commands in vcp-mobile plugin"
         },
         {
           "description": "Enables the acquire_foreground command without any pre-configured scope.",
@@ -853,10 +853,10 @@
           "markdownDescription": "Denies the write_temp_file command without any pre-configured scope."
         },
         {
-          "description": "Default permission for VCP Mobile plugin",
+          "description": "Default permission set for VCP Mobile plugin\n#### This default permission set includes:\n\n- `allow-set-keep-screen-on`\n- `allow-clear-keep-screen-on`\n- `allow-start-streaming-service`\n- `allow-stop-streaming-service`\n- `allow-acquire-foreground`\n- `allow-release-foreground`\n- `allow-start-helper-service`\n- `allow-check-all-permissions`\n- `allow-request-android-permission`\n- `allow-move-task-to-back`\n- `allow-check-notification-listener-permission`\n- `allow-request-notification-listener-permission`\n- `allow-request-auto-start-permission`\n- `allow-request-power-management-permission`\n- `allow-check-auto-start-permission`\n- `allow-get-free-disk-space`\n- `allow-pick-file`\n- `allow-get-battery-status`\n- `allow-get-network-status`\n- `allow-open-file-native`\n- `allow-share-file-native`\n- `allow-get-process-exit-diagnostics`\n- `allow-capture-window-snapshot`\n- `allow-save-image-to-gallery`\n- `allow-save-image-from-path`\n- `allow-write-temp-file`\n- `allow-delete-temp-file`\n- `allow-start-download-notification`\n- `allow-update-download-notification`\n- `allow-cancel-download-notification`\n- `allow-get-pending-notification`\n- `allow-request-overlay-permission`\n- `allow-register-shared-files`\n- `allow-toggle-floating-ball`\n- `allow-start-sensor-collection`\n- `allow-stop-sensor-collection`\n- `allow-get-sensor-data`\n- `allow-get-cpu-thermal-status`\n- `allow-get-gpu-status`\n- `allow-check-root-access`\n- `allow-launch-root-manager`\n- `allow-acquire-wake-lock`\n- `allow-release-wake-lock`\n- `allow-start-network-monitoring`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permission for VCP Mobile plugin"
+          "markdownDescription": "Default permission set for VCP Mobile plugin\n#### This default permission set includes:\n\n- `allow-set-keep-screen-on`\n- `allow-clear-keep-screen-on`\n- `allow-start-streaming-service`\n- `allow-stop-streaming-service`\n- `allow-acquire-foreground`\n- `allow-release-foreground`\n- `allow-start-helper-service`\n- `allow-check-all-permissions`\n- `allow-request-android-permission`\n- `allow-move-task-to-back`\n- `allow-check-notification-listener-permission`\n- `allow-request-notification-listener-permission`\n- `allow-request-auto-start-permission`\n- `allow-request-power-management-permission`\n- `allow-check-auto-start-permission`\n- `allow-get-free-disk-space`\n- `allow-pick-file`\n- `allow-get-battery-status`\n- `allow-get-network-status`\n- `allow-open-file-native`\n- `allow-share-file-native`\n- `allow-get-process-exit-diagnostics`\n- `allow-capture-window-snapshot`\n- `allow-save-image-to-gallery`\n- `allow-save-image-from-path`\n- `allow-write-temp-file`\n- `allow-delete-temp-file`\n- `allow-start-download-notification`\n- `allow-update-download-notification`\n- `allow-cancel-download-notification`\n- `allow-get-pending-notification`\n- `allow-request-overlay-permission`\n- `allow-register-shared-files`\n- `allow-toggle-floating-ball`\n- `allow-start-sensor-collection`\n- `allow-stop-sensor-collection`\n- `allow-get-sensor-data`\n- `allow-get-cpu-thermal-status`\n- `allow-get-gpu-status`\n- `allow-check-root-access`\n- `allow-launch-root-manager`\n- `allow-acquire-wake-lock`\n- `allow-release-wake-lock`\n- `allow-start-network-monitoring`"
         }
       ]
     }

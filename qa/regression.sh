@@ -196,11 +196,12 @@ require_pattern "select_topic_content_hash" src-tauri/src/distributed/tools/topi
 require_pattern "contentCorrupted" src-tauri/src/distributed/tools/topic_sponsor.rs
 require_pattern "parseAndroidNotification" src/core/utils/agentMessagePayload.ts
 require_pattern "MAX_AGENT_PAYLOAD_DEPTH = 6" src/core/utils/agentMessagePayload.ts
+run python3 qa/check_vcp_mobile_acl.py
 require_pattern "\"vcp-mobile:allow-show-system-notification\"" src-tauri/capabilities/agent-notifications.json
-reject_pattern "\"show_system_notification\"" src-tauri/plugins/vcp-mobile/permissions/all.toml
-reject_pattern "\"show_system_notification\"" src-tauri/plugins/vcp-mobile/permissions/default.toml
-reject_pattern "\"run_root_command\"" src-tauri/plugins/vcp-mobile/permissions/all.toml
-reject_pattern "\"run_root_command\"" src-tauri/plugins/vcp-mobile/permissions/default.toml
+reject_pattern "show[_-]system[_-]notification" src-tauri/plugins/vcp-mobile/permissions/all.toml
+reject_pattern "show[_-]system[_-]notification" src-tauri/plugins/vcp-mobile/permissions/default.toml
+reject_pattern "run[_-]root[_-]command" src-tauri/plugins/vcp-mobile/permissions/all.toml
+reject_pattern "run[_-]root[_-]command" src-tauri/plugins/vcp-mobile/permissions/default.toml
 reject_pattern "\"vcp-mobile:allow-run-root-command\"" src-tauri/capabilities/default.json
 require_pattern "show_system_notification is only supported on Android" src-tauri/plugins/vcp-mobile/src/system.rs
 require_pattern "dispatch_system_notification" src-tauri/src/distributed/tools/agent_message.rs

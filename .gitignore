@@ -43,6 +43,7 @@ VCPMobile.code-workspace
 qa/*
 !qa/
 !qa/*.sh
+!qa/check_vcp_mobile_acl.py
 plans/Archive_Assets/
 # Local Release Artifacts
 releases/

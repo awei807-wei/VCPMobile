@@ -34,9 +34,15 @@ class StreamKeepaliveService : Service() {
     companion object {
         const val CHANNEL_ID = "vcp_stream_keepalive"
         const val NOTIFICATION_ID = 0x53545201 // "STR" + 01
+        const val ACTION_REFRESH_NOTIFICATION = "com.vcp.mobile.action.REFRESH_KEEPALIVE_NOTIFICATION"
+        const val ACTION_RECONCILE_LIFECYCLE = "com.vcp.mobile.action.RECONCILE_KEEPALIVE_LIFECYCLE"
+        const val ACTION_RECOVER_KEEPALIVE = "com.vcp.mobile.action.RECOVER_KEEPALIVE"
         private const val TAG = "VcpMobileService"
-        private const val PREF_NAME = "vcp_keepalive_prefs"
-        private const val KEY_DISTRIBUTED_KEEPALIVE = "distributed_keepalive_persisted"
+        private const val PREFS_NAME = "vcp_mobile_keepalive"
+        private const val PREF_DISTRIBUTED_KEEPALIVE = "distributed_keepalive_active"
+        private const val COMPAT_PREFS_NAME = "vcp_keepalive_prefs"
+        private const val COMPAT_PREF_DISTRIBUTED_KEEPALIVE = "distributed_keepalive_persisted"
+        private const val EXTRA_RECOVERY_MODE = "recovery_mode"
 
         @Volatile
         var isServiceRunning = false
@@ -45,16 +51,32 @@ class StreamKeepaliveService : Service() {
          * Check if distributed keepalive was requested before boot/reboot.
          */
         fun isDistributedKeepalivePersisted(context: Context): Boolean {
-            val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            return prefs.getBoolean(KEY_DISTRIBUTED_KEEPALIVE, false)
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (prefs.contains(PREF_DISTRIBUTED_KEEPALIVE)) {
+                return prefs.getBoolean(PREF_DISTRIBUTED_KEEPALIVE, false)
+            }
+
+            return context
+                .getSharedPreferences(COMPAT_PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(COMPAT_PREF_DISTRIBUTED_KEEPALIVE, false)
         }
 
         /**
          * Set/clear the distributed keepalive persisted flag.
          */
         fun setDistributedKeepalivePersisted(context: Context, enabled: Boolean) {
-            val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            prefs.edit().putBoolean(KEY_DISTRIBUTED_KEEPALIVE, enabled).apply()
+            context
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_DISTRIBUTED_KEEPALIVE, enabled)
+                .apply()
+
+            // 同步维护 1.0.7 曾使用过的键，避免版本切换后恢复意图丢失。
+            context
+                .getSharedPreferences(COMPAT_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(COMPAT_PREF_DISTRIBUTED_KEEPALIVE, enabled)
+                .apply()
         }
 
         /**
@@ -62,28 +84,69 @@ class StreamKeepaliveService : Service() {
          */
         fun createRecoveryIntent(context: Context): Intent {
             return Intent(context, StreamKeepaliveService::class.java).apply {
-                putExtra("recovery_mode", true)
+                action = ACTION_RECOVER_KEEPALIVE
+                putExtra(EXTRA_RECOVERY_MODE, true)
             }
+        }
+
+        private fun isRecoveryIntent(intent: Intent?): Boolean {
+            return intent?.action == ACTION_RECOVER_KEEPALIVE ||
+                intent?.getBooleanExtra(EXTRA_RECOVERY_MODE, false) == true
         }
     }
 
     private var mediaPlayer: MediaPlayer? = null
+    private var foregroundPromoted = false
 
     override fun onCreate() {
         super.onCreate()
-        isServiceRunning = true
         createNotificationChannel()
+
+        // startForegroundService() 的超时从调用方发起时就开始计时。这里在 onCreate 的
+        // 最早可用阶段先发布最小通知，业务文案和音频初始化留到 onStartCommand 处理。
+        foregroundPromoted = promoteToForeground(buildBootstrapNotification())
+        if (!foregroundPromoted) {
+            Log.e(TAG, "Bootstrap foreground promotion failed; stopping service immediately.")
+            ForegroundGuardian.onServicePromotionFailed()
+            stopSelf()
+            return
+        }
+
+        isServiceRunning = true
+        ForegroundGuardian.onServicePromoted()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foregroundPromoted) {
+            foregroundPromoted = promoteToForeground(buildBootstrapNotification())
+            if (!foregroundPromoted) {
+                Log.e(TAG, "Foreground promotion unavailable in onStartCommand; stopping service.")
+                ForegroundGuardian.onServicePromotionFailed()
+                stopSelf(startId)
+                return START_NOT_STICKY
+            }
+            isServiceRunning = true
+            ForegroundGuardian.onServicePromoted()
+        }
+
+        if (isRecoveryIntent(intent) && isDistributedKeepalivePersisted(this)) {
+            ForegroundGuardian.restoreDistributedConsumer(this)
+        }
+
+        // 停止也通过 Service 主线程串行化处理：若停止请求后紧接着有新消费者进入，
+        // 最新 startId 会阻止旧停止请求误杀刚恢复的前台服务。
+        if (!ForegroundGuardian.isActive) {
+            Log.i(TAG, "No foreground consumers remain; stopping after fulfilling foreground contract.")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         val label = ForegroundGuardian.getNotificationLabel()
         val notification = buildNotification(label)
 
-        // Android 14+ 必须声明前台服务类型，且加 try-catch 兜底，防止 ForegroundServiceStartNotAllowedException
+        // 此时最小通知已经完成前台提升；这里仅刷新业务文案。
         if (!promoteToForeground(notification)) {
-            Log.e(TAG, "Foreground promotion failed. Stopping service to satisfy Android foreground-service contract.")
-            stopSelf(startId)
-            return START_NOT_STICKY
+            Log.w(TAG, "Notification refresh failed; keeping bootstrap foreground notification.")
         }
 
         // 启动静音音频循环播放保活
@@ -114,21 +177,35 @@ class StreamKeepaliveService : Service() {
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (!isDistributedKeepalivePersisted(this) || !ForegroundGuardian.isActive) {
+            return
+        }
+
+        // stopWithTask=false 时服务仍在运行，不再递归调用 startForegroundService，
+        // 只重申现有前台通知，避免制造新的五秒提升契约与重复启动竞态。
+        Log.i(TAG, "Task removed while distributed keepalive is active; retaining current foreground service.")
+        promoteToForeground(buildNotification(ForegroundGuardian.getNotificationLabel()))
+    }
+
     override fun onDestroy() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
+        if (foregroundPromoted) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
         }
         
         // 停止静音音频播放
         stopSilentPlayback()
         
-        // 关键安全闭环：前台服务销毁（包括被系统/用户强杀）时，强行释放全部进程级物理锁，防止电量泄露
-        ForegroundGuardian.releaseAllLocks()
-
+        foregroundPromoted = false
         isServiceRunning = false
+        // 服务销毁（包括系统回收）时释放进程级物理锁，但保留已持久化的分布式用户意图。
+        ForegroundGuardian.onServiceDestroyed()
         super.onDestroy()
     }
 
@@ -229,6 +306,21 @@ class StreamKeepaliveService : Service() {
             getSystemService(NotificationManager::class.java)
                 ?.createNotificationChannel(channel)
         }
+    }
+
+    private fun buildBootstrapNotification(): Notification {
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("VCP Mobile")
+            .setContentText("正在准备后台任务…")
+            .setSmallIcon(applicationInfo.icon)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+
+        return builder.build()
     }
 
     private fun buildNotification(label: String): Notification {

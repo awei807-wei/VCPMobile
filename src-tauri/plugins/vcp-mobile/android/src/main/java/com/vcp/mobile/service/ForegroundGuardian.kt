@@ -11,30 +11,27 @@ import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 前台守护者 (ForegroundGuardian)
- * 
- * 进程级单例，统一负责双锁 (WakeLock + WifiLock) 与前台服务 (FGS) 的生命周期协同。
- * 采用引用计数机制，支持多模块并发申请锁，按优先级动态校准通知栏文案。
+ * 进程级前台守护者，统一协调 WakeLock、WifiLock 与前台服务生命周期。
+ *
+ * 消费者按 tag 幂等注册；通知展示最高优先级消费者。首次消费者只发起一次
+ * startForegroundService，后续通知刷新改用普通 startService，避免重复创建前台提升契约。
  */
 object ForegroundGuardian {
     private const val TAG = "ForegroundGuardian"
+    private const val DISTRIBUTED_TAG = "distributed"
 
-    // 优先级常量定义
     const val PRIORITY_SYNC = 40
     const val PRIORITY_PRERENDER = 30
     const val PRIORITY_STREAM = 20
     const val PRIORITY_DISTRIBUTED = 10
 
-    // 消费者注册表：唯一业务 Tag -> 消费者配置
     private val consumers = ConcurrentHashMap<String, ConsumerEntry>()
-
-    // 全局物理锁实例
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
-
-    // 超时自动释放任务调度器
     private val handler = Handler(Looper.getMainLooper())
     private val timeoutRunnables = ConcurrentHashMap<String, Runnable>()
+
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var foregroundStartPending = false
 
     data class ConsumerEntry(
         val priority: Int,
@@ -42,132 +39,177 @@ object ForegroundGuardian {
         val screenKeepOn: Boolean
     )
 
-    /**
-     * 当前是否有任何活动消费者
-     */
     val isActive: Boolean
         get() = consumers.isNotEmpty()
 
-    /**
-     * 当前是否需要保持屏幕常亮
-     */
     val isScreenKeepOnRequired: Boolean
         get() = consumers.values.any { it.screenKeepOn }
 
-    /**
-     * 获取当前处于活动状态的消费者中，优先级最高者的通知文案
-     */
     fun getNotificationLabel(): String {
-        return consumers.values.maxByOrNull { it.priority }?.displayLabel ?: "VCP 正在后台运行"
+        return consumers.values.maxByOrNull { it.priority }?.displayLabel
+            ?: "VCP 正在后台运行"
     }
 
-    /**
-     * 申请持有前台锁（幂等）
-     */
+    /** 注册或刷新一个前台任务消费者。 */
     @Synchronized
-    fun acquire(context: Context, tag: String, priority: Int, label: String, screenKeepOn: Boolean = false, timeoutMs: Long = -1) {
-        Log.i(TAG, "acquire: tag=$tag, priority=$priority, label=$label, screenKeepOn=$screenKeepOn, timeoutMs=$timeoutMs")
-        
-        // 1. 取消该 tag 已有的超时任务
-        timeoutRunnables.remove(tag)?.let {
-            handler.removeCallbacks(it)
-        }
+    fun acquire(
+        context: Context,
+        tag: String,
+        priority: Int,
+        label: String,
+        screenKeepOn: Boolean = false,
+        timeoutMs: Long = -1
+    ) {
+        Log.i(
+            TAG,
+            "acquire: tag=$tag, priority=$priority, label=$label, " +
+                "screenKeepOn=$screenKeepOn, timeoutMs=$timeoutMs"
+        )
 
+        cancelTimeout(tag)
         val wasEmpty = consumers.isEmpty()
-        
-        // 更新/插入消费者
         consumers[tag] = ConsumerEntry(priority, label, screenKeepOn)
 
+        if (tag == DISTRIBUTED_TAG) {
+            StreamKeepaliveService.setDistributedKeepalivePersisted(context, true)
+        }
+
         if (wasEmpty) {
-            // 首次消费者进入：物理获取系统双锁，并拉起前台服务
             acquireLocks(context)
-            startFgs(context)
-        } else {
-            // 已有消费者在运行：仅触发 Service 更新通知文案与屏幕状态
-            updateFgs(context)
         }
 
-        // 2. 调度超时自动释放任务
-        val actualTimeout = if (timeoutMs >= 0) {
-            timeoutMs
-        } else {
-            // 根据不同业务 Tag/优先级 赋予对应的安全超时限制
-            when {
-                tag.startsWith("stream:") -> 10 * 60 * 1000L // 对话流生成：10 分钟
-                tag == "sync" -> 30 * 60 * 1000L        // 增量数据同步：30 分钟
-                tag == "prerender" -> 30 * 60 * 1000L   // 预渲染重建：30 分钟
-                tag == "distributed" || tag == "manual_keepalive" -> 2 * 60 * 60 * 1000L // 分布式/手动锁：2 小时
-                else -> 15 * 60 * 1000L                 // 默认兜底：15 分钟
-            }
+        if (!ensureFgsStarted(context)) {
+            clearRuntimeState()
+            throw IllegalStateException("Unable to start StreamKeepaliveService as a foreground service")
         }
 
-        if (actualTimeout > 0) {
-            val runnable = Runnable {
-                Log.w(TAG, "Timeout reached for tag: $tag. Force releasing to prevent lock leak.")
-                release(context, tag)
-            }
-            timeoutRunnables[tag] = runnable
-            handler.postDelayed(runnable, actualTimeout)
-            Log.d(TAG, "Scheduled timeout for tag: $tag in $actualTimeout ms")
-        }
+        scheduleTimeout(context, tag, timeoutMs)
     }
 
-    /**
-     * 释放前台锁（幂等）
-     */
+    /** 释放指定消费者；最后一个消费者退出时由 Service 串行完成自停。 */
     @Synchronized
     fun release(context: Context, tag: String) {
         Log.i(TAG, "release: tag=$tag")
-        
-        // 取消并移除超时任务
-        timeoutRunnables.remove(tag)?.let {
-            handler.removeCallbacks(it)
+        cancelTimeout(tag)
+
+        if (tag == DISTRIBUTED_TAG) {
+            StreamKeepaliveService.setDistributedKeepalivePersisted(context, false)
         }
 
-        if (!consumers.containsKey(tag)) {
+        if (consumers.remove(tag) == null) {
             Log.d(TAG, "release: tag=$tag is not registered, ignore.")
             return
         }
 
-        consumers.remove(tag)
-
         if (consumers.isEmpty()) {
-            // 最后一个消费者退出：物理释放系统双锁，并停用前台服务
             releaseLocks()
-            stopFgs(context)
+            reconcileFgsLifecycle(context)
         } else {
-            // 仍有消费者在运行：更新通知文案与屏幕状态
             updateFgs(context)
         }
     }
 
     /**
-     * 进程毁灭或前台服务销毁时的自我了断，强行释放全部物理锁，防止锁泄露
+     * 从开机或包更新恢复 Intent 重建分布式消费者。
+     *
+     * 此方法只会在 StreamKeepaliveService 已经完成前台提升后调用，因此不会再次启动服务。
      */
     @Synchronized
-    fun releaseAllLocks() {
-        Log.w(TAG, "releaseAllLocks: Force clearing all locks and consumers.")
-        // 取消所有待执行的超时任务
-        for (runnable in timeoutRunnables.values) {
-            handler.removeCallbacks(runnable)
+    fun restoreDistributedConsumer(context: Context) {
+        if (consumers.containsKey(DISTRIBUTED_TAG)) {
+            return
         }
+
+        Log.i(TAG, "Restoring persisted distributed foreground consumer.")
+        consumers[DISTRIBUTED_TAG] = ConsumerEntry(
+            PRIORITY_DISTRIBUTED,
+            DISTRIBUTED_TAG,
+            false
+        )
+        StreamKeepaliveService.setDistributedKeepalivePersisted(context, true)
+        acquireLocks(context)
+        scheduleTimeout(context, DISTRIBUTED_TAG, -1)
+    }
+
+    /** 显式停止全部前台任务，并清除分布式恢复意图。 */
+    @Synchronized
+    fun releaseAll(context: Context) {
+        StreamKeepaliveService.setDistributedKeepalivePersisted(context, false)
+        clearRuntimeState()
+        reconcileFgsLifecycle(context)
+    }
+
+    /** 标记 Service 已在 onCreate 最早阶段完成前台提升。 */
+    @Synchronized
+    fun onServicePromoted() {
+        foregroundStartPending = false
+    }
+
+    /** 前台提升同步失败时撤销运行态消费者，避免锁泄漏。 */
+    @Synchronized
+    fun onServicePromotionFailed() {
+        foregroundStartPending = false
+        clearRuntimeState()
+    }
+
+    /** Service 销毁时释放进程态锁；持久化恢复意图由显式 release 控制。 */
+    @Synchronized
+    fun onServiceDestroyed() {
+        foregroundStartPending = false
+        clearRuntimeState()
+    }
+
+    private fun scheduleTimeout(context: Context, tag: String, requestedTimeoutMs: Long) {
+        val actualTimeout = if (requestedTimeoutMs >= 0) {
+            requestedTimeoutMs
+        } else {
+            defaultTimeoutFor(tag)
+        }
+
+        if (actualTimeout <= 0) {
+            return
+        }
+
+        val appContext = context.applicationContext
+        val runnable = Runnable {
+            Log.w(TAG, "Timeout reached for tag: $tag. Force releasing to prevent lock leak.")
+            release(appContext, tag)
+        }
+        timeoutRunnables[tag] = runnable
+        handler.postDelayed(runnable, actualTimeout)
+        Log.d(TAG, "Scheduled timeout for tag: $tag in $actualTimeout ms")
+    }
+
+    private fun defaultTimeoutFor(tag: String): Long {
+        return when {
+            tag.startsWith("stream:") -> 10 * 60 * 1000L
+            tag == "sync" -> 30 * 60 * 1000L
+            tag == "prerender" -> 30 * 60 * 1000L
+            tag == DISTRIBUTED_TAG || tag == "manual_keepalive" -> 2 * 60 * 60 * 1000L
+            else -> 15 * 60 * 1000L
+        }
+    }
+
+    private fun cancelTimeout(tag: String) {
+        timeoutRunnables.remove(tag)?.let(handler::removeCallbacks)
+    }
+
+    private fun clearRuntimeState() {
+        timeoutRunnables.values.forEach(handler::removeCallbacks)
         timeoutRunnables.clear()
         consumers.clear()
         releaseLocks()
     }
 
-    /**
-     * 物理获取 WakeLock 和 WifiLock
-     */
     private fun acquireLocks(context: Context) {
         val appContext = context.applicationContext
 
-        // 1. 获取 WakeLock (保持 CPU 运转)
         if (wakeLock == null) {
             val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
-            if (powerManager != null) {
-                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VCP:ForegroundGuardian")
-            }
+            wakeLock = powerManager?.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "VCP:ForegroundGuardian"
+            )
         }
         wakeLock?.let {
             if (!it.isHeld) {
@@ -181,9 +223,15 @@ object ForegroundGuardian {
             if (wifiManager != null) {
                 @Suppress("DEPRECATION")
                 wifiLock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "VCP:ForegroundGuardianWifi")
+                    wifiManager.createWifiLock(
+                        WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                        "VCP:ForegroundGuardianWifi"
+                    )
                 } else {
-                    wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL, "VCP:ForegroundGuardianWifi")
+                    wifiManager.createWifiLock(
+                        WifiManager.WIFI_MODE_FULL,
+                        "VCP:ForegroundGuardianWifi"
+                    )
                 }
             }
         }
@@ -195,9 +243,6 @@ object ForegroundGuardian {
         }
     }
 
-    /**
-     * 物理释放 WakeLock 和 WifiLock
-     */
     private fun releaseLocks() {
         wakeLock?.let {
             if (it.isHeld) {
@@ -216,42 +261,76 @@ object ForegroundGuardian {
         wifiLock = null
     }
 
-    private fun startFgs(context: Context) {
+    private fun ensureFgsStarted(context: Context): Boolean {
+        if (StreamKeepaliveService.isServiceRunning) {
+            updateFgs(context)
+            return true
+        }
+
+        if (foregroundStartPending) {
+            Log.d(TAG, "Foreground start already pending; coalescing duplicate request.")
+            return true
+        }
+
+        return startFgs(context)
+    }
+
+    private fun startFgs(context: Context): Boolean {
+        val appContext = context.applicationContext
+        val intent = Intent(appContext, StreamKeepaliveService::class.java)
+        foregroundStartPending = true
         Log.i(TAG, "startFgs: Starting StreamKeepaliveService...")
-        val intent = Intent(context.applicationContext, StreamKeepaliveService::class.java)
-        try {
+
+        return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.applicationContext.startForegroundService(intent)
+                appContext.startForegroundService(intent)
             } else {
-                context.applicationContext.startService(intent)
+                appContext.startService(intent)
             }
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "startFgs failed: ", e)
+            foregroundStartPending = false
+            Log.e(TAG, "startFgs failed", e)
+            false
         }
     }
 
     private fun updateFgs(context: Context) {
-        Log.d(TAG, "updateFgs: Updating StreamKeepaliveService notification...")
-        val intent = Intent(context.applicationContext, StreamKeepaliveService::class.java)
-        // 重复调用 startForegroundService 会触发 onStartCommand，轻量更新通知文案
+        if (!StreamKeepaliveService.isServiceRunning) {
+            ensureFgsStarted(context)
+            return
+        }
+
+        val appContext = context.applicationContext
+        val intent = Intent(appContext, StreamKeepaliveService::class.java).apply {
+            action = StreamKeepaliveService.ACTION_REFRESH_NOTIFICATION
+        }
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.applicationContext.startForegroundService(intent)
-            } else {
-                context.applicationContext.startService(intent)
-            }
+            // 已运行的前台服务只需普通 startService 更新，不能重复制造前台提升计时契约。
+            appContext.startService(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "updateFgs failed: ", e)
+            Log.e(TAG, "updateFgs failed", e)
         }
     }
 
-    private fun stopFgs(context: Context) {
-        Log.i(TAG, "stopFgs: Stopping StreamKeepaliveService...")
-        val intent = Intent(context.applicationContext, StreamKeepaliveService::class.java)
+    private fun reconcileFgsLifecycle(context: Context) {
+        if (!StreamKeepaliveService.isServiceRunning) {
+            // 若首次 startForegroundService 尚在排队，不能 stopService 抢先取消；
+            // Service 会先在 onCreate 完成提升，再在 onStartCommand 发现空消费者后自停。
+            if (foregroundStartPending) {
+                Log.d(TAG, "Foreground start is pending; deferring stop until service reconciliation.")
+            }
+            return
+        }
+
+        val appContext = context.applicationContext
+        val intent = Intent(appContext, StreamKeepaliveService::class.java).apply {
+            action = StreamKeepaliveService.ACTION_RECONCILE_LIFECYCLE
+        }
         try {
-            context.applicationContext.stopService(intent)
+            appContext.startService(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "stopFgs failed: ", e)
+            Log.e(TAG, "Failed to reconcile StreamKeepaliveService lifecycle", e)
         }
     }
 }

@@ -241,6 +241,10 @@ require_pattern "ForegroundServiceStartNotAllowedException/IllegalStateException
 require_pattern "onTaskRemoved" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
 require_pattern "createRecoveryIntent" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
 require_pattern "distributed_keepalive_active" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
+require_pattern "promoteToForeground\(buildBootstrapNotification\(\)\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
+require_pattern "foregroundStartPending" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern "ACTION_REFRESH_NOTIFICATION" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern 'android:stopWithTask="false"' src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml
 require_file src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt
 require_pattern "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml
 require_pattern "ACTION_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt

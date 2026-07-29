@@ -23,6 +23,17 @@ use crate::vcp_modules::content_parser::ContentBlock;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::settings_manager::{create_default_settings, Settings};
 
+const CORE_NOT_READY_ERROR: &str = "CORE_NOT_READY: 数据库尚未初始化，请稍后重试。";
+
+fn require_core_state<T>(state: Option<T>) -> Result<T, String> {
+    state.ok_or_else(|| CORE_NOT_READY_ERROR.to_string())
+}
+
+fn db_pool_if_ready<R: Runtime>(app: &AppHandle<R>) -> Result<sqlx::Pool<sqlx::Sqlite>, String> {
+    let db = require_core_state(app.try_state::<DbState>())?;
+    Ok(db.pool.clone())
+}
+
 /// =================================================================
 /// vcp_modules/vcp_client.rs - 统一的 VCP 请求处理模块 (Rust 重写版)
 /// =================================================================
@@ -1615,11 +1626,11 @@ pub async fn get_active_generations(
     app: tauri::AppHandle,
     active_requests: tauri::State<'_, ActiveRequests>,
 ) -> Result<Vec<ActiveGeneration>, String> {
-    let db = app.state::<DbState>();
+    let pool = db_pool_if_ready(&app)?;
     let rows = sqlx::query(
         "SELECT msg_id, topic_id, owner_id, owner_type, created_at FROM active_generations ORDER BY created_at ASC"
     )
-    .fetch_all(&db.pool)
+    .fetch_all(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -1786,6 +1797,10 @@ pub async fn recover_active_generation<R: Runtime>(
         return Ok(json!({ "status": "streaming" }));
     }
 
+    // DbState 在异步核心引导完成后才注册。恢复命令可能由冷启动前端提前触发，
+    // 因此必须返回可重试错误，不能使用 state() 触发进程级 panic。
+    let pool = db_pool_if_ready(&app)?;
+
     let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
 
     // 异步清理超过 24 小时的孤立缓存文件
@@ -1819,12 +1834,11 @@ pub async fn recover_active_generation<R: Runtime>(
 
                     log::info!("[VCPClient] Successfully read recovered JSON: content_len={}, finish_reason={:?}", content.len(), finish_reason);
 
-                    let db = app.state::<DbState>();
                     let row = sqlx::query(
                         "SELECT topic_id, owner_id, owner_type FROM active_generations WHERE msg_id = ?",
                     )
                     .bind(&msg_id)
-                    .fetch_optional(&db.pool)
+                    .fetch_optional(&pool)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -1837,7 +1851,7 @@ pub async fn recover_active_generation<R: Runtime>(
                         let agent_id_row =
                             sqlx::query("SELECT agent_id FROM messages WHERE msg_id = ?")
                                 .bind(&msg_id)
-                                .fetch_optional(&db.pool)
+                                .fetch_optional(&pool)
                                 .await
                                 .map_err(|e| e.to_string())?;
                         let agent_id =
@@ -1845,7 +1859,7 @@ pub async fn recover_active_generation<R: Runtime>(
 
                         crate::vcp_modules::chat::message_service::finalize_stream_message(
                             app.clone(),
-                            &db.pool,
+                            &pool,
                             &owner_id,
                             &owner_type,
                             topic_id,
@@ -1927,12 +1941,11 @@ pub async fn recover_active_generation<R: Runtime>(
 
                 if status == "completed" {
                     log::info!("[VCPClient] Session completed in helper memory. Finalizing message in SQLite database.");
-                    let db = app.state::<DbState>();
                     let row = sqlx::query(
                         "SELECT topic_id, owner_id, owner_type FROM active_generations WHERE msg_id = ?",
                     )
                     .bind(&msg_id)
-                    .fetch_optional(&db.pool)
+                    .fetch_optional(&pool)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -1945,7 +1958,7 @@ pub async fn recover_active_generation<R: Runtime>(
                         let agent_id_row =
                             sqlx::query("SELECT agent_id FROM messages WHERE msg_id = ?")
                                 .bind(&msg_id)
-                                .fetch_optional(&db.pool)
+                                .fetch_optional(&pool)
                                 .await
                                 .map_err(|e| e.to_string())?;
                         let agent_id =
@@ -1953,7 +1966,7 @@ pub async fn recover_active_generation<R: Runtime>(
 
                         crate::vcp_modules::chat::message_service::finalize_stream_message(
                             app.clone(),
-                            &db.pool,
+                            &pool,
                             &owner_id,
                             &owner_type,
                             topic_id,
@@ -1996,10 +2009,9 @@ pub async fn recover_active_generation<R: Runtime>(
         msg_id
     );
 
-    let db = app.state::<DbState>();
     mark_message_as_error(
         &app,
-        &db.pool,
+        &pool,
         &msg_id,
         Some("后台进程已被系统销毁，流式对话中断".to_string()),
     )
@@ -2029,9 +2041,9 @@ pub async fn resume_stream<R: Runtime>(
         last_event_index
     );
 
+    // 与 get/recover 保持相同的冷启动边界：核心未就绪时只返回可重试错误。
+    let pool = db_pool_if_ready(&app)?;
     let client = Client::builder().build().map_err(|e| e.to_string())?;
-
-    let pool = app.state::<DbState>().pool.clone();
 
     if let Some(ref content) = initial_content {
         let _ = sqlx::query("UPDATE messages SET content = ? WHERE msg_id = ?")
@@ -2086,8 +2098,6 @@ pub async fn resume_stream<R: Runtime>(
         res["finishReason"].as_str().map(|s| s.to_string())
     };
 
-    let pool = app.state::<DbState>().pool.clone();
-
     log::info!("[VCPClient] resume_stream completed. Finalizing message.");
     crate::vcp_modules::chat::message_service::finalize_stream_message(
         app.clone(),
@@ -2109,4 +2119,16 @@ pub async fn resume_stream<R: Runtime>(
     .await?;
 
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_db_state_returns_retryable_core_not_ready_error() {
+        let error = require_core_state::<()>(None).expect_err("missing state must be rejected");
+
+        assert_eq!(error, CORE_NOT_READY_ERROR);
+    }
 }

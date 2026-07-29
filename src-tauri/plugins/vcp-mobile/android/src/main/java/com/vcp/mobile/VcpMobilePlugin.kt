@@ -1039,7 +1039,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun stopStreamingService(invoke: Invoke) {
         try {
-            com.vcp.mobile.service.ForegroundGuardian.releaseAllLocks()
+            com.vcp.mobile.service.ForegroundGuardian.releaseAll(activity)
             activity.runOnUiThread {
                 activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }

@@ -267,7 +267,9 @@ async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), String> {
 /// sqlx::migrate!() 使用 _sqlx_migrations 表追踪版本，并通过 SHA-384
 /// checksum 校验每个已执行迁移的文件内容。此函数通过检查 Schema 状态推断
 /// 哪些迁移已在历史上执行过，并向 _sqlx_migrations 写入带真实 checksum
-/// 的虚拟记录，告知 sqlx「这些迁移已执行，跳过它们」。
+/// 的虚拟记录，告知 sqlx「这些迁移已执行，跳过它们」。Migration 1 在这里
+/// 仅代表旧版业务 Schema 的基线，不保证当前初始快照中的每个对象都存在；
+/// 历史缺失对象必须通过后续独立、幂等的修复迁移补齐。
 ///
 /// Checksum 直接取自 migrator.migrations[i].checksum，这是编译期由
 /// sqlx::migrate!() 宏对 .sql 文件内容计算的 SHA-384，与 sqlx 运行期
@@ -337,7 +339,7 @@ async fn bootstrap_legacy_if_needed(
 
     for migration in migrator.migrations.iter() {
         let already_applied = match migration.version {
-            1 => true,           // 初始表必然存在（用户能运行说明 Migration 1 已执行）
+            1 => true,           // messages 表标识旧版业务基线；缺失对象由后续修复迁移补齐
             2 => has_deleted_at, // deleted_at 列存在则 Migration 2 已执行
             3 => has_fts,        // messages_fts 表存在则 Migration 3 已执行
             _ => false,
@@ -740,11 +742,90 @@ pub async fn decompress_database_migration(app_handle: &AppHandle) -> Result<boo
 mod tests {
     use super::*;
 
+    async fn migrated_memory_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite should open");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("current migrations should apply");
+        pool
+    }
+
+    async fn assert_active_generations_usable(pool: &Pool<Sqlite>) {
+        sqlx::query(
+            "INSERT INTO active_generations
+             (msg_id, topic_id, owner_id, owner_type, created_at)
+             VALUES ('message-1', 'topic-1', 'agent-1', 'agent', 1)",
+        )
+        .execute(pool)
+        .await
+        .expect("active_generations should accept the expected schema");
+
+        let owner_id: String = sqlx::query_scalar(
+            "SELECT owner_id FROM active_generations WHERE msg_id = 'message-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("inserted active generation should be readable");
+        assert_eq!(owner_id, "agent-1");
+    }
+
     #[test]
     fn test_preprocess_fts_text() {
         assert_eq!(preprocess_fts_text("我喜欢AI"), "我 喜 欢 AI");
         assert_eq!(preprocess_fts_text("AI智能体"), "AI 智 能 体");
         assert_eq!(preprocess_fts_text("Hello World"), "Hello World");
         assert_eq!(preprocess_fts_text(""), "");
+    }
+
+    #[tokio::test]
+    async fn repair_migration_restores_table_for_tracked_database() {
+        let pool = migrated_memory_pool().await;
+        sqlx::query("DROP TABLE active_generations")
+            .execute(&pool)
+            .await
+            .expect("test fixture table should drop");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 5")
+            .execute(&pool)
+            .await
+            .expect("test fixture migration record should reset");
+
+        run_migrations(&pool)
+            .await
+            .expect("repair migration should run");
+
+        assert_active_generations_usable(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn legacy_bootstrap_keeps_repair_migration_pending() {
+        let pool = migrated_memory_pool().await;
+        sqlx::query("DROP TABLE active_generations")
+            .execute(&pool)
+            .await
+            .expect("test fixture table should drop");
+        sqlx::query("DROP TABLE _sqlx_migrations")
+            .execute(&pool)
+            .await
+            .expect("test fixture migration table should drop");
+
+        run_migrations(&pool)
+            .await
+            .expect("legacy bridge and repair migration should run");
+
+        assert_active_generations_usable(&pool).await;
+        let repair_recorded: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM _sqlx_migrations WHERE version = 5 AND success = 1
+             )",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("repair migration state should be queryable");
+        assert!(repair_recorded);
     }
 }

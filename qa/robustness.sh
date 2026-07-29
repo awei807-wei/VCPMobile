@@ -137,6 +137,14 @@ rg -q "createRecoveryIntent" src-tauri/plugins/vcp-mobile/android/src/main/java/
   || fail "前台保活服务必须提供恢复 Intent"
 rg -q "distributed_keepalive_active" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
   || fail "分布式保活意图必须持久化供开机/包更新恢复使用"
+rg -q "promoteToForeground\(buildBootstrapNotification\(\)\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
+  || fail "前台服务必须在 onCreate 最早阶段用最小通知完成提升"
+rg -q "foregroundStartPending" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt \
+  || fail "前台服务重复启动必须合并为单个待处理请求"
+rg -q "ACTION_REFRESH_NOTIFICATION" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt \
+  || fail "已运行前台服务的通知更新必须走普通 Service 更新路径"
+rg -q 'android:stopWithTask="false"' src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml \
+  || fail "任务移除时前台服务必须保留自身生命周期并避免递归重启"
 [[ -f src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt ]] \
   || fail "缺少 BootReceiver 分布式保活恢复入口"
 rg -q "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml \

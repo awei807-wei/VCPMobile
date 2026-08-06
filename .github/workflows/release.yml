@@ -171,9 +171,9 @@ jobs:
             exit 1
           fi
 
-          # 定位构建产物
-          SOURCE_APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*-release.apk" -type f | head -n 1)
-          if [[ -z "$SOURCE_APK" || ! -f "$SOURCE_APK" ]]; then
+          # aarch64 目标当前由 Tauri 输出到 universal 目录；使用确定路径，禁止误选陈旧 ABI 产物。
+          SOURCE_APK="src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk"
+          if [[ ! -f "$SOURCE_APK" ]]; then
             echo "No release APK found" >&2
             find src-tauri/gen/android/app/build/outputs -name "*.apk" -type f || true
             exit 1
@@ -210,41 +210,11 @@ jobs:
           # 3. 保存路径供后续步骤使用
           echo "SOURCE_APK=$SOURCE_APK" >> "$GITHUB_ENV"
 
-      - name: Verify 16KB ELF alignment
+      - name: Verify arm64 ABI and 16KB alignment
         shell: bash
         run: |
           APK="${{ env.SOURCE_APK }}"
-          python3 - "$APK" << 'PYEOF'
-          import zipfile, struct, sys
-
-          apk_path = sys.argv[1]
-          z = zipfile.ZipFile(apk_path, 'r')
-          failed = False
-
-          for name in z.namelist():
-              if not name.endswith('.so'):
-                  continue
-              so = z.read(name)
-              endian = '<' if so[5] == 1 else '>'
-              e_phoff = struct.unpack_from(endian + 'Q', so, 32)[0]
-              e_phnum = struct.unpack_from(endian + 'H', so, 56)[0]
-
-              for i in range(e_phnum):
-                  ph = e_phoff + i * 56
-                  p_type = struct.unpack_from(endian + 'I', so, ph)[0]
-                  if p_type == 1:  # PT_LOAD
-                      p_align = struct.unpack_from(endian + 'Q', so, ph + 48)[0]
-                      if p_align < 16384:
-                          print(f"FAIL: {name} LOAD segment {i}: p_align={p_align} (need >= 16384)")
-                          failed = True
-
-          z.close()
-          if failed:
-              print("\nERROR: One or more .so files have insufficient page alignment. Build is REJECTED.")
-              sys.exit(1)
-          else:
-              print("PASS: All .so files have 16KB page alignment.")
-          PYEOF
+          python3 scripts/verify_android_apk.py "$APK" --expected-abi arm64-v8a
 
       - name: Collect and rename APK artifact
         id: artifacts

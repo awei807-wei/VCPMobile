@@ -260,7 +260,8 @@ Vue → invoke("start_sync") → Rust sync service
 
 关键设计决策：
 - `KeyboardInsetsManager` 和 `LifecycleBridge` 不使用 Tauri 标准事件通道，而是通过 `evaluateJavascript` 直接注入 `window.CustomEvent`
-- `StreamKeepaliveService` 使用 `START_STICKY` + `IMPORTANCE_HIGH` + Android 14+ `FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING`
+- 前台任务在应用可见时只登记消费者，真正切入后台后才按需启动 `StreamKeepaliveService`；SSE helper 同样只在首次流请求时启动
+- 两个前台服务均使用 `START_NOT_STICKY`、专用单色通知图标与 Android 14+ `FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING`
 - 屏幕常亮使用 Raw JNI 而非 PluginHandle，避免跨语言序列化开销
 
 ---
@@ -471,8 +472,8 @@ vue-tsc --noEmit
 # 6. Static check (Rust)
 cd src-tauri && cargo check
 
-# 7. Build Release APK
-pnpm tauri android build --apk --target aarch64
+# 7. 构建并校验 arm64 真机 Release APK
+pnpm android:build:phone
 ```
 
 ---
@@ -486,7 +487,8 @@ pnpm tauri android build --apk --target aarch64
 | `pnpm dev` | `vite` | 前端开发服务器（端口 1420）|
 | `pnpm build` | `vue-tsc && vite build` | 前端生产构建 |
 | `pnpm tauri android dev` | — | Android 开发调试 |
-| `pnpm tauri android build --apk --target aarch64` | — | Release APK 构建 |
+| `pnpm android:build:phone` | `scripts/build_android_phone.sh` | 构建 arm64 APK，并校验 ABI、签名、zipalign 与 16KB 页对齐 |
+| `pnpm android:verify:phone` | `scripts/verify_android_apk.py` | 单独复核现有真机 APK 的 ABI 与 16KB 页对齐 |
 
 项目同时提供了 `scripts/` 目录下的辅助脚本（如 WiFi/USB 双模式调试启动器），适用于内部开发流程。
 
@@ -587,6 +589,10 @@ A: 输入栏提供三种语音交互方式：
 **Q: 构建失败提示 NDK 版本不匹配？**
 
 A: 确保安装 Android NDK `29.0.13846066`，并在 `local.properties` 或环境变量中正确配置 `NDK_HOME`。
+
+**Q: 模拟器正常，但真机安装后启动异常？**
+
+A: 使用 `pnpm android:build:phone`，不要从输出目录中手工挑选名称含 `universal` 的旧 APK。脚本会确认产物只包含 `arm64-v8a`，并拒绝 16KB 页对齐不合格的原生库。
 
 ---
 

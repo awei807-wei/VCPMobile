@@ -83,6 +83,9 @@ for file in \
   src-tauri/plugins/vcp-mobile/src/lib.rs \
   src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/CrashDiagnostics.kt \
   src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  src-tauri/gen/android/app/src/main/java/com/vcp/avatar/VcpApplication.kt \
+  src-tauri/plugins/vcp-mobile/android/src/main/res/drawable/ic_vcp_notification.xml \
+  scripts/verify_android_apk.py \
   qa/regression.sh \
   qa/robustness.sh
 do
@@ -234,6 +237,8 @@ require_pattern "record_frontend_diagnostic" src-tauri/src/lib.rs
 require_pattern "install_panic_hook" src-tauri/src/lib.rs
 require_pattern "getHistoricalProcessExitReasons" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/CrashDiagnostics.kt
 require_pattern 'File\(context\.dataDir, "diagnostics"\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/CrashDiagnostics.kt
+require_pattern "CrashDiagnostics.install\(this\)" src-tauri/gen/android/app/src/main/java/com/vcp/avatar/VcpApplication.kt
+require_pattern 'android:name="\.VcpApplication"' src-tauri/gen/android/app/src/main/AndroidManifest.xml
 require_pattern "oomGuardExecutor.scheduleWithFixedDelay" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "share_file_native" src-tauri/plugins/vcp-mobile/src/lib.rs
 reject_pattern 'console\.warn\(`\[AST createDomFromNode\]' src/core/utils/astExecutor.ts
@@ -243,11 +248,26 @@ require_pattern "createRecoveryIntent" src-tauri/plugins/vcp-mobile/android/src/
 require_pattern "distributed_keepalive_active" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
 require_pattern "promoteToForeground\(buildBootstrapNotification\(\)\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
 require_pattern "foregroundStartPending" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern "onAppForegroundChanged" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern "deferring foreground-service launch until background transition" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
 require_pattern "ACTION_REFRESH_NOTIFICATION" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
 require_pattern 'android:stopWithTask="false"' src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml
 require_file src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt
 require_pattern "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml
 require_pattern "ACTION_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt
+require_pattern "expected-abi arm64-v8a" scripts/build_android_phone.sh
+require_pattern "read_elf_load_alignments" scripts/verify_android_apk.py
+if rg -U -q 'registerActivityLifecycleCallbacks\(activityLifecycleCallbacks\)\s*startHelperServiceInternal\(\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
+  printf 'SseProxyService 不得在插件初始化阶段无条件启动\n' >&2
+  exit 1
+fi
+if rg -q 'setSmallIcon\(applicationInfo\.icon\)' \
+  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
+  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/SseProxyService.kt; then
+  printf 'Android 通知不得把自适应 launcher icon 用作 small icon\n' >&2
+  exit 1
+fi
 require_pattern "normalizeDistributedNotification" src/features/distributed/ToolInteractionOverlay.vue
 require_pattern "androidNotification.delivered === true" src/features/distributed/ToolInteractionOverlay.vue
 reject_pattern "event.payload.title.length" src/features/distributed/ToolInteractionOverlay.vue

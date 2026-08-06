@@ -39,7 +39,9 @@ GEMINI.md
 VCPMobile.code-workspace
 
 # Large Assets & Scripts
-/scripts/
+/scripts/*
+!/scripts/build_android_phone.sh
+!/scripts/verify_android_apk.py
 qa/*
 !qa/
 !qa/*.sh

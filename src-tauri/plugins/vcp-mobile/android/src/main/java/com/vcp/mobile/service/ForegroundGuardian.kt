@@ -13,8 +13,8 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * 进程级前台守护者，统一协调 WakeLock、WifiLock 与前台服务生命周期。
  *
- * 消费者按 tag 幂等注册；通知展示最高优先级消费者。首次消费者只发起一次
- * startForegroundService，后续通知刷新改用普通 startService，避免重复创建前台提升契约。
+ * 消费者按 tag 幂等注册；通知展示最高优先级消费者。应用可见时只登记消费者，
+ * 进入后台后才发起一次 startForegroundService，后续刷新使用普通 startService。
  */
 object ForegroundGuardian {
     private const val TAG = "ForegroundGuardian"
@@ -32,6 +32,7 @@ object ForegroundGuardian {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var foregroundStartPending = false
+    private var appInForeground = true
 
     data class ConsumerEntry(
         val priority: Int,
@@ -67,20 +68,21 @@ object ForegroundGuardian {
         )
 
         cancelTimeout(tag)
-        val wasEmpty = consumers.isEmpty()
         consumers[tag] = ConsumerEntry(priority, label, screenKeepOn)
 
         if (tag == DISTRIBUTED_TAG) {
             StreamKeepaliveService.setDistributedKeepalivePersisted(context, true)
         }
 
-        if (wasEmpty) {
-            acquireLocks(context)
-        }
+        acquireLocks(context)
 
-        if (!ensureFgsStarted(context)) {
-            clearRuntimeState()
+        if (StreamKeepaliveService.isServiceRunning) {
+            updateFgs(context)
+        } else if (!appInForeground && !ensureFgsStarted(context)) {
+            releaseLocks()
             throw IllegalStateException("Unable to start StreamKeepaliveService as a foreground service")
+        } else if (appInForeground) {
+            Log.d(TAG, "App is foreground; deferring foreground-service launch until background transition.")
         }
 
         scheduleTimeout(context, tag, timeoutMs)
@@ -104,8 +106,29 @@ object ForegroundGuardian {
         if (consumers.isEmpty()) {
             releaseLocks()
             reconcileFgsLifecycle(context)
-        } else {
+        } else if (StreamKeepaliveService.isServiceRunning || !appInForeground) {
             updateFgs(context)
+        }
+    }
+
+    /**
+     * 同步应用可见状态。应用可见时不创建前台服务；只有存在消费者并真正进入后台时
+     * 才发起 startForegroundService，避免冷启动主线程拥塞耗尽系统提升时限。
+     */
+    @Synchronized
+    fun onAppForegroundChanged(context: Context, isForeground: Boolean) {
+        appInForeground = isForeground
+        Log.d(TAG, "onAppForegroundChanged: foreground=$isForeground, consumers=${consumers.size}")
+
+        if (isForeground || consumers.isEmpty()) {
+            return
+        }
+
+        acquireLocks(context)
+        if (!ensureFgsStarted(context)) {
+            // 后台启动被系统拒绝时不得维持无通知的锁，也不能让生命周期回调抛异常杀进程。
+            releaseLocks()
+            Log.e(TAG, "Background foreground-service launch failed; keepalive locks released.")
         }
     }
 
@@ -121,6 +144,7 @@ object ForegroundGuardian {
         }
 
         Log.i(TAG, "Restoring persisted distributed foreground consumer.")
+        appInForeground = false
         consumers[DISTRIBUTED_TAG] = ConsumerEntry(
             PRIORITY_DISTRIBUTED,
             DISTRIBUTED_TAG,
@@ -145,18 +169,18 @@ object ForegroundGuardian {
         foregroundStartPending = false
     }
 
-    /** 前台提升同步失败时撤销运行态消费者，避免锁泄漏。 */
+    /** 前台提升同步失败时释放物理锁，保留消费者供后续可见状态切换重试。 */
     @Synchronized
     fun onServicePromotionFailed() {
         foregroundStartPending = false
-        clearRuntimeState()
+        releaseLocks()
     }
 
-    /** Service 销毁时释放进程态锁；持久化恢复意图由显式 release 控制。 */
+    /** Service 销毁时释放物理锁但保留业务消费者，避免服务异常退出篡改连接状态。 */
     @Synchronized
     fun onServiceDestroyed() {
         foregroundStartPending = false
-        clearRuntimeState()
+        releaseLocks()
     }
 
     private fun scheduleTimeout(context: Context, tag: String, requestedTimeoutMs: Long) {
@@ -297,7 +321,9 @@ object ForegroundGuardian {
 
     private fun updateFgs(context: Context) {
         if (!StreamKeepaliveService.isServiceRunning) {
-            ensureFgsStarted(context)
+            if (!appInForeground) {
+                ensureFgsStarted(context)
+            }
             return
         }
 

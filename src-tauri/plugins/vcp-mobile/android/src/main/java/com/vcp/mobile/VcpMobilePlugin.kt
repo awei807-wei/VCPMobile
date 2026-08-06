@@ -76,6 +76,10 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         override fun onActivityResumed(a: Activity) {
             if (a === activity) {
                 isAppInForeground = true
+                com.vcp.mobile.service.ForegroundGuardian.onAppForegroundChanged(
+                    activity.applicationContext,
+                    true
+                )
 
                 if (com.vcp.mobile.service.ForegroundGuardian.isScreenKeepOnRequired) {
                     activity.runOnUiThread {
@@ -87,6 +91,10 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         override fun onActivityPaused(a: Activity) {
             if (a === activity) {
                 isAppInForeground = false
+                com.vcp.mobile.service.ForegroundGuardian.onAppForegroundChanged(
+                    activity.applicationContext,
+                    false
+                )
 
                 if (com.vcp.mobile.service.ForegroundGuardian.isScreenKeepOnRequired) {
                     activity.runOnUiThread {
@@ -104,9 +112,11 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
     init {
         instanceRef = java.lang.ref.WeakReference(this)
-        CrashDiagnostics.install(activity.applicationContext)
+        com.vcp.mobile.service.ForegroundGuardian.onAppForegroundChanged(
+            activity.applicationContext,
+            true
+        )
         activity.application.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
-        startHelperServiceInternal()
     }
 
     companion object {
@@ -862,7 +872,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             val notification = androidx.core.app.NotificationCompat.Builder(context, channelId)
                 .setContentTitle(args.title)
                 .setContentText(args.body)
-                .setSmallIcon(context.applicationInfo.icon)
+                .setSmallIcon(R.drawable.ic_vcp_notification)
                 .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true)
                 .build()

@@ -16,6 +16,7 @@ import android.util.Log
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import androidx.core.app.NotificationCompat
+import com.vcp.mobile.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -62,6 +63,7 @@ class SseProxyService : Service() {
     }
 
     private var mediaPlayer: MediaPlayer? = null
+    private var foregroundPromoted = false
 
     class StreamSession(
         val requestId: String,
@@ -89,30 +91,26 @@ class SseProxyService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        isServiceRunning = true
         createNotificationChannel()
-        
-        // 启动为前台服务，获得后台守护资格
-        val serviceNotification = buildServiceNotification()
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID_SERVICE,
-                    serviceNotification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
-                )
-            } else {
-                startForeground(NOTIFICATION_ID_SERVICE, serviceNotification)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed: ", e)
+
+        foregroundPromoted = promoteToForeground(buildServiceNotification())
+        if (!foregroundPromoted) {
+            Log.e(TAG, "Foreground promotion failed; stopping helper before opening the TCP server.")
+            stopSelf()
+            return
         }
 
+        isServiceRunning = true
         // 启动本地 TCP 服务端
         startTcpServer()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foregroundPromoted) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         serverSocket?.let { server ->
             serviceScope.launch(Dispatchers.IO) {
                 try {
@@ -124,7 +122,7 @@ class SseProxyService : Service() {
                 }
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -135,6 +133,15 @@ class SseProxyService : Service() {
     override fun onDestroy() {
         Log.i(TAG, "onDestroy: shutting down TCP server and all sessions.")
         isServiceRunning = false
+        if (foregroundPromoted) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        }
+        foregroundPromoted = false
         try {
             val portFile = File(applicationContext.cacheDir, "sse_helper.port")
             if (portFile.exists()) {
@@ -660,14 +667,14 @@ class SseProxyService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("VCP 连接助手")
             .setContentText("正在后台托管 AI 对话流式连接...")
-            .setSmallIcon(applicationInfo.icon)
+            .setSmallIcon(R.drawable.ic_vcp_notification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openPendingIntent)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(Notification.CATEGORY_SERVICE)
             .addAction(
-                applicationInfo.icon,
+                R.drawable.ic_vcp_notification,
                 "Open",
                 openPendingIntent
             )
@@ -677,6 +684,24 @@ class SseProxyService : Service() {
         }
 
         return builder.build()
+    }
+
+    private fun promoteToForeground(notification: Notification): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID_SERVICE,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+                )
+            } else {
+                startForeground(NOTIFICATION_ID_SERVICE, notification)
+            }
+            true
+        } catch (error: Exception) {
+            Log.e(TAG, "startForeground failed", error)
+            false
+        }
     }
 
     @Synchronized
@@ -920,7 +945,7 @@ class SseProxyService : Service() {
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle(title)
             .setContentText(contentText)
-            .setSmallIcon(applicationInfo.icon)
+            .setSmallIcon(R.drawable.ic_vcp_notification)
             .setAutoCancel(true)
             .setContentIntent(openPendingIntent)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

@@ -141,6 +141,10 @@ rg -q "promoteToForeground\(buildBootstrapNotification\(\)\)" src-tauri/plugins/
   || fail "前台服务必须在 onCreate 最早阶段用最小通知完成提升"
 rg -q "foregroundStartPending" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt \
   || fail "前台服务重复启动必须合并为单个待处理请求"
+rg -q "onAppForegroundChanged" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt \
+  || fail "前台服务必须根据应用可见状态延迟到后台转换时启动"
+rg -q "appInForeground" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt \
+  || fail "前台守护者缺少应用可见状态门控"
 rg -q "ACTION_REFRESH_NOTIFICATION" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt \
   || fail "已运行前台服务的通知更新必须走普通 Service 更新路径"
 rg -q 'android:stopWithTask="false"' src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml \
@@ -151,6 +155,23 @@ rg -q "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/And
   || fail "缺少开机恢复权限声明"
 rg -q "ACTION_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt \
   || fail "BootReceiver 必须处理开机完成事件"
+rg -q 'android:name="\.VcpApplication"' src-tauri/gen/android/app/src/main/AndroidManifest.xml \
+  || fail "崩溃诊断必须在 Application 阶段安装"
+rg -q "CrashDiagnostics.install\(this\)" src-tauri/gen/android/app/src/main/java/com/vcp/avatar/VcpApplication.kt \
+  || fail "VcpApplication 未安装早期崩溃诊断"
+rg -q "START_NOT_STICKY" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/SseProxyService.kt \
+  || fail "SSE helper 不得在无会话时被系统粘性重启"
+if rg -U -q 'registerActivityLifecycleCallbacks\(activityLifecycleCallbacks\)\s*startHelperServiceInternal\(\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
+  fail "SSE helper 不得在插件初始化阶段无条件拉起前台服务"
+fi
+if rg -q 'setSmallIcon\(applicationInfo\.icon\)' \
+  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
+  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/SseProxyService.kt; then
+  fail "Android 前台通知不得使用 launcher 自适应图标作为 small icon"
+fi
+python3 scripts/verify_android_apk.py --help >/dev/null \
+  || fail "真机 APK ABI/16KB 页对齐校验脚本不可执行"
 
 log "Tauri command 注册一致性"
 for command in \

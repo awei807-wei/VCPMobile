@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.vcp.mobile.R
 
 /**
  * 流式响应前台保活服务
@@ -312,7 +313,7 @@ class StreamKeepaliveService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("VCP Mobile")
             .setContentText("正在准备后台任务…")
-            .setSmallIcon(applicationInfo.icon)
+            .setSmallIcon(R.drawable.ic_vcp_notification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
 
@@ -355,7 +356,7 @@ class StreamKeepaliveService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(contentText)
-            .setSmallIcon(applicationInfo.icon)
+            .setSmallIcon(R.drawable.ic_vcp_notification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openPendingIntent)

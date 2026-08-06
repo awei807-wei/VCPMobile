@@ -26,6 +26,8 @@
     "perf:startup": "node tests/perf/scripts/measure_startup_adb.cjs",
     "perf:collect": "node tests/perf/scripts/collect_android_dumpsys.cjs",
     "perf:rust-bench": "node tests/perf/scripts/run_rust_bench.cjs",
+    "android:build:phone": "bash scripts/build_android_phone.sh",
+    "android:verify:phone": "python3 scripts/verify_android_apk.py src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk --expected-abi arm64-v8a",
     "dev:android": "node scripts/tauri_android_dev.cjs",
     "dev:usb": "node scripts/tauri_android_dev.cjs --usb"
   },

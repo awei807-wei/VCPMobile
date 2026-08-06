@@ -1,6 +1,7 @@
 package com.vcp.mobile
 
 import android.app.ActivityManager
+import android.app.Application
 import android.app.ApplicationExitInfo
 import android.content.ComponentCallbacks2
 import android.content.Context
@@ -26,6 +27,8 @@ object CrashDiagnostics {
     private const val TAG = "VcpCrashDiagnostics"
     private const val MAX_TRACE_BYTES = 128 * 1024
     private const val MAX_LOG_BYTES = 4L * 1024 * 1024
+    private const val PREFS_NAME = "vcp_crash_diagnostics"
+    private const val KEY_LAST_RECORDED_EXIT = "last_recorded_exit_timestamp"
     private val installed = AtomicBoolean(false)
     private val writeLock = Any()
 
@@ -33,19 +36,29 @@ object CrashDiagnostics {
         if (!installed.compareAndSet(false, true)) return
 
         val appContext = context.applicationContext
+        val processName = currentProcessName(appContext)
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            appendReport(
-                appContext,
-                "android-uncaught.log",
-                buildString {
-                    appendLine("类型: Java/Kotlin 未捕获异常")
-                    appendLine("线程: ${thread.name}")
-                    appendLine("异常: ${throwable.javaClass.name}: ${throwable.message.orEmpty()}")
-                    appendLine(Log.getStackTraceString(throwable).take(MAX_TRACE_BYTES))
+            try {
+                appendReport(
+                    appContext,
+                    "android-uncaught.log",
+                    buildString {
+                        appendLine("类型: Java/Kotlin 未捕获异常")
+                        appendLine("进程: $processName")
+                        appendLine("线程: ${thread.name}")
+                        appendLine("异常: ${throwable.javaClass.name}: ${throwable.message.orEmpty()}")
+                        appendLine(Log.getStackTraceString(throwable).take(MAX_TRACE_BYTES))
+                    }
+                )
+            } finally {
+                if (previousHandler != null) {
+                    previousHandler.uncaughtException(thread, throwable)
+                } else {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                    kotlin.system.exitProcess(10)
                 }
-            )
-            previousHandler?.uncaughtException(thread, throwable)
+            }
         }
 
         appContext.registerComponentCallbacks(object : ComponentCallbacks2 {
@@ -53,18 +66,33 @@ object CrashDiagnostics {
                 appendReport(
                     appContext,
                     "memory-pressure.log",
-                    "类型: onTrimMemory\n级别: $level (${trimLevelName(level)})"
+                    "类型: onTrimMemory\n进程: $processName\n级别: $level (${trimLevelName(level)})"
                 )
             }
 
             override fun onLowMemory() {
-                appendReport(appContext, "memory-pressure.log", "类型: onLowMemory")
+                appendReport(
+                    appContext,
+                    "memory-pressure.log",
+                    "类型: onLowMemory\n进程: $processName"
+                )
             }
 
             override fun onConfigurationChanged(newConfig: Configuration) = Unit
         })
 
-        appendReport(appContext, "process-lifecycle.log", "类型: process-start\nPID: ${android.os.Process.myPid()}")
+        appendReport(
+            appContext,
+            "process-lifecycle.log",
+            "类型: process-start\n进程: $processName\nPID: ${android.os.Process.myPid()}"
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && processName == appContext.packageName) {
+            Thread(
+                { persistNewExitReasons(appContext) },
+                "vcp-exit-diagnostics"
+            ).start()
+        }
     }
 
     fun collectHistoricalExitReasons(context: Context): JSObject {
@@ -108,6 +136,44 @@ object CrashDiagnostics {
     private fun diagnosticsDir(context: Context): File =
         File(context.dataDir, "diagnostics").apply { mkdirs() }
 
+    private fun persistNewExitReasons(context: Context) {
+        try {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val lastRecorded = preferences.getLong(KEY_LAST_RECORDED_EXIT, 0L)
+            val reasons = manager
+                .getHistoricalProcessExitReasons(context.packageName, 0, 8)
+                .filter { it.timestamp > lastRecorded }
+                .sortedBy { it.timestamp }
+
+            if (reasons.isEmpty()) return
+
+            appendReport(
+                context,
+                "previous-process-exits.log",
+                buildString {
+                    appendLine("类型: Android 历史进程退出")
+                    for (info in reasons) {
+                        appendLine("---")
+                        appendLine("时间戳: ${info.timestamp}")
+                        appendLine("进程: ${info.processName.orEmpty()}")
+                        appendLine("原因: ${reasonName(info.reason)} (${info.reason})")
+                        appendLine("状态: ${info.status}")
+                        appendLine("重要性: ${info.importance}")
+                        appendLine("PSS/RSS(KB): ${info.pss}/${info.rss}")
+                        appendLine("描述: ${info.description?.toString().orEmpty()}")
+                    }
+                }
+            )
+
+            preferences.edit()
+                .putLong(KEY_LAST_RECORDED_EXIT, reasons.maxOf { it.timestamp })
+                .apply()
+        } catch (error: Throwable) {
+            Log.e(TAG, "Failed to persist historical exit reasons", error)
+        }
+    }
+
     private fun appendReport(context: Context, fileName: String, body: String) {
         synchronized(writeLock) {
             try {
@@ -150,6 +216,19 @@ object CrashDiagnostics {
 
     private fun timestamp(): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.US).format(Date())
+
+    private fun currentProcessName(context: Context): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return Application.getProcessName()
+        }
+
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        return manager
+            ?.runningAppProcesses
+            ?.firstOrNull { it.pid == android.os.Process.myPid() }
+            ?.processName
+            ?: context.packageName
+    }
 
     private fun trimLevelName(level: Int): String = when (level) {
         ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> "RUNNING_MODERATE"

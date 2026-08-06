@@ -569,7 +569,10 @@ onUnmounted(() => {
     <!-- 2. 主内容区先渲染，抽屉与遮罩在后声明，靠 DOM 顺位自然覆盖 -->
     <main class="flex-1 min-w-0 relative overflow-hidden">
       <router-view v-slot="{ Component }">
-        <component v-if="Component" :is="Component" />
+        <component
+          v-if="Component && lifecycleStore.state === 'READY'"
+          :is="Component"
+        />
       </router-view>
     </main>
 

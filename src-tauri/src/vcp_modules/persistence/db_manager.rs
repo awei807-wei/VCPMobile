@@ -1,10 +1,21 @@
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Row, Sqlite};
 use std::fs;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+
+pub const CORE_NOT_READY_ERROR: &str = "CORE_NOT_READY: 数据库尚未初始化，请稍后重试。";
 
 pub struct DbState {
     pub pool: Pool<Sqlite>,
     pub path: std::path::PathBuf,
+}
+
+/// 获取已完成初始化的数据库状态；启动竞态期间返回可恢复错误而不是触发 panic。
+pub fn require_db_state<R: Runtime>(
+    app_handle: &AppHandle<R>,
+) -> Result<State<'_, DbState>, String> {
+    app_handle
+        .try_state::<DbState>()
+        .ok_or_else(|| CORE_NOT_READY_ERROR.to_string())
 }
 
 impl DbState {

@@ -20,12 +20,10 @@ use url::Url;
 
 use crate::vcp_modules::aurora_pipeline::{AuroraBuffer, AuroraUpdate};
 use crate::vcp_modules::content_parser::ContentBlock;
-use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::db_manager::{DbState, CORE_NOT_READY_ERROR};
 use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
 use crate::vcp_modules::persistence::message_repository::ContentCompressor;
 use crate::vcp_modules::settings_manager::{create_default_settings, Settings};
-
-const CORE_NOT_READY_ERROR: &str = "CORE_NOT_READY: 数据库尚未初始化，请稍后重试。";
 
 fn require_core_state<T>(state: Option<T>) -> Result<T, String> {
     state.ok_or_else(|| CORE_NOT_READY_ERROR.to_string())

@@ -1,7 +1,7 @@
 // SettingsManager: 处理应用全局配置的核心模块
 // 职责: 管理全局配置，实现基于 SQLite 的原子写入与并发控制。
 
-use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::db_manager::require_db_state;
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -272,7 +272,7 @@ pub async fn read_settings<R: Runtime>(
         return Ok(cached.clone());
     }
 
-    let db_state = app_handle.state::<DbState>();
+    let db_state = require_db_state(&app_handle)?;
     let pool = &db_state.pool;
 
     let row_res = sqlx::query("SELECT value FROM settings WHERE key = 'global'")
@@ -336,7 +336,7 @@ async fn internal_write_settings<R: Runtime>(
     state: &SettingsState,
     settings: &Settings,
 ) -> Result<bool, String> {
-    let db_state = app_handle.state::<DbState>();
+    let db_state = require_db_state(app_handle)?;
     let pool = &db_state.pool;
 
     let content = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;

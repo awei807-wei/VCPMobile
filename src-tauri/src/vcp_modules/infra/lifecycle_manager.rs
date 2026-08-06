@@ -131,6 +131,11 @@ pub async fn reconcile_distributed_node(
 /// 与普通 reconnect 信号不同：如果连接 loop 已经完全退出，本函数会根据 settings
 /// 中的 distributedEnabled 重新执行完整 reconcile，避免 reconnect 信号发送到空 session。
 pub async fn recover_distributed_node_after_network_restore(app_handle: &AppHandle) {
+    if app_handle.try_state::<DbState>().is_none() {
+        log::info!("[Lifecycle] Network restored before DbState registration; recovery deferred.");
+        return;
+    }
+
     let settings_state = match app_handle.try_state::<SettingsState>() {
         Some(state) => state,
         None => {

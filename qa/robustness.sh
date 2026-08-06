@@ -43,6 +43,16 @@ require_rg_count 1 "export function findAgentMessagePayload" src
   || fail "缺少消息正文存储兼容层"
 rg -q "normalize_legacy_message_content\(&pool\)" src-tauri/src/vcp_modules/persistence/db_manager.rs \
   || fail "数据库初始化必须在注册 DbState 前归一化历史 TEXT 消息正文"
+rg -q "Component && lifecycleStore\.state === 'READY'" src/App.vue \
+  || fail "核心 READY 前不得挂载会触发数据库调用的业务路由"
+rg -q "should_reject_before_db_ready" src-tauri/src/lib.rs \
+  || fail "主 invoke handler 必须在 DbState 注册前失败关闭业务命令"
+rg -q "database_commands_fail_closed_until_db_state_exists" src-tauri/src/vcp_modules/infra/invoke_guard.rs \
+  || fail "DbState 启动门禁缺少数据库命令回归测试"
+rg -q "require_db_state\(&app_handle\)\?" src-tauri/src/vcp_modules/infra/settings_manager.rs \
+  || fail "settings 读取必须在 DbState 缺失时返回 CORE_NOT_READY 而不是 panic"
+rg -q "Network restored before DbState registration" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs \
+  || fail "网络恢复路径必须在数据库注册前延后执行"
 rg -q 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs \
   || fail "启动期活跃生成恢复必须使用兼容解码读取消息正文"
 rg -q 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client.rs \

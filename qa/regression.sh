@@ -77,6 +77,7 @@ for file in \
   src/core/utils/runtimeDiagnostics.ts \
   src-tauri/Cargo.toml \
   src-tauri/src/lib.rs \
+  src-tauri/src/vcp_modules/infra/invoke_guard.rs \
   src-tauri/src/vcp_modules/infra/runtime_diagnostics.rs \
   src-tauri/src/vcp_modules/infra/runtime_diagnostics/export.rs \
   src-tauri/src/vcp_modules/persistence/message_content_storage.rs \
@@ -96,6 +97,8 @@ done
 log "功能入口静态回归"
 require_pattern "path: '/chat'" src/core/router/index.ts
 require_pattern "path: '/assistant'" src/core/router/index.ts
+require_pattern "Component && lifecycleStore\.state === 'READY'" src/App.vue
+require_pattern "deferring restored chat history load" src/features/chat/ChatView.vue
 require_pattern "handle_agent_chat_message" src-tauri/src/lib.rs
 require_pattern "handle_group_chat_message" src-tauri/src/lib.rs
 require_pattern "start_manual_sync" src-tauri/src/lib.rs
@@ -236,6 +239,10 @@ require_pattern "installRuntimeDiagnostics" src/main.ts
 require_pattern "export_runtime_diagnostics" src/features/settings/components/MaintenanceSection.vue
 require_pattern "record_frontend_diagnostic" src-tauri/src/lib.rs
 require_pattern "install_panic_hook" src-tauri/src/lib.rs
+require_pattern "should_reject_before_db_ready" src-tauri/src/lib.rs
+require_pattern "database_commands_fail_closed_until_db_state_exists" src-tauri/src/vcp_modules/infra/invoke_guard.rs
+require_pattern "require_db_state\(&app_handle\)\?" src-tauri/src/vcp_modules/infra/settings_manager.rs
+require_pattern "Network restored before DbState registration" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs
 require_pattern "getHistoricalProcessExitReasons" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/CrashDiagnostics.kt
 require_pattern 'File\(context\.dataDir, "diagnostics"\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/CrashDiagnostics.kt
 require_pattern "CrashDiagnostics.install\(this\)" src-tauri/gen/android/app/src/main/java/com/vcp/avatar/VcpApplication.kt

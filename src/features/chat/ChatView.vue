@@ -66,10 +66,21 @@ const {
 
 // 监听话题切换与智能体变更，触发历史加载与防御性状态清空
 watch(
-  [() => sessionStore.currentTopicId, () => sessionStore.currentSelectedItem],
-  ([newTopicId, newSelectedItem]) => {
+  [
+    () => sessionStore.currentTopicId,
+    () => sessionStore.currentSelectedItem,
+    () => lifecycleStore.state,
+  ],
+  ([newTopicId, newSelectedItem, lifecycleState]) => {
     showScrollToBottom.value = false;
     resetChatScroll();
+    if (lifecycleState !== "READY") {
+      console.log(
+        `[ChatView] Core is ${lifecycleState}; deferring restored chat history load.`,
+      );
+      return;
+    }
+
     if (newTopicId && newSelectedItem) {
       console.log(`[ChatView] Topic changed to ${newTopicId}, loading history...`);
       topicStore.markTopicAsRead(newTopicId);

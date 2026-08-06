@@ -39,6 +39,20 @@ for script in qa/regression.sh qa/robustness.sh; do
   fi
 done
 require_rg_count 1 "export function findAgentMessagePayload" src
+[[ -f src-tauri/src/vcp_modules/persistence/message_content_storage.rs ]] \
+  || fail "缺少消息正文存储兼容层"
+rg -q "normalize_legacy_message_content\(&pool\)" src-tauri/src/vcp_modules/persistence/db_manager.rs \
+  || fail "数据库初始化必须在注册 DbState 前归一化历史 TEXT 消息正文"
+rg -q 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs \
+  || fail "启动期活跃生成恢复必须使用兼容解码读取消息正文"
+rg -q 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client.rs \
+  || fail "流式错误回写必须保持 zstd BLOB 存储约定"
+if rg -q 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs; then
+  fail "启动恢复不得把 messages.content BLOB 按 Option<String> 读取"
+fi
+if rg -q "decompress_database_migration" src-tauri/src/vcp_modules/persistence/db_manager.rs; then
+  fail "禁止恢复方向相反的 BLOB→TEXT 启动迁移"
+fi
 if rg -q "function findAgentMessageToolPayload" src; then
   fail "AgentMessage 工具 payload 查找不应重新拆出平行递归 helper"
 fi

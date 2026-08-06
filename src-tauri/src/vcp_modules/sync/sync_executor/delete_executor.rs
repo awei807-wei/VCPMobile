@@ -1,4 +1,5 @@
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::persistence::message_repository::ContentCompressor;
 use crate::vcp_modules::sync_hash::HashAggregator;
 use sqlx::Row;
 use tauri::{AppHandle, Manager, Runtime};
@@ -180,12 +181,18 @@ impl DeleteExecutor {
                 .map_err(|e| e.to_string())?;
 
         // 2. 仅清空已删除超过安全期（30天）的消息的正文内容，保留消息的主键、角色与墓碑时间戳（防止多端同步幽灵复活，并释放大文本空间）
-        let messages =
-            sqlx::query("UPDATE messages SET content = '[已清空]' WHERE deleted_at IS NOT NULL AND deleted_at < ? AND content != '[已清空]'")
-                .bind(threshold)
-                .execute(&db.pool)
-                .await
-                .map_err(|e| e.to_string())?;
+        let cleared_content = ContentCompressor::compress("[已清空]")?;
+        let messages = sqlx::query(
+            "UPDATE messages
+             SET content = ?
+             WHERE deleted_at IS NOT NULL AND deleted_at < ? AND content != ?",
+        )
+        .bind(&cleared_content)
+        .bind(threshold)
+        .bind(&cleared_content)
+        .execute(&db.pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
         log::info!(
             "[DeleteExecutor] Completed safety-period cleanup (older than {} days): cleared_messages_content={}, deleted_render_caches={}",

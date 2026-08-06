@@ -21,6 +21,8 @@ use url::Url;
 use crate::vcp_modules::aurora_pipeline::{AuroraBuffer, AuroraUpdate};
 use crate::vcp_modules::content_parser::ContentBlock;
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
+use crate::vcp_modules::persistence::message_repository::ContentCompressor;
 use crate::vcp_modules::settings_manager::{create_default_settings, Settings};
 
 const CORE_NOT_READY_ERROR: &str = "CORE_NOT_READY: 数据库尚未初始化，请稍后重试。";
@@ -1667,9 +1669,10 @@ async fn mark_message_as_error<R: Runtime>(
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())?;
-    let existing_content = existing_content_row
-        .and_then(|r| r.get::<Option<String>, _>("content"))
-        .unwrap_or_default();
+    let existing_content = match existing_content_row {
+        Some(row) => decode_message_content(&row, "content")?,
+        None => String::new(),
+    };
 
     let row = sqlx::query(
         "SELECT topic_id, owner_id, owner_type FROM active_generations WHERE msg_id = ?",
@@ -1729,7 +1732,7 @@ async fn mark_message_as_error<R: Runtime>(
         sqlx::query(
             "UPDATE messages SET content = ?, finish_reason = 'error', is_thinking = 0 WHERE msg_id = ?",
         )
-        .bind(final_content)
+        .bind(ContentCompressor::compress(&final_content)?)
         .bind(msg_id)
         .execute(pool)
         .await
@@ -2046,11 +2049,12 @@ pub async fn resume_stream<R: Runtime>(
     let client = Client::builder().build().map_err(|e| e.to_string())?;
 
     if let Some(ref content) = initial_content {
-        let _ = sqlx::query("UPDATE messages SET content = ? WHERE msg_id = ?")
-            .bind(content)
+        sqlx::query("UPDATE messages SET content = ? WHERE msg_id = ?")
+            .bind(ContentCompressor::compress(content)?)
             .bind(&msg_id)
             .execute(&pool)
-            .await;
+            .await
+            .map_err(|e| format!("恢复流式消息正文失败: {e}"))?;
     }
 
     let (abort_tx, abort_rx) = oneshot::channel();

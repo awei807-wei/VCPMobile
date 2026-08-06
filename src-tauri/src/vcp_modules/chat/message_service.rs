@@ -1,8 +1,9 @@
 use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
 use crate::vcp_modules::content_parser::ContentBlock;
 use crate::vcp_modules::file_manager::get_attachments_root_dir;
+use crate::vcp_modules::message_repository::MessageRenderCompiler;
 use crate::vcp_modules::message_repository::MessageRepository;
-use crate::vcp_modules::message_repository::{ContentCompressor, MessageRenderCompiler};
+use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
 use crate::vcp_modules::settings_manager;
 use sqlx::Row;
 use std::path::Path;
@@ -60,8 +61,7 @@ pub async fn load_multi_topic_messages(
         let render_content: Option<Vec<u8>> = row.get("render_content");
         let blocks = parse_render_bytes(render_content);
 
-        let content_bytes: Vec<u8> = row.get("content");
-        let content = ContentCompressor::decompress(&content_bytes).unwrap_or_default();
+        let content = decode_message_content(&row, "content")?;
         let content_hash_raw: String = row.get("content_hash");
         let content_hash = if content_hash_raw.is_empty() {
             None
@@ -327,21 +327,21 @@ pub async fn load_chat_history_internal(
         let role: String = row.get("role");
         let name: Option<String> = row.get("name");
 
-        let content_bytes: Vec<u8> = row.get("content");
+        let decoded_content = decode_message_content(&row, "content")?;
         let render_content: Option<Vec<u8>> = row.get("render_content");
 
         // 懒渲染策略：render_cache 命中则直接用，未命中则实时编译
         let (blocks, content) = if let Some(ref rb) = render_content {
             let blocks = parse_render_bytes(Some(rb.clone()));
             let content = if include_content {
-                ContentCompressor::decompress(&content_bytes).unwrap_or_default()
+                decoded_content.clone()
             } else {
                 String::new()
             };
             (blocks, content)
         } else {
             // 未命中：解压 content → 编译 blocks → 异步回写 cache
-            let decompressed = ContentCompressor::decompress(&content_bytes).unwrap_or_default();
+            let decompressed = decoded_content;
             if decompressed.is_empty() {
                 (None, String::new())
             } else {
@@ -535,8 +535,7 @@ pub async fn load_chat_text_history_for_context(
         let role: String = row.get("role");
         let name: Option<String> = row.get("name");
 
-        let content_bytes: Vec<u8> = row.get("content");
-        let content = ContentCompressor::decompress(&content_bytes).unwrap_or_default();
+        let content = decode_message_content(&row, "content")?;
 
         let content_hash_raw: String = row.get("content_hash");
         let content_hash = if content_hash_raw.is_empty() {
@@ -719,16 +718,7 @@ pub async fn fetch_raw_message_content(
         .map_err(|e| e.to_string())?;
 
     match row {
-        Some(r) => {
-            let bytes: Vec<u8> = r.get(0);
-            let content = ContentCompressor::decompress(&bytes).map_err(|e| {
-                format!(
-                    "Failed to decompress content for message {}: {}",
-                    message_id, e
-                )
-            })?;
-            Ok(content)
-        }
+        Some(r) => decode_message_content(&r, "content"),
         None => Err(format!("Message {} not found", message_id)),
     }
 }
@@ -751,13 +741,7 @@ pub async fn re_render_message(
 
     match row {
         Some(r) => {
-            let bytes: Vec<u8> = r.get("content");
-            let decompressed = ContentCompressor::decompress(&bytes).map_err(|e| {
-                format!(
-                    "Failed to decompress content for message {} in topic {}: {}",
-                    message_id, topic_id, e
-                )
-            })?;
+            let decompressed = decode_message_content(&r, "content")?;
 
             let compiled = MessageRenderCompiler::compile(&decompressed);
             let serialized = MessageRenderCompiler::serialize(&compiled)?;

@@ -161,6 +161,16 @@ pub async fn init_db(app_handle: &AppHandle) -> Result<(Pool<Sqlite>, std::path:
         pool
     };
 
+    let normalized = super::message_content_storage::normalize_legacy_message_content(&pool)
+        .await
+        .map_err(|e| format!("[DBManager] Failed to normalize message content storage: {e}"))?;
+    if normalized > 0 {
+        log::info!(
+            "[DBManager] Normalized {} legacy TEXT message bodies to compressed BLOB storage.",
+            normalized
+        );
+    }
+
     // 运行系统内置高级规则的多模态无损同步器
     crate::vcp_modules::chat::context_injection::sync_system_preset_rules(&pool)
         .await
@@ -510,7 +520,7 @@ pub async fn search_messages_fts(
         let msg_id: String = row.get("msg_id");
         let topic_id: String = row.get("topic_id");
         let role: String = row.get("role");
-        let content: String = row.get("content");
+        let content = super::message_content_storage::decode_message_content(&row, "content")?;
         let timestamp: i64 = row.get("timestamp");
         let topic_title: String = row.get("topic_title");
 
@@ -525,217 +535,6 @@ pub async fn search_messages_fts(
     }
 
     Ok(results)
-}
-
-pub async fn decompress_database_migration(app_handle: &AppHandle) -> Result<bool, String> {
-    let db_state = app_handle.state::<DbState>();
-    let pool = &db_state.pool;
-
-    // 1. 检测是否含有需要升级的压缩数据
-    let needs_upgrade: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages WHERE typeof(content) = 'blob')")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(false);
-
-    if !needs_upgrade {
-        return Ok(false);
-    }
-
-    log::info!("[DBManager] Compressed messages detected in database. Intercepting bootstrap for decompression migration...");
-
-    let lifecycle =
-        app_handle.state::<crate::vcp_modules::infra::lifecycle_state::LifecycleState>();
-    {
-        let mut status_lock = lifecycle.status.write().await;
-        *status_lock = crate::vcp_modules::infra::lifecycle_state::CoreStatus::Decompressing;
-        let mut msg_lock = lifecycle.status_message.write().await;
-        *msg_lock = "正在准备解压历史消息... 0%".to_string();
-    }
-
-    // 2. 查询待解压总条数
-    let total_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE typeof(content) = 'blob'")
-            .fetch_one(pool)
-            .await
-            .map_err(|e| format!("Failed to query compressed messages count: {}", e))?;
-
-    if total_count == 0 {
-        return Ok(false);
-    }
-
-    log::info!(
-        "[DBManager] Decompressing {} messages in background...",
-        total_count
-    );
-
-    // 发射初始进度
-    let _ = app_handle.emit(
-        "vcp-system-event",
-        serde_json::json!({
-            "type": "vcp-core-status",
-            "status": "decompressing",
-            "message": "正在准备解压历史消息... 0%",
-            "source": "Core"
-        }),
-    );
-
-    // 3. 分批解压并写回
-    let mut processed_count = 0;
-    let batch_size = 200;
-
-    loop {
-        // 读取未解压的批次，获取 deleted_at 以避免 FTS 索引污染
-        let rows = sqlx::query(
-            "SELECT msg_id, topic_id, content, deleted_at FROM messages WHERE typeof(content) = 'blob' ORDER BY rowid LIMIT ?"
-        )
-        .bind(batch_size)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("Failed to fetch compressed batch: {}", e))?;
-
-        if rows.is_empty() {
-            break;
-        }
-
-        // 开启本批次事务
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|e| format!("Failed to start batch transaction: {}", e))?;
-
-        for row in &rows {
-            let msg_id: String = row.get("msg_id");
-            let topic_id: String = row.get("topic_id");
-            let content_bytes: Vec<u8> = row.get("content");
-            let deleted_at: Option<i64> = row.get("deleted_at");
-
-            // 校验 zstd 压缩魔数头：[0x28, 0xB5, 0x2F, 0xFD] (Little Endian for 0xFD2FB528)
-            let is_zstd = content_bytes.len() >= 4
-                && content_bytes[0] == 0x28
-                && content_bytes[1] == 0xB5
-                && content_bytes[2] == 0x2F
-                && content_bytes[3] == 0xFD;
-
-            let content = if is_zstd {
-                match crate::vcp_modules::persistence::message_repository::ContentCompressor::decompress(&content_bytes) {
-                    Ok(decompressed) => decompressed,
-                    Err(e) => {
-                        return Err(format!(
-                            "Failed to decompress message {} in topic {}: {}. Migration aborted to prevent data corruption.",
-                            msg_id, topic_id, e
-                        ));
-                    }
-                }
-            } else {
-                // 如果不是 zstd 压缩的，说明是原本就作为 BLOB 插入的明文文本（或损坏的文本）
-                String::from_utf8_lossy(&content_bytes).to_string()
-            };
-
-            // 1. 更新写回为明文 String (SQLite 动态类型会自动将 typeof 转为 'text')
-            sqlx::query("UPDATE messages SET content = ? WHERE msg_id = ? AND topic_id = ?")
-                .bind(&content)
-                .bind(&msg_id)
-                .bind(&topic_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to update decompressed message: {}", e))?;
-
-            // 2. 同步写入 FTS5 虚拟索引表，删除陈旧的索引项，仅在消息未逻辑删除时插入，防止软删除索引泄漏
-            sqlx::query("DELETE FROM messages_fts WHERE topic_id = ? AND msg_id = ?")
-                .bind(&topic_id)
-                .bind(&msg_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to delete stale FTS entry: {}", e))?;
-
-            if deleted_at.is_none() {
-                let search_content = preprocess_fts_text(&content);
-                sqlx::query(
-                    "INSERT INTO messages_fts (msg_id, topic_id, content) VALUES (?, ?, ?)",
-                )
-                .bind(&msg_id)
-                .bind(&topic_id)
-                .bind(&search_content)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to insert FTS entry: {}", e))?;
-            }
-        }
-
-        tx.commit()
-            .await
-            .map_err(|e| format!("Failed to commit batch transaction: {}", e))?;
-
-        processed_count += rows.len();
-
-        // 4. 定期发射 progress 信号
-        let pct = (processed_count * 100) / (total_count as usize);
-        log::info!(
-            "[DBManager] Decompression progress: {}% ({}/{})",
-            pct,
-            processed_count,
-            total_count
-        );
-
-        let msg = format!("正在重构本地数据库... {}%", pct);
-        {
-            let mut msg_lock = lifecycle.status_message.write().await;
-            *msg_lock = msg.clone();
-        }
-
-        let _ = app_handle.emit(
-            "vcp-system-event",
-            serde_json::json!({
-                "type": "vcp-core-status",
-                "status": "decompressing",
-                "message": msg,
-                "source": "Core"
-            }),
-        );
-    }
-
-    // 5. 物理页收尾整理
-    log::info!("[DBManager] Decompression complete. Reclaiming database disk space via VACUUM...");
-    {
-        let mut msg_lock = lifecycle.status_message.write().await;
-        *msg_lock = "正在优化数据库存储空间...".to_string();
-    }
-    let _ = app_handle.emit(
-        "vcp-system-event",
-        serde_json::json!({
-            "type": "vcp-core-status",
-            "status": "decompressing",
-            "message": "正在优化数据库存储空间...",
-            "source": "Core"
-        }),
-    );
-    sqlx::query("VACUUM")
-        .execute(pool)
-        .await
-        .unwrap_or_default();
-
-    // 6. 发射升级完成信号，等待重启
-    log::info!("[DBManager] Database migration completed successfully. Waiting for user restart confirmation...");
-    let final_msg = "本地数据库格式重构成功，请确认重启应用。".to_string();
-    {
-        let mut status_lock = lifecycle.status.write().await;
-        *status_lock =
-            crate::vcp_modules::infra::lifecycle_state::CoreStatus::DecompressionComplete;
-        let mut msg_lock = lifecycle.status_message.write().await;
-        *msg_lock = final_msg.clone();
-    }
-    let _ = app_handle.emit(
-        "vcp-system-event",
-        serde_json::json!({
-            "type": "vcp-core-status",
-            "status": "decompression-complete",
-            "message": final_msg,
-            "source": "Core"
-        }),
-    );
-
-    Ok(true)
 }
 
 #[cfg(test)]

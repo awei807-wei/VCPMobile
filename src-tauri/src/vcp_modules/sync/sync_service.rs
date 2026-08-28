@@ -1,11 +1,16 @@
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
+use crate::vcp_modules::sync::sync_error::parse_wire_sync_error_frame;
+use crate::vcp_modules::sync::wire_frame::parse_inbound_frame;
 use crate::vcp_modules::sync_executor::PullExecutor;
 use crate::vcp_modules::sync_hash::HashInitializer;
 use crate::vcp_modules::sync_logger::{LogLevel, SyncLogger};
 use crate::vcp_modules::sync_pipeline::{Phase1Metadata, Phase3Message, SyncPipeline};
 use crate::vcp_modules::sync_types::SyncDataType;
 use crate::vcp_modules::vcp_log_service::get_vcp_log_status_internal;
+use crate::vcp_modules::wire_protocol::{
+    build_version_check_json, parse_version_handshake_json, VersionHandshakeFrame,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -17,7 +22,6 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-const EXPECTED_PLUGIN_VERSION: &str = "1.0.0";
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct SyncState {
@@ -352,60 +356,89 @@ async fn run_sync_session(
 
                 // ── 版本验证握手 ──
                 {
-                    let version_req = json!({
-                        "type": "VERSION_CHECK",
-                        "mobileVersion": env!("CARGO_PKG_VERSION")
-                    });
-                    let _ = ws_stream
-                        .send(Message::Text(version_req.to_string().into()))
+                    let version_req = build_version_check_json(env!("CARGO_PKG_VERSION"));
+                    if let Err(error) = ws_stream.send(Message::Text(version_req.into())).await {
+                        let message = format!("版本验证请求发送失败: {error}");
+                        publish_sync_status(
+                            &handle_clone,
+                            &connection_status_for_task,
+                            "error",
+                            &message,
+                        )
                         .await;
+                        emit_sync_log(&handle_clone, "error", &message);
+                        break;
+                    }
                     emit_sync_log(&handle_clone, "info", "正在验证桌面端插件版本...");
 
-                    let version_ok = tokio::time::timeout(VERSION_CHECK_TIMEOUT, async {
-                        while let Some(Ok(msg)) = ws_stream.next().await {
-                            if let Message::Text(text) = msg {
-                                if let Ok(payload) = serde_json::from_str::<Value>(&text) {
-                                    if payload.get("type").and_then(|v| v.as_str())
-                                        == Some("VERSION_ACK")
-                                    {
-                                        return payload
-                                            .get("version")
-                                            .and_then(|v| v.as_str())
-                                            .map(|s| s.to_string());
+                    let version_result = tokio::time::timeout(VERSION_CHECK_TIMEOUT, async {
+                        while let Some(message) = ws_stream.next().await {
+                            match message {
+                                Ok(Message::Text(text)) => {
+                                    match parse_version_handshake_json(&text) {
+                                        Ok(VersionHandshakeFrame::SyncLogEvent) => continue,
+                                        result => {
+                                            return result.map_err(|error| error.to_string());
+                                        }
                                     }
+                                }
+                                Ok(Message::Close(_)) => {
+                                    return Err("桌面端在版本验证完成前关闭了连接".to_string());
+                                }
+                                Ok(Message::Ping(_) | Message::Pong(_)) => continue,
+                                Ok(_) => {
+                                    return Err(
+                                        "版本验证期间收到不受支持的 WebSocket 帧".to_string()
+                                    );
+                                }
+                                Err(error) => {
+                                    return Err(format!("接收版本验证响应失败: {error}"));
                                 }
                             }
                         }
-                        None
+                        Err("桌面端在版本验证完成前结束了连接".to_string())
                     })
-                    .await
-                    .ok()
-                    .flatten();
+                    .await;
 
-                    match version_ok {
-                        Some(plugin_version) => {
-                            if plugin_version == EXPECTED_PLUGIN_VERSION {
-                                emit_sync_log(
-                                    &handle_clone,
-                                    "success",
-                                    &format!("桌面端插件版本 v{} 验证通过", plugin_version),
-                                );
-                            } else {
-                                publish_sync_status(
-                                    &handle_clone,
-                                    &connection_status_for_task,
-                                    "error",
-                                    &format!(
-                                        "桌面端插件版本 v{} 与期望版本 v{} 不兼容",
-                                        plugin_version, EXPECTED_PLUGIN_VERSION
-                                    ),
-                                )
-                                .await;
-                                emit_sync_log(&handle_clone, "error", "请前往 https://github.com/awei807-wei/VCPMobile/releases 下载最新同步插件");
-                                break;
-                            }
+                    match version_result {
+                        Ok(Ok(VersionHandshakeFrame::VersionAck(ack))) => {
+                            emit_sync_log(
+                                &handle_clone,
+                                "success",
+                                &format!(
+                                    "桌面端插件 v{} / Wire {} 验证通过",
+                                    ack.plugin_version, ack.protocol_version
+                                ),
+                            );
                         }
-                        None => {
+                        Ok(Ok(VersionHandshakeFrame::SyncError(error))) => {
+                            let message = format!("桌面端拒绝版本验证: {}", error.code);
+                            publish_sync_status(
+                                &handle_clone,
+                                &connection_status_for_task,
+                                "error",
+                                &message,
+                            )
+                            .await;
+                            emit_sync_log(&handle_clone, "error", &message);
+                            break;
+                        }
+                        Ok(Ok(VersionHandshakeFrame::SyncLogEvent)) => unreachable!(
+                            "handshake log events are consumed while waiting for VERSION_ACK"
+                        ),
+                        Ok(Err(error)) => {
+                            let message = format!("版本验证失败: {error}");
+                            publish_sync_status(
+                                &handle_clone,
+                                &connection_status_for_task,
+                                "error",
+                                &message,
+                            )
+                            .await;
+                            emit_sync_log(&handle_clone, "error", &message);
+                            break;
+                        }
+                        Err(_) => {
                             publish_sync_status(
                                 &handle_clone,
                                 &connection_status_for_task,
@@ -818,9 +851,26 @@ async fn run_sync_session(
                         res = ws_stream.next() => {
                             match res {
                                 Some(Ok(msg)) => {
-                                    if let Message::Text(text) = msg {
-                                let payload: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                                if payload.is_null() { continue; }
+                                    if let Message::Text(text) = &msg {
+                                let payload = match parse_inbound_frame(text) {
+                                    Ok(frame) => frame.payload,
+                                    Err(error) => {
+                                        let err_msg = format!(
+                                            "同步协议帧无效 [{}]: {}",
+                                            error.code, error.message
+                                        );
+                                        log::error!("[SyncService] {}", err_msg);
+                                        emit_sync_log(&handle_clone, "error", &err_msg);
+                                        publish_sync_status(
+                                            &handle_clone,
+                                            &connection_status_for_task,
+                                            "error",
+                                            "桌面端返回了无效的 Wire 1.2 帧，同步已安全停止",
+                                        )
+                                        .await;
+                                        break;
+                                    }
+                                };
 
                                 let h = handle_clone.clone();
                                 let c = http_client.clone();
@@ -831,9 +881,39 @@ async fn run_sync_session(
 
                                 match payload["type"].as_str() {
                                     Some("SYNC_ENTITY_UPDATE") => {
-                                        let id = payload["id"].as_str().unwrap_or_default().to_string();
-                                        let owner_type = payload["ownerType"].as_str().unwrap_or("agent").to_string();
-                                        let Some(data_type) = parse_sync_data_type(&payload["dataType"]) else { continue; };
+                                        let Some(id) = payload["id"]
+                                            .as_str()
+                                            .filter(|value| !value.is_empty())
+                                            .map(str::to_owned)
+                                        else {
+                                            emit_sync_log(
+                                                &handle_clone,
+                                                "error",
+                                                "SYNC_ENTITY_UPDATE.id 缺失或无效",
+                                            );
+                                            break;
+                                        };
+                                        let Some(owner_type) = payload["ownerType"]
+                                            .as_str()
+                                            .filter(|value| matches!(*value, "agent" | "group"))
+                                            .map(str::to_owned)
+                                        else {
+                                            emit_sync_log(
+                                                &handle_clone,
+                                                "error",
+                                                "SYNC_ENTITY_UPDATE.ownerType 缺失或无效",
+                                            );
+                                            break;
+                                        };
+                                        let Some(data_type) = parse_sync_data_type(&payload["dataType"])
+                                        else {
+                                            emit_sync_log(
+                                                &handle_clone,
+                                                "error",
+                                                "SYNC_ENTITY_UPDATE.dataType 缺失或无效",
+                                            );
+                                            break;
+                                        };
                                         tauri::async_runtime::spawn(async move {
                                             let _permit = sem.acquire().await;
                                             let settings = crate::vcp_modules::settings_manager::read_settings(h.clone(), h.state()).await.unwrap_or_default();
@@ -853,8 +933,27 @@ async fn run_sync_session(
                                     },
                                     Some("SYNC_DELETE_NOTIFY") => {
                                         use crate::vcp_modules::sync_executor::delete_executor::DeleteExecutor;
-                                        let id = payload["id"].as_str().unwrap_or_default().to_string();
-                                        let Some(data_type) = parse_sync_data_type(&payload["dataType"]) else { continue; };
+                                        let Some(id) = payload["id"]
+                                            .as_str()
+                                            .filter(|value| !value.is_empty())
+                                            .map(str::to_owned)
+                                        else {
+                                            emit_sync_log(
+                                                &handle_clone,
+                                                "error",
+                                                "SYNC_DELETE_NOTIFY.id 缺失或无效",
+                                            );
+                                            break;
+                                        };
+                                        let Some(data_type) = parse_sync_data_type(&payload["dataType"])
+                                        else {
+                                            emit_sync_log(
+                                                &handle_clone,
+                                                "error",
+                                                "SYNC_DELETE_NOTIFY.dataType 缺失或无效",
+                                            );
+                                            break;
+                                        };
                                         tauri::async_runtime::spawn(async move {
                                             match data_type {
                                                 SyncDataType::Agent => { let _ = DeleteExecutor::soft_delete_agent(&h, &id).await; },
@@ -871,16 +970,49 @@ async fn run_sync_session(
                                         });
                                     },
                                     Some("SYNC_ERROR") => {
-                                        let message = payload["message"].as_str().unwrap_or("Unknown desktop error");
-                                        let code = payload["code"].as_u64().unwrap_or(500);
-                                        let err_msg = format!("Desktop Error ({}): {}", code, message);
-                                        log::error!("[SyncService] {}", err_msg);
-                                        emit_sync_log(&handle_clone, "error", &err_msg);
-                                        publish_sync_status(&handle_clone, &connection_status_for_task, "error", &err_msg).await;
-                                        // 致命错误，建议断开或重试
+                                        match parse_wire_sync_error_frame(&payload) {
+                                            Ok(error) => {
+                                                let err_msg = format!(
+                                                    "桌面端同步失败 [{}]",
+                                                    error.code
+                                                );
+                                                log::error!("[SyncService] {}", err_msg);
+                                                emit_sync_log(&handle_clone, "error", &err_msg);
+                                                publish_sync_status(
+                                                    &handle_clone,
+                                                    &connection_status_for_task,
+                                                    "error",
+                                                    &err_msg,
+                                                )
+                                                .await;
+                                            }
+                                            Err(error) => {
+                                                let err_msg = format!(
+                                                    "桌面端返回了无效的 SYNC_ERROR: {error}"
+                                                );
+                                                log::error!("[SyncService] {}", err_msg);
+                                                emit_sync_log(&handle_clone, "error", &err_msg);
+                                                publish_sync_status(
+                                                    &handle_clone,
+                                                    &connection_status_for_task,
+                                                    "error",
+                                                    "桌面端错误帧不符合 Wire 1.2 契约，同步已安全停止",
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                        break;
                                     },
                                     Some("SYNC_DIFF_RESULTS") => {
-                                        let Some(data_type) = parse_sync_data_type(&payload["dataType"]) else { continue; };
+                                        let Some(data_type) = parse_sync_data_type(&payload["dataType"])
+                                        else {
+                                            emit_sync_log(
+                                                &handle_clone,
+                                                "error",
+                                                "SYNC_DIFF_RESULTS.dataType 缺失或无效",
+                                            );
+                                            break;
+                                        };
                                         if let Err(e) = crate::vcp_modules::sync_executor::diff_handler::DiffHandler::handle_diff(
                                             &h,
                                             &payload,
@@ -928,6 +1060,13 @@ async fn run_sync_session(
                                                 *guard = changed_ids;
                                             }
                                             let _ = tx_internal.send(SyncCommand::StartMessages);
+                                        } else {
+                                            emit_sync_log(
+                                                &handle_clone,
+                                                "error",
+                                                "SYNC_TOPIC_HASH_RESULTS.changedTopics 缺失或无效",
+                                            );
+                                            break;
                                         }
                                     },
                                     Some("PHASE_MANIFESTS") => {
@@ -980,8 +1119,32 @@ async fn run_sync_session(
                                         };
                                         emit_sync_log(&handle_clone, "info", &msg);
                                     },
-                                        _ => {}
+                                    Some(_) | None => {
+                                        let err_msg = "收到未知的 Wire 1.2 同步帧，同步已安全停止";
+                                        log::error!("[SyncService] {}", err_msg);
+                                        emit_sync_log(&handle_clone, "error", err_msg);
+                                        publish_sync_status(
+                                            &handle_clone,
+                                            &connection_status_for_task,
+                                            "error",
+                                            err_msg,
+                                        )
+                                        .await;
+                                        break;
+                                    }
                                 }
+                            } else if !matches!(msg, Message::Ping(_) | Message::Pong(_)) {
+                                let err_msg = "收到不受支持的 WebSocket 帧，同步已安全停止";
+                                log::error!("[SyncService] {}", err_msg);
+                                emit_sync_log(&handle_clone, "error", err_msg);
+                                publish_sync_status(
+                                    &handle_clone,
+                                    &connection_status_for_task,
+                                    "error",
+                                    err_msg,
+                                )
+                                .await;
+                                break;
                             }
                                 }
                                 Some(Err(e)) => {

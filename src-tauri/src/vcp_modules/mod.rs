@@ -46,6 +46,7 @@ pub use sync::sync_logger;
 pub use sync::sync_pipeline;
 pub use sync::sync_service;
 pub use sync::sync_types;
+pub use sync::wire_protocol;
 
 // --- Persistence 领域 ---
 pub use persistence::db_manager;

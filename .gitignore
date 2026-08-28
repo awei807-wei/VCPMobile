@@ -66,6 +66,16 @@ temp
 /.helloagents/
 /helloagents/
 
+# Device-local Android debug and performance captures may contain serials,
+# logcat excerpts, or system state and must remain local.
+/.agent/android-debug/
+tests/perf/reports/
+
+# Project Markdown is generally ignored, but tracked test tool guides are part
+# of the reproducible Android tooling contract.
+!tests/e2e-android/README.md
+!tests/perf/README.md
+
 # Tauri build output (copied from dist/ on each build)
 src-tauri/gen/android/app/src/main/assets/
 # Android plugin build artifacts

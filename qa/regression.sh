@@ -80,6 +80,7 @@ for file in \
   src-tauri/src/vcp_modules/infra/invoke_guard.rs \
   src-tauri/src/vcp_modules/infra/runtime_diagnostics.rs \
   src-tauri/src/vcp_modules/infra/runtime_diagnostics/export.rs \
+  src-tauri/src/vcp_modules/persistence/database_lifecycle.rs \
   src-tauri/src/vcp_modules/persistence/message_content_storage.rs \
   src-tauri/src/distributed/tools/mod.rs \
   src-tauri/plugins/vcp-mobile/src/lib.rs \
@@ -265,13 +266,14 @@ require_pattern "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/sr
 require_pattern "ACTION_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt
 require_pattern "expected-abi arm64-v8a" scripts/build_android_phone.sh
 require_pattern "read_elf_load_alignments" scripts/verify_android_apk.py
-require_pattern "normalize_legacy_message_content\(&pool\)" src-tauri/src/vcp_modules/persistence/db_manager.rs
+require_pattern "normalize_message_content\(&pool\)\.await\?" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs
+require_pattern "normalize_legacy_message_content\(pool\)" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs
 require_pattern 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
 require_pattern 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
 require_pattern 'ContentCompressor::compress\(content\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
 require_pattern 'ContentCompressor::compress\("\[已清空\]"\)' src-tauri/src/vcp_modules/sync/sync_executor/delete_executor.rs
 reject_pattern 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
-reject_pattern "decompress_database_migration" src-tauri/src/vcp_modules/persistence/db_manager.rs
+reject_pattern "decompress_database_migration" src-tauri/src/vcp_modules/persistence
 if rg -U -q 'registerActivityLifecycleCallbacks\(activityLifecycleCallbacks\)\s*startHelperServiceInternal\(\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
   printf 'SseProxyService 不得在插件初始化阶段无条件启动\n' >&2
   exit 1

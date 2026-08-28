@@ -41,7 +41,9 @@ done
 require_rg_count 1 "export function findAgentMessagePayload" src
 [[ -f src-tauri/src/vcp_modules/persistence/message_content_storage.rs ]] \
   || fail "缺少消息正文存储兼容层"
-rg -q "normalize_legacy_message_content\(&pool\)" src-tauri/src/vcp_modules/persistence/db_manager.rs \
+rg -q "normalize_message_content\(&pool\)\.await\?" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs \
+  || fail "数据库初始化必须调用消息正文兼容归一化"
+rg -q "normalize_legacy_message_content\(pool\)" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs \
   || fail "数据库初始化必须在注册 DbState 前归一化历史 TEXT 消息正文"
 rg -q "Component && lifecycleStore\.state === 'READY'" src/App.vue \
   || fail "核心 READY 前不得挂载会触发数据库调用的业务路由"
@@ -60,7 +62,7 @@ rg -q 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/
 if rg -q 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs; then
   fail "启动恢复不得把 messages.content BLOB 按 Option<String> 读取"
 fi
-if rg -q "decompress_database_migration" src-tauri/src/vcp_modules/persistence/db_manager.rs; then
+if rg -q "decompress_database_migration" src-tauri/src/vcp_modules/persistence; then
   fail "禁止恢复方向相反的 BLOB→TEXT 启动迁移"
 fi
 if rg -q "function findAgentMessageToolPayload" src; then

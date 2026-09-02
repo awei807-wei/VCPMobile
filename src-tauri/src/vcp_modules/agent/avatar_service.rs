@@ -1,6 +1,4 @@
 use crate::vcp_modules::db_manager::DbState;
-use crate::vcp_modules::sync_service::{SyncCommand, SyncState};
-use crate::vcp_modules::sync_types::SyncDataType;
 
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -56,16 +54,8 @@ pub async fn save_avatar_data<R: Runtime>(
         dominant_color
     );
 
-    // 4. 通知同步中心：本地数据已变动
-    if let Some(sync_state) = app_handle.try_state::<SyncState>() {
-        let _ = sync_state.ws_sender.send(SyncCommand::NotifyLocalChange {
-            id: format!("{}:{}", owner_type, owner_id),
-            data_type: SyncDataType::Avatar,
-            hash: avatar_hash.clone(),
-            ts: now,
-        });
-    }
-
+    // Wire 1.2 不支持头像实时更新；下一次头像 manifest 会声明此哈希，
+    // 桌面端再通过 HTTP 拉取二进制内容。
     Ok(avatar_hash)
 }
 

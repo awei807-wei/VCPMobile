@@ -586,6 +586,7 @@ pub async fn delete_group(
         let _ = sync_state.ws_sender.send(SyncCommand::NotifyDelete {
             data_type: SyncDataType::Group,
             id: group_id.clone(),
+            deleted_at: now,
         });
     }
 

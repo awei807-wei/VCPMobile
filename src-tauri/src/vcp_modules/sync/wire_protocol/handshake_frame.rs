@@ -1,6 +1,9 @@
 //! Strict dispatch for the two frames allowed during the Wire 1.2 handshake.
 
-use super::{parse_strict_json, parse_version_ack, VersionAck};
+use super::{
+    parse_desktop_diagnostic_frame, parse_strict_json, parse_version_ack, DesktopDiagnosticFrame,
+    VersionAck,
+};
 use crate::vcp_modules::sync::sync_error::{parse_wire_sync_error_frame, WireSyncError};
 use serde_json::Value;
 
@@ -33,7 +36,10 @@ fn parse_version_handshake_value(payload: &Value) -> Result<VersionHandshakeFram
             .map(VersionHandshakeFrame::VersionAck)
             .map_err(|error| error.to_string()),
         "SYNC_ERROR" => parse_wire_sync_error_frame(payload).map(VersionHandshakeFrame::SyncError),
-        "SYNC_LOG_EVENT" => Ok(VersionHandshakeFrame::SyncLogEvent),
+        "SYNC_LOG_EVENT" => match parse_desktop_diagnostic_frame(payload)? {
+            DesktopDiagnosticFrame::SyncLog { .. } => Ok(VersionHandshakeFrame::SyncLogEvent),
+            _ => Err("only SYNC_LOG_EVENT diagnostics are valid during handshake".to_string()),
+        },
         other => Err(format!("unexpected handshake frame type {other}")),
     }
 }

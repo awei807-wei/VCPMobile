@@ -29,6 +29,16 @@ pub fn compute_merkle_root(mut hashes: Vec<String>) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Protocol-level avatar identity contract. Agent and group avatars use a
+/// non-empty entity id; the only user avatar identity is the fixed singleton.
+pub fn is_valid_avatar_owner(owner_type: &str, owner_id: &str) -> bool {
+    match owner_type {
+        "agent" | "group" => !owner_id.is_empty(),
+        "user" => owner_id == "user_avatar",
+        _ => false,
+    }
+}
+
 pub fn stable_stringify(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Object(map) => {
@@ -40,11 +50,9 @@ pub fn stable_stringify(value: &serde_json::Value) -> String {
                 if i > 0 {
                     res.push(',');
                 }
-                res.push_str(&format!(
-                    "\"{}\":{}",
-                    k,
-                    stable_stringify(map.get(*k).unwrap())
-                ));
+                if let Some(value) = map.get(*k) {
+                    res.push_str(&format!("\"{}\":{}", k, stable_stringify(value)));
+                }
             }
             res.push('}');
             res
@@ -114,6 +122,9 @@ pub struct EntityState {
     /// 所有者类型 (仅用于 topic 类型，区分 agent_topic 和 group_topic)
     #[serde(rename = "ownerType", skip_serializing_if = "Option::is_none")]
     pub owner_type: Option<String>,
+    /// 所有者 ID（仅用于 topic，和 ownerType 共同构成无歧义身份）
+    #[serde(rename = "ownerId", skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
 }
 
 /// 阶段一：同步清单 (Manifest)
@@ -122,4 +133,71 @@ pub struct EntityState {
 pub struct SyncManifest {
     pub data_type: SyncDataType,
     pub items: Vec<EntityState>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn avatar_owner_contract_is_closed_and_keeps_the_user_singleton() {
+        assert!(is_valid_avatar_owner("agent", "agent-1"));
+        assert!(is_valid_avatar_owner("group", "group-1"));
+        assert!(is_valid_avatar_owner("user", "user_avatar"));
+        assert!(!is_valid_avatar_owner("user", "other"));
+        assert!(!is_valid_avatar_owner("agent", ""));
+        assert!(!is_valid_avatar_owner("system", "system"));
+    }
+
+    #[test]
+    fn test_stable_stringify_sorts_object_keys_recursively() {
+        let value = json!({
+            "z": 1,
+            "a": {
+                "b": true,
+                "a": [3, 2, 1]
+            },
+            "m": null
+        });
+
+        assert_eq!(
+            stable_stringify(&value),
+            r#"{"a":{"a":[3,2,1],"b":true},"m":null,"z":1}"#
+        );
+    }
+
+    #[test]
+    fn test_compute_deterministic_hash_is_key_order_independent() {
+        let left = json!({ "name": "Nova", "config": { "model": "a", "temperature": 0.7 } });
+        let right = json!({ "config": { "temperature": 0.7, "model": "a" }, "name": "Nova" });
+
+        assert_eq!(
+            compute_deterministic_hash(&left),
+            compute_deterministic_hash(&right)
+        );
+    }
+
+    #[test]
+    fn test_compute_merkle_root_is_order_independent_and_empty_safe() {
+        let hashes_a = vec!["ccc".to_string(), "aaa".to_string(), "bbb".to_string()];
+        let hashes_b = vec!["bbb".to_string(), "ccc".to_string(), "aaa".to_string()];
+
+        assert_eq!(compute_merkle_root(hashes_a), compute_merkle_root(hashes_b));
+        assert_eq!(compute_merkle_root(Vec::new()), "");
+    }
+
+    #[test]
+    fn test_sync_data_type_display_and_serde_are_lowercase() {
+        assert_eq!(SyncDataType::Agent.to_string(), "agent");
+        assert_eq!(SyncDataType::Group.to_string(), "group");
+        assert_eq!(SyncDataType::Avatar.to_string(), "avatar");
+        assert_eq!(SyncDataType::Topic.to_string(), "topic");
+        assert_eq!(SyncDataType::Message.to_string(), "message");
+
+        let encoded = serde_json::to_string(&SyncDataType::Message).unwrap();
+        assert_eq!(encoded, r#""message""#);
+        let decoded: SyncDataType = serde_json::from_str(r#""topic""#).unwrap();
+        assert_eq!(decoded, SyncDataType::Topic);
+    }
 }

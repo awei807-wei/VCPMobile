@@ -20,7 +20,12 @@ impl HashAggregator {
         if !sorted_hashes.is_empty() {
             fingerprint_map.insert(
                 "attachmentHashes".to_string(),
-                serde_json::to_value(sorted_hashes).unwrap(),
+                serde_json::Value::Array(
+                    sorted_hashes
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
             );
         }
 
@@ -93,10 +98,12 @@ impl HashAggregator {
         .await
         .map_err(|e| e.to_string())?;
 
-        let hashes: Vec<String> = rows
-            .iter()
-            .map(|r| r.get::<String, _>("content_hash"))
-            .collect();
+        let mut hashes = Vec::with_capacity(rows.len());
+        for row in rows {
+            hashes.push(row.try_get("content_hash").map_err(|error| {
+                format!("Topic {topic_id} message hash decode failed: {error}")
+            })?);
+        }
         Ok(compute_merkle_root(hashes))
     }
 
@@ -115,8 +122,12 @@ impl HashAggregator {
         let mut hashes = Vec::new();
         for r in topic_rows {
             // 将 topic 的元数据 hash 和内容 hash 同时作为叶子节点，确保任何一方变动都会向上冒泡
-            hashes.push(r.get::<String, _>("config_hash"));
-            hashes.push(r.get::<String, _>("content_hash"));
+            hashes.push(r.try_get("config_hash").map_err(|error| {
+                format!("Agent {agent_id} topic config hash decode failed: {error}")
+            })?);
+            hashes.push(r.try_get("content_hash").map_err(|error| {
+                format!("Agent {agent_id} topic content hash decode failed: {error}")
+            })?);
         }
 
         Ok(compute_merkle_root(hashes))
@@ -136,8 +147,12 @@ impl HashAggregator {
 
         let mut hashes = Vec::new();
         for r in topic_rows {
-            hashes.push(r.get::<String, _>("config_hash"));
-            hashes.push(r.get::<String, _>("content_hash"));
+            hashes.push(r.try_get("config_hash").map_err(|error| {
+                format!("Group {group_id} topic config hash decode failed: {error}")
+            })?);
+            hashes.push(r.try_get("content_hash").map_err(|error| {
+                format!("Group {group_id} topic content hash decode failed: {error}")
+            })?);
         }
 
         Ok(compute_merkle_root(hashes))
@@ -151,28 +166,39 @@ impl HashAggregator {
         let root_hash = Self::compute_topic_root_hash(tx, topic_id).await?;
 
         // 2. 计算并更新 config_hash (元数据)
-        let row = sqlx::query("SELECT owner_type FROM topics WHERE topic_id = ?")
-            .bind(topic_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        let row =
+            sqlx::query("SELECT owner_type FROM topics WHERE topic_id = ? AND deleted_at IS NULL")
+                .bind(topic_id)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
-        let owner_type: String = row.get("owner_type");
+        let owner_type: String = row
+            .try_get("owner_type")
+            .map_err(|error| format!("Topic {topic_id} owner type decode failed: {error}"))?;
         let config_hash = if owner_type == "agent" {
             let dto = HashInitializer::load_agent_topic_dto(tx, topic_id).await?;
             Self::compute_agent_topic_metadata_hash(&dto)
-        } else {
+        } else if owner_type == "group" {
             let dto = HashInitializer::load_group_topic_dto(tx, topic_id).await?;
             Self::compute_group_topic_metadata_hash(&dto)
+        } else {
+            return Err(format!(
+                "Topic {topic_id} has unsupported owner type {owner_type}"
+            ));
         };
 
-        sqlx::query("UPDATE topics SET content_hash = ?, config_hash = ? WHERE topic_id = ?")
-            .bind(root_hash)
-            .bind(config_hash)
-            .bind(topic_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        let updated =
+            sqlx::query("UPDATE topics SET content_hash = ?, config_hash = ? WHERE topic_id = ? AND deleted_at IS NULL")
+                .bind(root_hash)
+                .bind(config_hash)
+                .bind(topic_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        if updated.rows_affected() != 1 {
+            return Err(format!("Topic {topic_id} disappeared during hash update"));
+        }
         Ok(())
     }
 
@@ -199,7 +225,7 @@ impl HashAggregator {
                 owner_id: String::new(),
             };
             Self::compute_agent_topic_metadata_hash(&dto)
-        } else {
+        } else if owner_type == "group" {
             let dto = GroupTopicSyncDTO {
                 id: topic_id.to_string(),
                 name: title.to_string(),
@@ -207,15 +233,23 @@ impl HashAggregator {
                 owner_id: String::new(),
             };
             Self::compute_group_topic_metadata_hash(&dto)
+        } else {
+            return Err(format!(
+                "Topic {topic_id} has unsupported owner type {owner_type}"
+            ));
         };
 
-        sqlx::query("UPDATE topics SET content_hash = ?, config_hash = ? WHERE topic_id = ?")
-            .bind(root_hash)
-            .bind(config_hash)
-            .bind(topic_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        let updated =
+            sqlx::query("UPDATE topics SET content_hash = ?, config_hash = ? WHERE topic_id = ? AND deleted_at IS NULL")
+                .bind(root_hash)
+                .bind(config_hash)
+                .bind(topic_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        if updated.rows_affected() != 1 {
+            return Err(format!("Topic {topic_id} disappeared during hash update"));
+        }
         Ok(())
     }
 
@@ -224,12 +258,17 @@ impl HashAggregator {
         agent_id: &str,
     ) -> Result<(), String> {
         let root_hash = Self::compute_agent_root_hash(tx, agent_id).await?;
-        sqlx::query("UPDATE agents SET content_hash = ? WHERE agent_id = ?")
-            .bind(root_hash)
-            .bind(agent_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        let updated = sqlx::query(
+            "UPDATE agents SET content_hash = ? WHERE agent_id = ? AND deleted_at IS NULL",
+        )
+        .bind(root_hash)
+        .bind(agent_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if updated.rows_affected() != 1 {
+            return Err(format!("Agent {agent_id} disappeared during hash update"));
+        }
         Ok(())
     }
 
@@ -238,12 +277,17 @@ impl HashAggregator {
         group_id: &str,
     ) -> Result<(), String> {
         let root_hash = Self::compute_group_root_hash(tx, group_id).await?;
-        sqlx::query("UPDATE groups SET content_hash = ? WHERE group_id = ?")
-            .bind(root_hash)
-            .bind(group_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        let updated = sqlx::query(
+            "UPDATE groups SET content_hash = ? WHERE group_id = ? AND deleted_at IS NULL",
+        )
+        .bind(root_hash)
+        .bind(group_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if updated.rows_affected() != 1 {
+            return Err(format!("Group {group_id} disappeared during hash update"));
+        }
         Ok(())
     }
 
@@ -253,276 +297,39 @@ impl HashAggregator {
     ) -> Result<(), String> {
         Self::bubble_topic_hash(tx, topic_id).await?;
 
-        let topic_row = sqlx::query("SELECT owner_id, owner_type FROM topics WHERE topic_id = ?")
-            .bind(topic_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+        let topic_row = sqlx::query(
+            "SELECT owner_id, owner_type FROM topics WHERE topic_id = ? AND deleted_at IS NULL",
+        )
+        .bind(topic_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
 
-        let owner_id: String = topic_row.get("owner_id");
-        let owner_type: String = topic_row.get("owner_type");
+        let owner_id: String = topic_row
+            .try_get("owner_id")
+            .map_err(|error| format!("Topic {topic_id} owner id decode failed: {error}"))?;
+        let owner_type: String = topic_row
+            .try_get("owner_type")
+            .map_err(|error| format!("Topic {topic_id} owner type decode failed: {error}"))?;
 
         if owner_type == "agent" {
             Self::bubble_agent_hash(tx, &owner_id).await?;
         } else if owner_type == "group" {
             Self::bubble_group_hash(tx, &owner_id).await?;
+        } else {
+            return Err(format!(
+                "Topic {topic_id} has unsupported owner type {owner_type}"
+            ));
         }
 
         Ok(())
     }
 }
 
-pub struct HashInitializer;
+#[path = "sync_hash_initializer.rs"]
+mod initializer;
+pub use initializer::HashInitializer;
 
-impl HashInitializer {
-    pub async fn ensure_agent_hashes(
-        tx: &mut Transaction<'_, Sqlite>,
-        agent_id: &str,
-    ) -> Result<(), String> {
-        let row = sqlx::query("SELECT config_hash FROM agents WHERE agent_id = ?")
-            .bind(agent_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if let Some(r) = row {
-            let config_hash: String = r.get("config_hash");
-            if config_hash.is_empty() || config_hash == "PENDING" {
-                let dto = Self::load_agent_dto(tx, agent_id).await?;
-                let new_hash = HashAggregator::compute_agent_config_hash(&dto);
-                sqlx::query("UPDATE agents SET config_hash = ? WHERE agent_id = ?")
-                    .bind(&new_hash)
-                    .bind(agent_id)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                log::debug!(
-                    "[HashInitializer] Initialized config_hash for Agent {}",
-                    agent_id
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn ensure_group_hashes(
-        tx: &mut Transaction<'_, Sqlite>,
-        group_id: &str,
-    ) -> Result<(), String> {
-        let row = sqlx::query("SELECT config_hash FROM groups WHERE group_id = ?")
-            .bind(group_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if let Some(r) = row {
-            let config_hash: String = r.get("config_hash");
-            if config_hash.is_empty() || config_hash == "PENDING" {
-                let dto = Self::load_group_dto(tx, group_id).await?;
-                let new_hash = HashAggregator::compute_group_config_hash(&dto);
-                sqlx::query("UPDATE groups SET config_hash = ? WHERE group_id = ?")
-                    .bind(&new_hash)
-                    .bind(group_id)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                log::debug!(
-                    "[HashInitializer] Initialized config_hash for Group {}",
-                    group_id
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn ensure_all_agent_hashes(pool: &sqlx::SqlitePool) -> Result<(), String> {
-        let rows = sqlx::query(
-            "SELECT agent_id FROM agents WHERE config_hash = '' OR config_hash IS NULL OR config_hash = 'PENDING'",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-        for row in rows {
-            let agent_id: String = row.get("agent_id");
-            if let Err(e) = Self::ensure_agent_hashes(&mut tx, &agent_id).await {
-                log::error!(
-                    "[HashInitializer] Failed to ensure hash for Agent {}: {}",
-                    agent_id,
-                    e
-                );
-            }
-        }
-        tx.commit().await.map_err(|e| e.to_string())?;
-
-        log::info!("[HashInitializer] Ensured all Agent hashes");
-        Ok(())
-    }
-
-    pub async fn ensure_all_group_hashes(pool: &sqlx::SqlitePool) -> Result<(), String> {
-        let rows = sqlx::query(
-            "SELECT group_id FROM groups WHERE config_hash = '' OR config_hash IS NULL OR config_hash = 'PENDING'",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-        for row in rows {
-            let group_id: String = row.get("group_id");
-            if let Err(e) = Self::ensure_group_hashes(&mut tx, &group_id).await {
-                log::error!(
-                    "[HashInitializer] Failed to ensure hash for Group {}: {}",
-                    group_id,
-                    e
-                );
-            }
-        }
-        tx.commit().await.map_err(|e| e.to_string())?;
-
-        log::info!("[HashInitializer] Ensured all Group hashes");
-        Ok(())
-    }
-
-    pub async fn load_agent_topic_dto(
-        tx: &mut Transaction<'_, Sqlite>,
-        topic_id: &str,
-    ) -> Result<AgentTopicSyncDTO, String> {
-        let row = sqlx::query(
-            "SELECT topic_id, title, created_at, locked, unread, owner_id FROM topics WHERE topic_id = ?",
-        )
-        .bind(topic_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        Ok(AgentTopicSyncDTO {
-            id: row.get("topic_id"),
-            name: row.get("title"),
-            created_at: row.get("created_at"),
-            locked: row.get::<i64, _>("locked") != 0,
-            unread: row.get::<i64, _>("unread") != 0,
-            owner_id: row.get("owner_id"),
-        })
-    }
-
-    pub async fn load_group_topic_dto(
-        tx: &mut Transaction<'_, Sqlite>,
-        topic_id: &str,
-    ) -> Result<GroupTopicSyncDTO, String> {
-        let row = sqlx::query(
-            "SELECT topic_id, title, created_at, owner_id FROM topics WHERE topic_id = ?",
-        )
-        .bind(topic_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        Ok(GroupTopicSyncDTO {
-            id: row.get("topic_id"),
-            name: row.get("title"),
-            created_at: row.get("created_at"),
-            owner_id: row.get("owner_id"),
-        })
-    }
-
-    async fn load_agent_dto(
-        tx: &mut Transaction<'_, Sqlite>,
-        agent_id: &str,
-    ) -> Result<AgentSyncDTO, String> {
-        let row = sqlx::query(
-            "SELECT name, system_prompt, model, temperature, context_token_limit, max_output_tokens, stream_output FROM agents WHERE agent_id = ?",
-        )
-        .bind(agent_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        Ok(AgentSyncDTO {
-            name: row.get("name"),
-            system_prompt: row.get("system_prompt"),
-            model: row.get("model"),
-            temperature: row.get::<f64, _>("temperature"),
-            context_token_limit: row.get("context_token_limit"),
-            max_output_tokens: row.get("max_output_tokens"),
-            stream_output: row.get::<i64, _>("stream_output") != 0,
-        })
-    }
-
-    async fn load_group_dto(
-        tx: &mut Transaction<'_, Sqlite>,
-        group_id: &str,
-    ) -> Result<GroupSyncDTO, String> {
-        let row = sqlx::query(
-            "SELECT name, mode, group_prompt, invite_prompt, use_unified_model, unified_model, tag_match_mode, created_at FROM groups WHERE group_id = ?",
-        )
-        .bind(group_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let members = Self::load_group_members(tx, group_id).await?;
-        let member_tags = Self::load_member_tags(tx, group_id).await;
-
-        Ok(GroupSyncDTO {
-            name: row.get("name"),
-            members,
-            mode: row.get("mode"),
-            member_tags: Some(member_tags),
-            group_prompt: row.get("group_prompt"),
-            invite_prompt: row.get("invite_prompt"),
-            use_unified_model: row.get::<i64, _>("use_unified_model") != 0,
-            unified_model: row.get("unified_model"),
-            tag_match_mode: row.get("tag_match_mode"),
-            created_at: row.get("created_at"),
-        })
-    }
-
-    async fn load_group_members(
-        tx: &mut Transaction<'_, Sqlite>,
-        group_id: &str,
-    ) -> Result<Vec<String>, String> {
-        let rows = sqlx::query(
-            "SELECT agent_id FROM group_members WHERE group_id = ? ORDER BY sort_order",
-        )
-        .bind(group_id)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        Ok(rows.iter().map(|r| r.get("agent_id")).collect())
-    }
-
-    async fn load_member_tags(
-        tx: &mut Transaction<'_, Sqlite>,
-        group_id: &str,
-    ) -> serde_json::Value {
-        let rows = sqlx::query(
-            "SELECT agent_id, member_tag FROM group_members WHERE group_id = ? AND member_tag IS NOT NULL",
-        )
-        .bind(group_id)
-        .fetch_all(&mut **tx)
-        .await
-        .unwrap_or_default();
-
-        let mut tags = serde_json::Map::new();
-        for row in rows {
-            let agent_id: String = row.get("agent_id");
-            let tag: String = row.get("member_tag");
-            tags.insert(agent_id, serde_json::Value::String(tag));
-        }
-
-        serde_json::Value::Object(tags)
-    }
-}
+#[cfg(test)]
+#[path = "sync_hash_tests.rs"]
+mod tests;

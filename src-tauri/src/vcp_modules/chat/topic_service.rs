@@ -237,6 +237,7 @@ pub async fn delete_topic(
         let _ = sync_state.ws_sender.send(SyncCommand::NotifyDelete {
             data_type: SyncDataType::Topic,
             id: topic_id.clone(),
+            deleted_at: now,
         });
     }
 

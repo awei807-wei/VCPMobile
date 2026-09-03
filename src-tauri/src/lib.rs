@@ -238,8 +238,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_vcp_mobile::init())
         .invoke_handler({
-            let handler: Box<tauri::ipc::InvokeHandler<tauri::Wry>> =
-                Box::new(tauri::generate_handler![
+            let handler: std::sync::Arc<tauri::ipc::InvokeHandler<tauri::Wry>> =
+                std::sync::Arc::new(tauri::generate_handler![
                     sendToVCP,
                     get_tarven_rules,
                     save_tarven_rule,
@@ -369,13 +369,7 @@ pub fn run() {
                     debug_inject_invalid_attachment_for_wire14,
                 ]);
 
-            move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
-                if vcp_modules::infra::invoke_guard::should_reject_before_db_ready(&invoke) {
-                    vcp_modules::infra::invoke_guard::reject_core_not_ready(invoke)
-                } else {
-                    handler(invoke)
-                }
-            }
+            vcp_modules::infra::invoke_dispatch::central_invoke_handler(handler)
         })
         .run(context)
         .expect("error while running tauri application");

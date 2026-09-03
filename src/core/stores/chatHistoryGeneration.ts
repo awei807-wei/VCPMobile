@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { acquireScreenKeep } from "../composables/useScreenKeeper";
 import type { ChatMessage } from "../types/chat";
+import { hasWorkingAttachments } from "./attachmentSendGate";
 import type {
   HistoryGenerationDeps,
   PendingGenerationOptions,
@@ -48,6 +49,8 @@ function getSendIdentity(
 ): ConversationIdentity | null {
   const identity = deps.currentIdentity();
   if (!identity) return null;
+  if (hasWorkingAttachments(deps.attachmentStore.stagedAttachments))
+    return null;
   if (!content.trim() && deps.attachmentStore.stagedAttachments.length === 0)
     return null;
   return identity;
@@ -149,6 +152,7 @@ async function sendNewMessage(
   );
   try {
     const stagedAttachments = [...deps.attachmentStore.stagedAttachments];
+    if (hasWorkingAttachments(stagedAttachments)) return;
     deps.attachmentStore.clearStaged();
     if (stagedAttachments.length > 0)
       await deps.attachmentStore.preProcessDocuments(stagedAttachments);

@@ -1,9 +1,17 @@
 <template>
-  <div class="attachment-preview-base relative flex items-center bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl transition-all"
-       :class="[sizeClass, { 'hover:bg-black/10 dark:hover:bg-white/10': !isLoading && !isProcessing }]">
+  <div
+    class="attachment-preview-base relative flex items-center bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-xl transition-all"
+    :class="[
+      sizeClass,
+      {
+        'hover:bg-black/10 dark:hover:bg-white/10':
+          !isLoading && !isProcessing && !isDesktopOnly,
+      },
+    ]"
+  >
     <!-- Default slot for content -->
     <slot />
-    
+
     <!-- Delete Button (Only shown when showRemove is true) -->
     <button
       v-if="showRemove"
@@ -37,11 +45,22 @@
       <span
         v-if="isLoading && file.progress !== undefined"
         class="text-[9px] text-white font-bold tabular-nums"
-      >{{ file.progress }}%</span>
+        >{{ file.progress }}%</span
+      >
       <span
         v-if="isProcessing"
         class="text-[9px] text-white/80 font-mono select-none"
-      >解析中...</span>
+        >解析中...</span
+      >
+    </div>
+
+    <div
+      v-if="isDesktopOnly"
+      class="absolute inset-0 bg-black/55 rounded-xl flex items-center justify-center z-10 px-2 text-center"
+    >
+      <span class="text-[10px] text-white font-semibold leading-tight"
+        >仅桌面端可用</span
+      >
     </div>
   </div>
 </template>
@@ -49,35 +68,37 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Attachment } from "../../../core/types/chat";
+import { isDesktopOnlyAttachment } from "./utils/attachmentAvailability";
 
 interface Props {
   file: Attachment;
   index: number;
-  size?: 'small' | 'medium' | 'large' | 'auto';
+  size?: "small" | "medium" | "large" | "auto";
   showRemove?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  size: 'medium',
-  showRemove: false
+  size: "medium",
+  showRemove: false,
 });
 
 const emit = defineEmits<{ (e: "remove", index: number): void }>();
 
 const isLoading = computed(() => props.file.status === "loading");
 const isProcessing = computed(() => props.file.status === "processing");
+const isDesktopOnly = computed(() => isDesktopOnlyAttachment(props.file));
 
 const sizeClass = computed(() => {
   switch (props.size) {
-    case 'small':
-      return 'w-10 h-10';
-    case 'large':
-      return 'w-20 h-20';
-    case 'auto':
-      return 'min-w-[40px] h-auto';
-    case 'medium':
-      default:
-        return 'w-14 h-14';
+    case "small":
+      return "w-10 h-10";
+    case "large":
+      return "w-20 h-20";
+    case "auto":
+      return "min-w-[40px] h-auto";
+    case "medium":
+    default:
+      return "w-14 h-14";
   }
 });
 </script>

@@ -1,6 +1,6 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import type { Ref } from "vue";
-import type { ChatMessage, HistoryChunk } from "../types/chat";
+import type { ChatMessage } from "../types/chat";
 import {
   makeConversationIdentity,
   topicIdentityKey,
@@ -12,6 +12,7 @@ import {
   shouldIgnoreHistoryPage,
   type HistoryLoaderState,
 } from "./chatHistoryLoaderSupport";
+import { loadStreamedHistory } from "./historyStreamLoader";
 
 export interface PreloadedHistory {
   ownerId: string;
@@ -156,83 +157,6 @@ async function loadInitialHistory(
   );
 }
 
-function appendHistoryChunk(
-  deps: HistoryLoaderDeps,
-  state: HistoryLoaderState,
-  identity: ConversationIdentity,
-  requestEpoch: number,
-  signal: AbortSignal,
-  limit: number,
-  buffer: ChatMessage[],
-  chunk: HistoryChunk,
-  resolveComplete: () => void,
-): void {
-  if (!isActiveHistoryRequest(deps, state, identity, requestEpoch, signal))
-    return;
-
-  const activeMessage = deps.streamStore.getActiveStreamMessage(
-    identity.ownerId,
-    identity.ownerType,
-    identity.topicId,
-    chunk.message.id,
-  );
-  buffer.push(activeMessage || chunk.message);
-  if (!chunk.is_last) return;
-  deps.currentChatHistory.value = [...buffer, ...deps.currentChatHistory.value];
-  deps.historyOffset.value += buffer.length;
-  if (buffer.length < limit) deps.hasMoreHistory.value = false;
-  resolveComplete();
-}
-
-async function loadStreamedHistory(
-  deps: HistoryLoaderDeps,
-  state: HistoryLoaderState,
-  identity: ConversationIdentity,
-  limit: number,
-  offset: number,
-  requestEpoch: number,
-  signal: AbortSignal,
-): Promise<void> {
-  const channel = new Channel<HistoryChunk>();
-  const buffer: ChatMessage[] = [];
-  let resolveComplete: () => void = () => undefined;
-  const completePromise = new Promise<void>((resolve) => {
-    resolveComplete = resolve;
-  });
-  signal.addEventListener("abort", resolveComplete, { once: true });
-  channel.onmessage = (chunk) =>
-    appendHistoryChunk(
-      deps,
-      state,
-      identity,
-      requestEpoch,
-      signal,
-      limit,
-      buffer,
-      chunk,
-      resolveComplete,
-    );
-
-  const total = await invoke<number>("load_chat_history_streamed", {
-    ownerId: identity.ownerId,
-    ownerType: identity.ownerType,
-    topicId: identity.topicId,
-    limit,
-    offset,
-    onMessage: channel,
-  });
-  if (total === 0) {
-    deps.hasMoreHistory.value = false;
-    resolveComplete();
-  }
-  await completePromise;
-  if (!isActiveHistoryRequest(deps, state, identity, requestEpoch, signal))
-    return;
-  buffer.forEach((message) =>
-    deps.attachmentStore.resolveMessageAssets(message),
-  );
-}
-
 function beginHistoryLoad(state: HistoryLoaderState): AbortController {
   state.currentLoadAbortController?.abort();
   const controller = new AbortController();
@@ -274,7 +198,7 @@ async function loadHistory(
         signal,
       );
     } else {
-      await loadStreamedHistory(
+      await loadStreamedHistory({
         deps,
         state,
         identity,
@@ -282,7 +206,7 @@ async function loadHistory(
         offset,
         requestEpoch,
         signal,
-      );
+      });
     }
   } catch (error) {
     console.error("[ChatHistoryStore] Failed to stream history:", error);

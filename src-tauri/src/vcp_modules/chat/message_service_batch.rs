@@ -1,5 +1,5 @@
 use super::message_service_support::{
-    load_attachments_for_message_keys, parse_render_bytes, resolve_unique_topic_key,
+    load_attachments_for_message_keys, resolve_render_blocks, resolve_unique_topic_key,
 };
 use crate::vcp_modules::chat_manager::ChatMessage;
 use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
@@ -70,7 +70,9 @@ async fn fetch_topic_message_rows(
     let query_string = format!(
         "SELECT m.msg_id, m.role, m.name, m.agent_id, m.content, m.timestamp,
                 m.updated_at, m.is_group_message, m.group_id, m.finish_reason,
-                r.render_content, m.owner_type, m.owner_id, m.topic_id, m.content_hash
+                r.render_content, r.content_hash AS render_content_hash,
+                r.renderer_schema_version AS render_schema_version,
+                m.owner_type, m.owner_id, m.topic_id, m.content_hash
          FROM messages m
          LEFT JOIN render_cache r
            ON m.owner_type = r.owner_type AND m.owner_id = r.owner_id
@@ -110,11 +112,26 @@ fn decode_topic_message(row: &sqlx::sqlite::SqliteRow) -> Result<(TopicKey, Chat
     let content_hash: String = row
         .try_get("content_hash")
         .map_err(|error| error.to_string())?;
+    let content = decode_message_content(row, "content")?;
+    let cached_hash: Option<String> = row
+        .try_get("render_content_hash")
+        .map_err(|error| error.to_string())?;
+    let cached_schema: Option<i64> = row
+        .try_get("render_schema_version")
+        .map_err(|error| error.to_string())?;
+    let (blocks, _) = resolve_render_blocks(
+        &content,
+        &content_hash,
+        row.try_get("render_content")
+            .map_err(|error| error.to_string())?,
+        cached_hash.as_deref(),
+        cached_schema,
+    );
     let message = ChatMessage {
         id: message_id,
         role: row.try_get("role").map_err(|error| error.to_string())?,
         name: row.try_get("name").map_err(|error| error.to_string())?,
-        content: decode_message_content(row, "content")?,
+        content,
         timestamp: u64::try_from(timestamp)
             .map_err(|_| "message timestamp is negative".to_string())?,
         updated_at: Some(
@@ -133,10 +150,7 @@ fn decode_topic_message(row: &sqlx::sqlite::SqliteRow) -> Result<(TopicKey, Chat
             .try_get("finish_reason")
             .map_err(|error| error.to_string())?,
         attachments: None,
-        blocks: parse_render_bytes(
-            row.try_get("render_content")
-                .map_err(|error| error.to_string())?,
-        ),
+        blocks,
         shell: None,
         content_hash: (!content_hash.is_empty()).then_some(content_hash),
     };

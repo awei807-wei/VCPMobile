@@ -1,7 +1,7 @@
 use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
 use crate::vcp_modules::db_manager::require_db_state;
 use crate::vcp_modules::file_manager::resolve_attachment_cas_file;
-use crate::vcp_modules::message_repository::MessageRenderCompiler;
+use crate::vcp_modules::message_repository::{MessageRenderCompiler, RENDERER_SCHEMA_VERSION};
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use sqlx::Row;
 use std::collections::HashMap;
@@ -294,14 +294,80 @@ pub(crate) fn parse_render_bytes(render_content: Option<Vec<u8>>) -> Option<serd
     })
 }
 
+pub(crate) fn resolve_render_blocks(
+    content: &str,
+    expected_hash: &str,
+    render_content: Option<Vec<u8>>,
+    cached_hash: Option<&str>,
+    cached_schema_version: Option<i64>,
+) -> (Option<serde_json::Value>, Option<Vec<u8>>) {
+    let cache_matches = !expected_hash.is_empty()
+        && cached_hash == Some(expected_hash)
+        && cached_schema_version == Some(RENDERER_SCHEMA_VERSION);
+    if cache_matches {
+        if let Some(blocks) = parse_render_bytes(render_content) {
+            return (Some(blocks), None);
+        }
+    }
+    if content.is_empty() {
+        return (None, None);
+    }
+    let compiled = MessageRenderCompiler::compile(content);
+    let serialized = MessageRenderCompiler::serialize(&compiled).ok();
+    (serde_json::to_value(&compiled).ok(), serialized)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::topic_key;
+    use super::{resolve_render_blocks, topic_key};
+    use crate::vcp_modules::message_repository::{MessageRenderCompiler, RENDERER_SCHEMA_VERSION};
 
     #[test]
     fn topic_identity_is_fail_closed() {
         assert!(topic_key("owner", "agent", "topic").is_ok());
         assert!(topic_key("", "agent", "topic").is_err());
         assert!(topic_key("owner", "user", "topic").is_err());
+    }
+
+    #[test]
+    fn render_cache_requires_current_hash_schema_and_valid_payload() {
+        let cached = MessageRenderCompiler::compile("cached body");
+        let bytes = MessageRenderCompiler::serialize(&cached).expect("serialize cached blocks");
+        let (valid, refresh) = resolve_render_blocks(
+            "fresh body",
+            "hash-a",
+            Some(bytes.clone()),
+            Some("hash-a"),
+            Some(RENDERER_SCHEMA_VERSION),
+        );
+        assert!(serde_json::to_string(&valid)
+            .unwrap()
+            .contains("cached body"));
+        assert!(refresh.is_none());
+
+        for (payload, hash, schema) in [
+            (
+                Some(bytes.clone()),
+                Some("stale-hash"),
+                Some(RENDERER_SCHEMA_VERSION),
+            ),
+            (
+                Some(bytes),
+                Some("hash-a"),
+                Some(RENDERER_SCHEMA_VERSION + 1),
+            ),
+            (
+                Some(vec![0, 1, 2]),
+                Some("hash-a"),
+                Some(RENDERER_SCHEMA_VERSION),
+            ),
+        ] {
+            let (resolved, refresh) =
+                resolve_render_blocks("fresh body", "hash-a", payload, hash, schema);
+            assert!(serde_json::to_string(&resolved)
+                .unwrap()
+                .contains("fresh body"));
+            assert!(refresh.is_some());
+        }
     }
 }

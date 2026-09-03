@@ -88,7 +88,9 @@ pub(crate) async fn stream_cached_message_contents(
             let content_hash: String = row.get("content_hash");
             let key = MessageKey::new(TopicKey::new(owner_type, owner_id, topic_id), msg_id);
             if tx.send((key, content, content_hash)).await.is_err() {
-                return Ok(());
+                return Err(
+                    "render cache compiler channel closed before source scan completed".to_string(),
+                );
             }
         }
     }

@@ -89,16 +89,26 @@ pub async fn rebuild_all_pre_renders(app_handle: AppHandle) -> Result<(), String
     let compiler_handles = spawn_compiler_workers(rx_compiler, &tx_writer);
     let reader_handle =
         tokio::spawn(async move { stream_cached_message_contents(&pool, tx_compiler).await });
-    let _ = reader_handle.await;
-    let _ = futures_util::future::join_all(compiler_handles).await;
+    let reader_result = match reader_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(format!("render cache reader task failed: {error}")),
+    };
+    let compiler_results = futures_util::future::join_all(compiler_handles).await;
     drop(tx_writer);
-    let write_res = writer_handle.await.map_err(|error| error.to_string())?;
+    let writer_result = match writer_handle.await {
+        Ok(result) => result,
+        Err(error) => Err(format!("render cache writer task failed: {error}")),
+    };
     #[cfg(target_os = "android")]
     let _ = tauri_plugin_vcp_mobile::stream::stop_stream_service_inner(
         &app_handle,
         "[预渲染重建] VCP Mobile",
     );
-    write_res?;
+    reader_result?;
+    for result in compiler_results {
+        result.map_err(|error| format!("render cache compiler task failed: {error}"))??;
+    }
+    writer_result?;
     let _ = app_handle.emit(
         "render_rebuild_progress",
         RebuildProgress {
@@ -119,7 +129,7 @@ async fn count_render_cache(pool: &sqlx::SqlitePool) -> Result<i64, String> {
 fn spawn_compiler_workers(
     rx_compiler: mpsc::Receiver<CachedMessageSource>,
     tx_writer: &mpsc::Sender<Vec<RenderCacheWrite>>,
-) -> Vec<tokio::task::JoinHandle<()>> {
+) -> Vec<tokio::task::JoinHandle<Result<(), String>>> {
     let concurrency = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(4)
@@ -137,7 +147,7 @@ fn spawn_compiler_workers(
 fn compile_cached_batches(
     rx: std::sync::Arc<tokio::sync::Mutex<mpsc::Receiver<CachedMessageSource>>>,
     tx: mpsc::Sender<Vec<RenderCacheWrite>>,
-) {
+) -> Result<(), String> {
     let mut batch = Vec::with_capacity(50);
     loop {
         let item = {
@@ -146,18 +156,22 @@ fn compile_cached_batches(
         };
         match item {
             Some((key, content, content_hash)) => {
-                if let Ok(bytes) = compile_cached_content(&content) {
-                    batch.push((key, content_hash, bytes));
-                }
-                if batch.len() >= 50 && tx.blocking_send(std::mem::take(&mut batch)).is_err() {
-                    break;
+                let bytes = compile_cached_content(&content)
+                    .map_err(|error| format!("render cache compile failed: {error}"))?;
+                batch.push((key, content_hash, bytes));
+                if batch.len() >= 50 {
+                    tx.blocking_send(std::mem::take(&mut batch)).map_err(|_| {
+                        "render cache writer channel closed during rebuild".to_string()
+                    })?;
                 }
             }
             None => {
                 if !batch.is_empty() {
-                    let _ = tx.blocking_send(batch);
+                    tx.blocking_send(batch).map_err(|_| {
+                        "render cache writer channel closed before final batch".to_string()
+                    })?;
                 }
-                break;
+                return Ok(());
             }
         }
     }
@@ -166,4 +180,30 @@ fn compile_cached_batches(
 fn compile_cached_content(content: &str) -> Result<Vec<u8>, String> {
     let blocks = MessageRenderCompiler::compile(content);
     MessageRenderCompiler::serialize(&blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compile_cached_batches;
+    use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, Mutex};
+
+    #[test]
+    fn compiler_reports_closed_writer_channel() {
+        let (source_tx, source_rx) = mpsc::channel(1);
+        let (writer_tx, writer_rx) = mpsc::channel(1);
+        drop(writer_rx);
+        source_tx
+            .blocking_send((
+                MessageKey::new(TopicKey::new("agent", "owner", "topic"), "message"),
+                "body".to_string(),
+                "hash".to_string(),
+            ))
+            .expect("queue source row");
+        drop(source_tx);
+        let error = compile_cached_batches(Arc::new(Mutex::new(source_rx)), writer_tx)
+            .expect_err("closed writer must fail the rebuild");
+        assert!(error.contains("writer channel closed"));
+    }
 }

@@ -1,8 +1,17 @@
-use sqlx::{sqlite::SqlitePoolOptions, Connection, Pool, Sqlite};
+use sqlx::{Connection, Pool, Sqlite};
 use std::{fs, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::migration_runner::run_migrations;
+
+#[path = "database_recovery.rs"]
+mod database_recovery;
+use database_recovery::{archive_corrupt_db, open_and_check_db, DatabaseOpenError};
+#[cfg(test)]
+use database_recovery::{
+    is_confirmed_corruption_code, sidecar_path, SQLITE_BUSY, SQLITE_CORRUPT, SQLITE_IOERR,
+    SQLITE_LOCKED, SQLITE_NOTADB,
+};
 
 pub(super) async fn init_db(app_handle: &AppHandle) -> Result<(Pool<Sqlite>, PathBuf), String> {
     let db_path = resolve_database_path(app_handle)?;
@@ -52,88 +61,28 @@ async fn open_database_with_recovery(
 ) -> Result<Pool<Sqlite>, String> {
     match open_and_check_db(connect_options, db_path).await {
         Ok(pool) => Ok(pool),
-        Err(error) => {
+        Err(DatabaseOpenError::ConfirmedCorruption(error)) => {
             log::warn!(
                 "[DBManager] Database open/integrity check failed: {}. Attempting self-healing...",
                 error
             );
-            archive_corrupt_db(db_path);
+            archive_corrupt_db(db_path).map_err(|archive_error| {
+                log::error!(
+                    "[DBManager] Corrupt database archive failed; refusing to create a replacement: {}",
+                    archive_error
+                );
+                format!("数据库损坏且归档失败，已拒绝创建新数据库: {archive_error}")
+            })?;
             open_and_check_db(connect_options, db_path)
                 .await
                 .map_err(|retry_error| format!("数据库损坏且重建失败: {retry_error}"))
         }
-    }
-}
-
-async fn open_and_check_db(
-    connect_options: &sqlx::sqlite::SqliteConnectOptions,
-    db_path: &std::path::Path,
-) -> Result<Pool<Sqlite>, String> {
-    let mut retry_count = 0_u64;
-    let pool = loop {
-        match SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(connect_options.clone())
-            .await
-        {
-            Ok(pool) => break pool,
-            Err(error) => {
-                retry_count += 1;
-                if retry_count >= 3 {
-                    return Err(format!(
-                        "数据库连接重试失败 (已重试 {retry_count} 次): {error}"
-                    ));
-                }
-                log::warn!(
-                    "[DBManager] Connection failed: {}. Retrying in {}ms... (Attempt {})",
-                    error,
-                    retry_count * 50,
-                    retry_count
-                );
-                tokio::time::sleep(Duration::from_millis(retry_count * 50)).await;
-            }
-        }
-    };
-
-    if db_path.exists() && !check_integrity(&pool).await {
-        return Err("PRAGMA quick_check(1) failed".to_string());
-    }
-    Ok(pool)
-}
-
-async fn check_integrity(pool: &Pool<Sqlite>) -> bool {
-    match sqlx::query_scalar::<_, String>("PRAGMA quick_check(1)")
-        .fetch_one(pool)
-        .await
-    {
-        Ok(result) => result.eq_ignore_ascii_case("ok"),
-        Err(error) => {
-            log::error!("[DBManager] Integrity quick check failed: {error}");
-            false
-        }
-    }
-}
-
-fn archive_corrupt_db(db_path: &std::path::Path) {
-    let archived_path = db_path.with_extension(format!(
-        "db.corrupt.{}",
-        chrono::Utc::now().timestamp_millis()
-    ));
-    log::warn!(
-        "[DBManager] Archiving corrupt database from {:?} to {:?}",
-        db_path,
-        archived_path
-    );
-    if let Err(error) = fs::rename(db_path, &archived_path) {
-        log::error!("[DBManager] Failed to rename corrupt database file: {error}");
-    }
-
-    for sidecar in [
-        db_path.with_extension("db-wal"),
-        db_path.with_extension("db-shm"),
-    ] {
-        if sidecar.exists() {
-            let _ = fs::remove_file(sidecar);
+        Err(DatabaseOpenError::Unavailable(error)) => {
+            log::error!(
+                "[DBManager] Database unavailable; recovery skipped and original files were preserved: {}",
+                error
+            );
+            Err(format!("数据库暂时不可用，未执行归档或重建: {error}"))
         }
     }
 }
@@ -236,3 +185,7 @@ async fn sync_system_preset_rules(pool: &Pool<Sqlite>) -> Result<(), String> {
         .await
         .map_err(|error| format!("[DBManager] Failed to sync preset rules: {error}"))
 }
+
+#[cfg(test)]
+#[path = "database_lifecycle_tests.rs"]
+mod tests;

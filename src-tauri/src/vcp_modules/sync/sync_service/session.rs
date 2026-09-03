@@ -1,4 +1,4 @@
-use super::attempt::{AttemptContext, AttemptContextParams, AttemptOutcome};
+use super::attempt::{AttemptContext, AttemptContextParams, AttemptOutcome, RetryReason};
 use super::connection_config::ConnectionSettings;
 use super::errors::publish_sync_nonterminal_status;
 use super::logs::emit_operator_sync_log;
@@ -232,18 +232,10 @@ impl SessionRuntime {
         self.successful = outcome.success;
         self.fatal = outcome.fatal;
         if !self.successful && !self.fatal {
-            let _ = self.queue.flush().await;
+            let flush_error = self.queue.flush().await.err();
             crate::vcp_modules::sync::sync_finalize::invalidate_sync_entity_caches(&self.app);
-            let (code, detail) = outcome.retry.map_or_else(
-                || {
-                    (
-                        "WS_DISCONNECTED".to_string(),
-                        "同步中途异常断开".to_string(),
-                    )
-                },
-                |retry| (retry.code, retry.message),
-            );
-            if !self.schedule_retry(&code, &detail).await {
+            let retry = retry_reason_after_flush(outcome.retry, flush_error);
+            if !self.schedule_retry(&retry.code, &retry.message).await {
                 self.fatal = true;
             }
         }
@@ -260,5 +252,40 @@ impl SessionRuntime {
             detail,
         )
         .await
+    }
+}
+
+fn retry_reason_after_flush(
+    attempt_retry: Option<RetryReason>,
+    flush_error: Option<String>,
+) -> RetryReason {
+    if let Some(error) = flush_error {
+        return RetryReason {
+            code: "SYNC_DB_DRAIN_FAILED".to_string(),
+            message: format!("write queue drain before retry failed: {error}"),
+        };
+    }
+    attempt_retry.unwrap_or_else(|| RetryReason {
+        code: "WS_DISCONNECTED".to_string(),
+        message: "同步中途异常断开".to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_reason_after_flush;
+    use crate::vcp_modules::sync::sync_service::attempt::RetryReason;
+
+    #[test]
+    fn queue_flush_error_overrides_transport_retry_reason() {
+        let retry = retry_reason_after_flush(
+            Some(RetryReason {
+                code: "WS_DISCONNECTED".to_string(),
+                message: "socket closed".to_string(),
+            }),
+            Some("injected write failure".to_string()),
+        );
+        assert_eq!(retry.code, "SYNC_DB_DRAIN_FAILED");
+        assert!(retry.message.contains("injected write failure"));
     }
 }

@@ -1,6 +1,8 @@
-use super::message_service_support::{load_attachments_for_topic, parse_render_bytes, topic_key};
+use super::message_service_support::{
+    load_attachments_for_topic, resolve_render_blocks, topic_key,
+};
 use crate::vcp_modules::chat_manager::ChatMessage;
-use crate::vcp_modules::message_repository::{MessageRenderCompiler, RENDERER_SCHEMA_VERSION};
+use crate::vcp_modules::message_repository::RENDERER_SCHEMA_VERSION;
 use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
 use sqlx::Row;
 use tauri::{AppHandle, Manager};
@@ -62,7 +64,8 @@ async fn fetch_history_rows(
         "SELECT m.msg_id, m.role, COALESCE(m.name, a.name) AS name,
                 m.agent_id, m.content, m.timestamp, m.updated_at,
                 m.is_group_message, m.group_id, m.finish_reason,
-                r.render_content, m.content_hash
+                r.render_content, r.content_hash AS render_content_hash,
+                r.renderer_schema_version AS render_schema_version, m.content_hash
          FROM messages m
          LEFT JOIN render_cache r
            ON m.owner_type = r.owner_type AND m.owner_id = r.owner_id
@@ -76,7 +79,8 @@ async fn fetch_history_rows(
         "SELECT m.msg_id, m.role, COALESCE(m.name, a.name) AS name,
                 m.agent_id, m.content, m.timestamp, m.updated_at,
                 m.is_group_message, m.group_id, m.finish_reason,
-                r.render_content, m.content_hash
+                r.render_content, r.content_hash AS render_content_hash,
+                r.renderer_schema_version AS render_schema_version, m.content_hash
          FROM messages m
          LEFT JOIN render_cache r
            ON m.owner_type = r.owner_type AND m.owner_id = r.owner_id
@@ -171,10 +175,17 @@ fn build_history_message(
     user_name: &str,
     user_avatar_color: Option<&str>,
 ) -> Result<ChatMessage, String> {
-    let decoded_content = decode_message_content(row, "content")?;
-    let (blocks, content) =
-        render_history_content(pool, key, row, &msg_id, decoded_content, include_content);
     let content_hash: String = row.get("content_hash");
+    let decoded_content = decode_message_content(row, "content")?;
+    let (blocks, content) = render_history_content(
+        pool,
+        key,
+        row,
+        &msg_id,
+        &content_hash,
+        decoded_content,
+        include_content,
+    );
     let timestamp: i64 = row.get("timestamp");
     let updated_at: i64 = row.get("updated_at");
     let mut message = ChatMessage {
@@ -212,24 +223,24 @@ fn render_history_content(
     key: &crate::vcp_modules::topic_types::TopicKey,
     row: &sqlx::sqlite::SqliteRow,
     msg_id: &str,
+    content_hash: &str,
     decoded_content: String,
     include_content: bool,
 ) -> (Option<serde_json::Value>, String) {
-    if let Some(render_content) = row.get::<Option<Vec<u8>>, _>("render_content") {
-        return (
-            parse_render_bytes(Some(render_content)),
-            content_if_requested(decoded_content, include_content),
-        );
-    }
-    if decoded_content.is_empty() {
-        return (None, String::new());
-    }
-    let compiled = MessageRenderCompiler::compile(&decoded_content);
-    if let Ok(serialized) = MessageRenderCompiler::serialize(&compiled) {
-        schedule_render_cache(pool, key, msg_id, serialized);
+    let cached_hash = row.get::<Option<String>, _>("render_content_hash");
+    let cached_schema = row.get::<Option<i64>, _>("render_schema_version");
+    let (blocks, refresh) = resolve_render_blocks(
+        &decoded_content,
+        content_hash,
+        row.get("render_content"),
+        cached_hash.as_deref(),
+        cached_schema,
+    );
+    if let Some(serialized) = refresh {
+        schedule_render_cache(pool, key, msg_id, content_hash, serialized);
     }
     (
-        serde_json::to_value(&compiled).ok(),
+        blocks,
         content_if_requested(decoded_content, include_content),
     )
 }
@@ -246,6 +257,7 @@ fn schedule_render_cache(
     pool: &sqlx::SqlitePool,
     key: &crate::vcp_modules::topic_types::TopicKey,
     msg_id: &str,
+    content_hash: &str,
     serialized: Vec<u8>,
 ) {
     let pool = pool.clone();
@@ -253,35 +265,103 @@ fn schedule_render_cache(
     let owner_id = key.owner_id.clone();
     let topic_id = key.topic_id.clone();
     let message_id = msg_id.to_string();
+    let expected_hash = content_hash.to_string();
     tokio::spawn(async move {
-        let now = chrono::Utc::now().timestamp_millis();
-        let _ = sqlx::query(
-            "INSERT INTO render_cache (
-                owner_type, owner_id, topic_id, msg_id, render_content,
-                content_hash, renderer_schema_version, updated_at
-             )
-             SELECT ?, ?, ?, ?, ?, m.content_hash, ?, ?
-             FROM messages m
-             WHERE m.owner_type = ? AND m.owner_id = ? AND m.topic_id = ?
-               AND m.msg_id = ? AND m.deleted_at IS NULL
-             ON CONFLICT(owner_type, owner_id, topic_id, msg_id) DO UPDATE SET
-                render_content = excluded.render_content,
-                content_hash = excluded.content_hash,
-                renderer_schema_version = excluded.renderer_schema_version,
-                updated_at = excluded.updated_at",
+        if let Err(error) = write_render_cache_if_current(
+            &pool,
+            &crate::vcp_modules::topic_types::TopicKey::new(owner_type, owner_id, topic_id),
+            &message_id,
+            &expected_hash,
+            &serialized,
         )
-        .bind(&owner_type)
-        .bind(&owner_id)
-        .bind(&topic_id)
-        .bind(&message_id)
-        .bind(&serialized)
-        .bind(RENDERER_SCHEMA_VERSION)
-        .bind(now)
-        .bind(&owner_type)
-        .bind(&owner_id)
-        .bind(&topic_id)
-        .bind(&message_id)
-        .execute(&pool)
-        .await;
+        .await
+        {
+            log::warn!("[RenderCache] background refresh failed: {error}");
+        }
     });
+}
+
+async fn write_render_cache_if_current(
+    pool: &sqlx::SqlitePool,
+    key: &crate::vcp_modules::topic_types::TopicKey,
+    msg_id: &str,
+    expected_hash: &str,
+    serialized: &[u8],
+) -> Result<u64, String> {
+    let result = sqlx::query(
+        "INSERT INTO render_cache (
+            owner_type, owner_id, topic_id, msg_id, render_content,
+            content_hash, renderer_schema_version, updated_at
+         )
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?
+         FROM messages m
+         WHERE m.owner_type = ? AND m.owner_id = ? AND m.topic_id = ?
+           AND m.msg_id = ? AND m.content_hash = ? AND m.deleted_at IS NULL
+         ON CONFLICT(owner_type, owner_id, topic_id, msg_id) DO UPDATE SET
+            render_content = excluded.render_content,
+            content_hash = excluded.content_hash,
+            renderer_schema_version = excluded.renderer_schema_version,
+            updated_at = excluded.updated_at",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .bind(msg_id)
+    .bind(serialized)
+    .bind(expected_hash)
+    .bind(RENDERER_SCHEMA_VERSION)
+    .bind(chrono::Utc::now().timestamp_millis())
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .bind(msg_id)
+    .bind(expected_hash)
+    .execute(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_render_cache_if_current;
+    use crate::vcp_modules::topic_types::TopicKey;
+
+    #[tokio::test]
+    async fn stale_render_backfill_cannot_overwrite_updated_message_cache() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open cache test database");
+        sqlx::raw_sql(
+            "CREATE TABLE messages (
+                owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT,
+                content_hash TEXT, deleted_at INTEGER
+             );
+             CREATE TABLE render_cache (
+                owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT,
+                render_content BLOB, content_hash TEXT,
+                renderer_schema_version INTEGER, updated_at INTEGER,
+                PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
+             );
+             INSERT INTO messages VALUES ('agent', 'owner', 'topic', 'message', 'new-hash', NULL);
+             INSERT INTO render_cache VALUES (
+                'agent', 'owner', 'topic', 'message', X'AA', 'new-hash', 1, 1
+             );",
+        )
+        .execute(&pool)
+        .await
+        .expect("create cache fixture");
+        let key = TopicKey::new("agent", "owner", "topic");
+        let changed = write_render_cache_if_current(&pool, &key, "message", "old-hash", &[0xBB])
+            .await
+            .expect("attempt stale backfill");
+        assert_eq!(changed, 0);
+        let bytes: Vec<u8> = sqlx::query_scalar("SELECT render_content FROM render_cache")
+            .fetch_one(&pool)
+            .await
+            .expect("read cache fixture");
+        assert_eq!(bytes, vec![0xAA]);
+    }
 }

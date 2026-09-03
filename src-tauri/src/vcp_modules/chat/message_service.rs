@@ -5,6 +5,8 @@
 //! public paths are re-exported here to keep callers source-compatible while
 //! owner-aware `*_for_key` APIs are available for new callers.
 
+#[path = "message_service_around.rs"]
+mod message_service_around;
 #[path = "message_service_batch.rs"]
 mod message_service_batch;
 #[path = "message_service_context.rs"]
@@ -20,6 +22,7 @@ mod message_service_stream;
 #[path = "message_service_support.rs"]
 mod message_service_support;
 
+pub use message_service_around::{load_chat_history_around_internal, HistoryAroundResult};
 #[allow(unused_imports)]
 pub use message_service_batch::{load_multi_topic_messages, load_multi_topic_messages_for_keys};
 #[allow(unused_imports)]

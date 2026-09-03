@@ -148,6 +148,30 @@ pub async fn load_chat_history(
     .await
 }
 
+/// 以完整复合身份加载全局搜索目标消息附近的历史窗口。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn load_chat_history_around(
+    app_handle: tauri::AppHandle,
+    owner_id: String,
+    owner_type: String,
+    topic_id: String,
+    anchor_message_id: String,
+    before_count: Option<usize>,
+    after_count: Option<usize>,
+) -> Result<message_service::HistoryAroundResult, String> {
+    message_service::load_chat_history_around_internal(
+        &app_handle,
+        &owner_id,
+        &owner_type,
+        &topic_id,
+        &anchor_message_id,
+        before_count,
+        after_count,
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn append_single_message(
     app_handle: tauri::AppHandle,

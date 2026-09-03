@@ -69,6 +69,10 @@ mod tests {
     fn database_commands_fail_closed_until_db_state_exists() {
         for command in [
             "load_chat_history",
+            "load_chat_history_around",
+            "search_messages_fts",
+            "get_fts_index_status",
+            "rebuild_messages_fts",
             "get_avatar",
             "read_settings",
             "get_assistants_snapshot",

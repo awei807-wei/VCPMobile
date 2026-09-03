@@ -4,6 +4,7 @@ mod distributed;
 mod vcp_modules;
 
 use tauri::{Listener, Manager};
+use tauri_plugin_log::{Target, TargetKind};
 use vcp_modules::agent_chat_application_service::{
     handle_agent_chat_message, handle_assistant_chat_stream, is_assistant_chat_active,
 };
@@ -15,22 +16,15 @@ use vcp_modules::avatar_service::{
     batch_get_avatars, get_avatar, save_avatar_data, store_dominant_color,
 };
 use vcp_modules::chat_manager::{
-    append_single_message, delete_messages, load_chat_history, load_chat_history_streamed,
-    patch_single_message, truncate_history_after_timestamp,
+    append_single_message, delete_messages, load_chat_history, load_chat_history_around,
+    load_chat_history_streamed, patch_single_message, truncate_history_after_timestamp,
 };
 use vcp_modules::context_injection::{
     delete_tarven_rule, get_tarven_rules, preview_tarven_injection, reorder_rules,
     save_tarven_rule, toggle_rule_enabled,
 };
 use vcp_modules::context_sanitizer::ContextSanitizer;
-use vcp_modules::message_service::delete_message_attachment;
-use vcp_modules::settings_manager::{
-    begin_connection_profile_switch, end_connection_profile_switch,
-    is_connection_profile_switching_command, read_settings, set_theme, update_settings,
-    write_settings,
-};
-// use vcp_modules::db_manager::DbState;
-use tauri_plugin_log::{Target, TargetKind};
+use vcp_modules::db_manager::{get_fts_index_status, rebuild_messages_fts, search_messages_fts};
 use vcp_modules::emoticon_manager::{
     fix_emoticon_url, get_emoticon_library, regenerate_emoticon_library,
 };
@@ -58,6 +52,7 @@ use vcp_modules::maintenance_manager::{
     init_automatic_maintenance, reconstruct_system_cache,
 };
 use vcp_modules::message_repository::{process_message_content, rebuild_all_pre_renders};
+use vcp_modules::message_service::delete_message_attachment;
 use vcp_modules::message_service::{fetch_raw_message_content, re_render_message};
 use vcp_modules::model_manager::{
     get_cached_models, get_favorite_models, get_hot_models, invalidate_model_cache,
@@ -65,6 +60,11 @@ use vcp_modules::model_manager::{
     test_model_connectivity, toggle_favorite_model,
 };
 use vcp_modules::runtime_diagnostics::{export_runtime_diagnostics, record_frontend_diagnostic};
+use vcp_modules::settings_manager::{
+    begin_connection_profile_switch, end_connection_profile_switch,
+    is_connection_profile_switching_command, read_settings, set_theme, update_settings,
+    write_settings,
+};
 
 #[cfg(debug_assertions)]
 use vcp_modules::sync::wire14_debug::{
@@ -257,7 +257,11 @@ pub fn run() {
                     handle_assistant_chat_stream,
                     is_assistant_chat_active,
                     load_chat_history,
+                    load_chat_history_around,
                     load_chat_history_streamed,
+                    search_messages_fts,
+                    get_fts_index_status,
+                    rebuild_messages_fts,
                     append_single_message,
                     patch_single_message,
                     delete_messages,

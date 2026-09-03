@@ -102,6 +102,7 @@ export const useChatHistoryStore = defineStore("chatHistory", () => {
     loadHistory: loader.loadHistory,
     loadHistoryPaginated: loader.loadHistoryPaginated,
     loadMoreHistory: loader.loadMoreHistory,
+    installAnchoredHistory: loader.installAnchoredHistory,
     sendMessage: generation.sendMessage,
     triggerGeneration: generation.triggerGeneration,
     summarizeTopic: generation.summarizeTopic,

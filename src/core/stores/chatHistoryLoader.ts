@@ -21,6 +21,12 @@ export interface PreloadedHistory {
   messages: ChatMessage[];
 }
 
+export interface AnchoredHistoryWindow {
+  messages: ChatMessage[];
+  nextOffset: number;
+  hasMoreHistory: boolean;
+}
+
 export interface HistoryLoaderDeps {
   currentChatHistory: Ref<ChatMessage[]>;
   loading: Ref<boolean>;
@@ -256,6 +262,28 @@ async function loadMoreHistory(
   );
 }
 
+function installAnchoredHistory(
+  deps: HistoryLoaderDeps,
+  state: HistoryLoaderState,
+  identity: ConversationIdentity,
+  window: AnchoredHistoryWindow,
+): boolean {
+  if (!deps.isCurrentIdentity(identity)) return false;
+  beginHistoryEpoch(state, identity);
+  state.currentLoadAbortController?.abort();
+  state.currentLoadAbortController = null;
+  deps.loading.value = false;
+  deps.isLoadingHistory.value = false;
+  const hydrated = hydrateHistoryMessages(deps, identity, window.messages);
+  deps.currentChatHistory.value = hydrated;
+  deps.historyOffset.value = Math.max(window.nextOffset, hydrated.length);
+  deps.hasMoreHistory.value = window.hasMoreHistory;
+  hydrated.forEach((message) =>
+    deps.attachmentStore.resolveMessageAssets(message),
+  );
+  return true;
+}
+
 export function createHistoryLoader(deps: HistoryLoaderDeps) {
   const state: HistoryLoaderState = {
     currentLoadAbortController: null,
@@ -295,5 +323,9 @@ export function createHistoryLoader(deps: HistoryLoaderDeps) {
       topicId: string,
     ) => loadHistoryPaginated(deps, state, ownerId, ownerType, topicId),
     loadMoreHistory: () => loadMoreHistory(deps, state),
+    installAnchoredHistory: (
+      identity: ConversationIdentity,
+      window: AnchoredHistoryWindow,
+    ) => installAnchoredHistory(deps, state, identity, window),
   };
 }

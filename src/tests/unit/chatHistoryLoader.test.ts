@@ -13,11 +13,7 @@ import {
   createHistoryStreamSettlement,
   HISTORY_STREAM_SETTLE_TIMEOUT_MS,
 } from "../../core/stores/historyStreamSettlement";
-import {
-  channelInstances,
-  mockInvoke,
-  type MockChannel,
-} from "../mocks/tauri";
+import { channelInstances, mockInvoke, type MockChannel } from "../mocks/tauri";
 
 const identity: ConversationIdentity = {
   ownerId: "agent-1",
@@ -205,5 +201,46 @@ describe("createHistoryLoader streamed history settlement", () => {
         (candidate) => candidate.id === "wrong-owner",
       ),
     ).toBe(false);
+  });
+});
+
+describe("搜索锚点历史安装", () => {
+  it("原子安装窗口并让后续分页从后端偏移继续", async () => {
+    const fixture = createFixture();
+    const anchored = [message("older", 1), message("anchor", 2)];
+
+    expect(
+      fixture.loader.installAnchoredHistory(identity, {
+        messages: anchored,
+        nextOffset: 17,
+        hasMoreHistory: true,
+      }),
+    ).toBe(true);
+    expect(fixture.deps.currentChatHistory.value).toEqual(anchored);
+    expect(fixture.deps.historyOffset.value).toBe(17);
+    expect(fixture.deps.hasMoreHistory.value).toBe(true);
+
+    mockInvoke("load_chat_history_streamed", (args) => {
+      (args?.onMessage as MockChannel<HistoryChunk>).emit(
+        historyChunk("next-older", true),
+      );
+      return 1;
+    });
+    await fixture.loader.loadMoreHistory();
+    expect(fixture.deps.currentChatHistory.value[0]?.id).toBe("next-older");
+  });
+
+  it("切换会话后拒绝安装迟到窗口", () => {
+    const fixture = createFixture();
+    fixture.setActiveIdentity({ ...identity, topicId: "topic-2" });
+
+    expect(
+      fixture.loader.installAnchoredHistory(identity, {
+        messages: [message("stale", 1)],
+        nextOffset: 1,
+        hasMoreHistory: false,
+      }),
+    ).toBe(false);
+    expect(fixture.deps.currentChatHistory.value).toEqual([]);
   });
 });

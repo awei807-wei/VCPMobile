@@ -18,6 +18,9 @@ import { useAttachmentStore } from "../../core/stores/attachmentStore";
 import { useKeyboardInsets } from "../../core/composables/useKeyboardInsets";
 import { useChatScroll } from "../../core/composables/useChatScroll";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { makeConversationIdentity } from "../../core/stores/chatStoreIdentity";
+import { useGlobalSearchStore } from "../globalsearch/useGlobalSearchStore";
+import { handlePendingSearchJump } from "../globalsearch/chatJumpBridge";
 
 const sessionStore = useChatSessionStore();
 const historyStore = useChatHistoryStore();
@@ -28,6 +31,7 @@ const themeStore = useThemeStore();
 const lifecycleStore = useAppLifecycleStore();
 const layoutStore = useLayoutStore();
 const notificationStore = useNotificationStore();
+const globalSearchStore = useGlobalSearchStore();
 const { keyboardHeight, forceRecalculate } = useKeyboardInsets();
 
 // 跟踪输入增强组件底部的扩展菜单状态
@@ -70,8 +74,9 @@ watch(
     () => sessionStore.currentTopicId,
     () => sessionStore.currentSelectedItem,
     () => lifecycleStore.state,
+    () => globalSearchStore.jumpRevision,
   ],
-  ([newTopicId, newSelectedItem, lifecycleState]) => {
+  async ([newTopicId, newSelectedItem, lifecycleState]) => {
     showScrollToBottom.value = false;
     resetChatScroll();
     if (lifecycleState !== "READY") {
@@ -94,7 +99,10 @@ watch(
         ownerType: newSelectedItem.type,
         topicId: newTopicId,
       });
-      historyStore.loadHistoryPaginated(
+      const identity = makeConversationIdentity(newSelectedItem.id, newSelectedItem.type, newTopicId);
+      if (identity && await handlePendingSearchJump(identity, globalSearchStore, historyStore, () =>
+        makeConversationIdentity(sessionStore.currentSelectedItem?.id, sessionStore.currentSelectedItem?.type, sessionStore.currentTopicId))) return;
+      await historyStore.loadHistoryPaginated(
         newSelectedItem.id,
         newSelectedItem.type,
         newTopicId

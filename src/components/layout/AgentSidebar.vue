@@ -1,42 +1,43 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { useSidebarSwipe } from '../../core/composables/useSidebarSwipe';
-import { useLayoutStore } from '../../core/stores/layout';
-import { useOverlayStore } from '../../core/stores/overlay';
-import { useChatSessionStore } from '../../core/stores/chatSessionStore';
-import SidebarTabs from '../../features/agent/SidebarTabs.vue';
-import SidebarSearch from '../../features/agent/SidebarSearch.vue';
-import AgentList from '../../features/agent/AgentList.vue';
-import TopicList from '../../features/topic/TopicList.vue';
-import AgentsCreator from '../../features/agent/AgentsCreator.vue';
-import TopicCreator from '../../features/topic/TopicCreator.vue';
+import { ref, watch } from "vue";
+import { useSidebarSwipe } from "../../core/composables/useSidebarSwipe";
+import { useLayoutStore } from "../../core/stores/layout";
+import { useOverlayStore } from "../../core/stores/overlay";
+import { useChatSessionStore } from "../../core/stores/chatSessionStore";
+import SidebarTabs from "../../features/agent/SidebarTabs.vue";
+import SidebarSearch from "../../features/agent/SidebarSearch.vue";
+import AgentList from "../../features/agent/AgentList.vue";
+import TopicList from "../../features/topic/TopicList.vue";
+import AgentsCreator from "../../features/agent/AgentsCreator.vue";
+import TopicCreator from "../../features/topic/TopicCreator.vue";
+import { Search } from "lucide-vue-next";
 
 const layoutStore = useLayoutStore();
 const overlayStore = useOverlayStore();
 const sessionStore = useChatSessionStore();
 
-const activeTab = ref<'agents' | 'topics'>('agents');
-const searchQuery = ref('');
+const activeTab = ref<"agents" | "topics">("agents");
+const searchQuery = ref("");
 
 // 切换 Tab 时清空搜索框
 watch(activeTab, () => {
-  searchQuery.value = '';
+  searchQuery.value = "";
 });
 
 const sidebarRef = ref<HTMLElement | null>(null);
 
 // 侧边栏内部监听左滑以关闭或 Tab 切换
 useSidebarSwipe(sidebarRef, {
-  type: 'left',
+  type: "left",
   onTabSwitch: () => {
-    if (activeTab.value === 'topics') {
-      activeTab.value = 'agents';
+    if (activeTab.value === "topics") {
+      activeTab.value = "agents";
     }
-  }
+  },
 });
 
 const handleSelectItem = async (item: any) => {
-  activeTab.value = 'topics';
+  activeTab.value = "topics";
   if (item) {
     // 自动加载并渲染上次活跃话题（保留便利性）
     // 话题列表的加载由 TopicList.vue 中的 watch 响应式驱动，此处无需重复调用
@@ -51,15 +52,39 @@ const handleSelectTopic = () => {
 const openSettings = () => {
   overlayStore.openSettings();
 };
+
+const openGlobalSearch = () => {
+  layoutStore.setLeftDrawer(false);
+  overlayStore.openGlobalSearch();
+};
 </script>
 
 <template>
-  <aside ref="sidebarRef" class="vcp-drawer vcp-drawer-left flex flex-col" :class="{ 'is-open': layoutStore.leftDrawerOpen }">
-
+  <aside
+    ref="sidebarRef"
+    class="vcp-drawer vcp-drawer-left flex flex-col"
+    :class="{ 'is-open': layoutStore.leftDrawerOpen }"
+  >
     <!-- 顶部 Tabs -->
-    <div class="pt-safe px-4 pt-6 pb-2 shrink-0 border-b border-black/5 dark:border-white/5">
-      <h2 class="text-xl font-black opacity-90 mb-4 tracking-tighter text-blue-500 dark:text-blue-400 px-2">VCP MOBILE
-      </h2>
+    <div
+      class="pt-safe px-4 pt-6 pb-2 shrink-0 border-b border-black/5 dark:border-white/5"
+    >
+      <div class="flex items-center justify-between mb-4 px-2">
+        <h2
+          class="text-xl font-black opacity-90 tracking-tighter text-blue-500 dark:text-blue-400"
+        >
+          VCP MOBILE
+        </h2>
+        <button
+          type="button"
+          class="min-h-11 min-w-11 flex items-center justify-center rounded-xl bg-black/5 dark:bg-white/5 text-primary-text/70 hover:text-primary-text active:scale-95 transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60"
+          aria-label="打开全局搜索"
+          title="全局搜索"
+          @click="openGlobalSearch"
+        >
+          <Search :size="19" stroke-width="2" />
+        </button>
+      </div>
 
       <SidebarTabs v-model:activeTab="activeTab" />
       <SidebarSearch v-model="searchQuery" :activeTab="activeTab" />
@@ -68,19 +93,29 @@ const openSettings = () => {
     <!-- 内容区 -->
     <div class="flex-1 overflow-hidden">
       <template v-if="activeTab === 'agents'">
-        <div class="h-full overflow-y-auto px-4 py-4 space-y-2 vcp-scrollable no-rubber-band">
-          <AgentList :searchQuery="searchQuery" @select-agent="handleSelectItem" @select-group="handleSelectItem" />
+        <div
+          class="h-full overflow-y-auto px-4 py-4 space-y-2 vcp-scrollable no-rubber-band"
+        >
+          <AgentList
+            :searchQuery="searchQuery"
+            @select-agent="handleSelectItem"
+            @select-group="handleSelectItem"
+          />
         </div>
       </template>
 
       <template v-if="activeTab === 'topics'">
-        <TopicList :searchQuery="searchQuery" @select-topic="handleSelectTopic" />
+        <TopicList
+          :searchQuery="searchQuery"
+          @select-topic="handleSelectTopic"
+        />
       </template>
     </div>
 
     <!-- 底部: 动作区与设置 -->
     <div
-      class="p-4 border-t border-black/5 dark:border-white/5 glass-panel shrink-0 space-y-3 pb-[calc(var(--vcp-safe-bottom,16px)+8px)]">
+      class="p-4 border-t border-black/5 dark:border-white/5 glass-panel shrink-0 space-y-3 pb-[calc(var(--vcp-safe-bottom,16px)+8px)]"
+    >
       <template v-if="activeTab === 'agents'">
         <AgentsCreator />
       </template>
@@ -90,24 +125,39 @@ const openSettings = () => {
 
       <button
         class="w-full flex items-center justify-between p-3 bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 active:scale-95 rounded-xl transition-all border border-black/5 dark:border-white/5 text-primary-text"
-        @click="openSettings">
+        @click="openSettings"
+      >
         <div class="flex items-center gap-3">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <circle cx="12" cy="12" r="3"></circle>
             <path
-              d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z">
-            </path>
+              d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+            ></path>
           </svg>
           <span class="font-bold text-sm">全局设置</span>
         </div>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-          class="opacity-30">
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          class="opacity-30"
+        >
           <polyline points="9 18 15 12 9 6"></polyline>
         </svg>
       </button>
     </div>
-
   </aside>
 </template>
 

@@ -8,7 +8,7 @@ interface ActiveGeneration {
   msgId: string;
   topicId: string;
   ownerId: string;
-  ownerType: string;
+  ownerType: "agent" | "group";
   createdAt: number;
 }
 
@@ -42,6 +42,35 @@ function isAssistantLifecycleWindow() {
     return getCurrentWebviewWindow().label === "assistant";
   } catch {
     return false;
+  }
+}
+
+async function recoverActiveGeneration(
+  generation: ActiveGeneration,
+): Promise<boolean> {
+  try {
+    console.log(
+      `[useAppLifecycle] Recovering generation: msgId=${generation.msgId}, topicId=${generation.topicId}`,
+    );
+    await invoke("recover_active_generation", {
+      msgId: generation.msgId,
+      ownerId: generation.ownerId,
+      ownerType: generation.ownerType,
+      topicId: generation.topicId,
+    });
+    return true;
+  } catch (error) {
+    if (isCoreNotReadyError(error)) {
+      console.info(
+        `[useAppLifecycle] Core not ready while recovering ${generation.msgId}; skipped.`,
+      );
+      return false;
+    }
+    console.warn(
+      `[useAppLifecycle] Failed to recover generation ${generation.msgId}:`,
+      error,
+    );
+    return true;
   }
 }
 
@@ -85,26 +114,7 @@ export function useAppLifecycle() {
           return;
         }
 
-        try {
-          console.log(
-            `[useAppLifecycle] Recovering generation: msgId=${generation.msgId}, topicId=${generation.topicId}`,
-          );
-          await invoke("recover_active_generation", {
-            msgId: generation.msgId,
-          });
-        } catch (err) {
-          if (isCoreNotReadyError(err)) {
-            console.info(
-              `[useAppLifecycle] Core not ready while recovering ${generation.msgId}; skipped.`,
-            );
-            return;
-          }
-
-          console.warn(
-            `[useAppLifecycle] Failed to recover generation ${generation.msgId}:`,
-            err,
-          );
-        }
+        if (!(await recoverActiveGeneration(generation))) return;
       }
     } catch (err) {
       if (isCoreNotReadyError(err)) {

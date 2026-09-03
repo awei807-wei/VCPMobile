@@ -1,13 +1,22 @@
 use crate::vcp_modules::sync_logger::SyncLogger;
+use crate::vcp_modules::sync_types::MessageVersionState;
+use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
 mod attachments;
 mod entity_upserts;
 mod hash_bubbles;
+mod message_batch;
+mod message_deletes;
+mod message_fts;
 mod message_upserts;
 mod worker;
+
+pub(crate) const SNAPSHOT_STALE_MARKER: &str = "SYNC_SNAPSHOT_STALE";
+pub(crate) type ExpectedMessageStates = BTreeMap<String, Option<MessageVersionState>>;
 
 #[derive(Debug)]
 pub enum DbWriteTask {
@@ -45,6 +54,23 @@ pub enum DbWriteTask {
         render_bytes: Vec<Vec<u8>>,
         content_hashes: Vec<String>,
         skip_bubble: bool,
+    },
+    /// Canonical Wire 1.4 message write. The compressed body remains an
+    /// explicit queue payload; the DTO is used for identity/hash metadata.
+    TopicMessagesCanonical {
+        topic: TopicKey,
+        messages: Vec<crate::vcp_modules::sync_dto::MessageSyncDTO>,
+        compressed_contents: Vec<Vec<u8>>,
+        render_bytes: Vec<Vec<u8>>,
+        expected_states: Option<ExpectedMessageStates>,
+        skip_bubble: bool,
+    },
+    /// Composite-identity tombstone operations kept in the queue so a batch
+    /// cannot accidentally delete another owner's same-named topic/message.
+    DeleteTopic { topic: TopicKey, deleted_at: i64 },
+    DeleteMessage {
+        message: MessageKey,
+        deleted_at: i64,
     },
     Flush {
         tx: oneshot::Sender<Result<(), String>>,
@@ -116,6 +142,44 @@ impl DbWriteQueue {
             Ok(())
         } else {
             Err(std::mem::take(errors).join(" | "))
+        }
+    }
+
+    /// Resolve a legacy topic-only queue call only when the id maps to one
+    /// live composite topic. Ambiguous ids fail closed instead of guessing.
+    pub(super) fn rusqlite_resolve_topic_key(
+        tx: &rusqlite::Transaction<'_>,
+        topic_id: &str,
+    ) -> rusqlite::Result<TopicKey> {
+        if topic_id.is_empty() {
+            return Err(Self::sync_contract_error(
+                "Topic identity requires a non-empty topic id",
+            ));
+        }
+        let mut statement = tx.prepare_cached(
+            "SELECT owner_type, owner_id FROM topics
+             WHERE topic_id = ? AND deleted_at IS NULL
+             ORDER BY owner_type, owner_id",
+        )?;
+        let rows = statement
+            .query_map([topic_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let [(owner_type, owner_id)] = rows.as_slice() else {
+            return Err(Self::sync_contract_error(if rows.is_empty() {
+                format!("Topic {topic_id} is missing or deleted")
+            } else {
+                format!("Topic {topic_id} is ambiguous across {} owners", rows.len())
+            }));
+        };
+        let key = TopicKey::new(owner_type.clone(), owner_id.clone(), topic_id);
+        if key.is_valid() {
+            Ok(key)
+        } else {
+            Err(Self::sync_contract_error(format!(
+                "Topic {topic_id} has invalid owner identity"
+            )))
         }
     }
 }

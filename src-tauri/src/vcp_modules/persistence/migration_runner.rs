@@ -87,10 +87,18 @@ async fn reject_tracking_without_baseline(
 struct LegacySchema {
     attachment_deleted_at: bool,
     messages_fts: bool,
+    fts_topic_identity: bool,
     active_generations: bool,
     render_content_hash: bool,
     render_schema_version: bool,
     avatar_deleted_at: bool,
+    composite_topics: bool,
+    composite_messages: bool,
+    composite_render_cache: bool,
+    composite_message_attachments: bool,
+    composite_active_generations: bool,
+    topic_activity_clock: bool,
+    fts_composite_identity: bool,
 }
 
 impl LegacySchema {
@@ -101,7 +109,34 @@ impl LegacySchema {
                     .to_string(),
             );
         }
+        let composite_states = [
+            self.composite_topics,
+            self.composite_messages,
+            self.composite_render_cache,
+            self.composite_message_attachments,
+            self.composite_active_generations,
+            self.topic_activity_clock,
+            self.fts_composite_identity,
+        ];
+        if composite_states.iter().any(|state| *state)
+            && !composite_states.iter().all(|state| *state)
+        {
+            return Err(
+                "Bootstrap: Wire 1.4 composite identity migration is only partially applied; database left unchanged"
+                    .to_string(),
+            );
+        }
         Ok(())
+    }
+
+    fn has_composite_identity(&self) -> bool {
+        self.composite_topics
+            && self.composite_messages
+            && self.composite_render_cache
+            && self.composite_message_attachments
+            && self.composite_active_generations
+            && self.topic_activity_clock
+            && self.fts_composite_identity
     }
 
     fn proves_migration(&self, version: i64) -> bool {
@@ -109,16 +144,18 @@ impl LegacySchema {
             1 => true,
             2 => self.attachment_deleted_at,
             3 => self.messages_fts,
+            4 => self.fts_topic_identity,
             5 => self.active_generations,
             6 => self.render_content_hash && self.render_schema_version,
             7 => self.avatar_deleted_at,
+            8 => self.has_composite_identity(),
             _ => false,
         }
     }
 
     fn tracked_migration_is_consistent(&self, version: i64) -> bool {
         match version {
-            1 | 2 | 3 | 5 | 6 | 7 => self.proves_migration(version),
+            1..=8 => self.proves_migration(version),
             _ => true,
         }
     }
@@ -131,6 +168,7 @@ async fn inspect_legacy_schema(
         attachment_deleted_at: column_exists(transaction, "message_attachments", "deleted_at")
             .await?,
         messages_fts: table_exists(transaction, "messages_fts").await?,
+        fts_topic_identity: fts_delete_triggers_include_topic_identity(transaction).await?,
         active_generations: table_exists(transaction, "active_generations").await?,
         render_content_hash: column_exists(transaction, "render_cache", "content_hash").await?,
         render_schema_version: column_exists(
@@ -140,6 +178,46 @@ async fn inspect_legacy_schema(
         )
         .await?,
         avatar_deleted_at: column_exists(transaction, "avatars", "deleted_at").await?,
+        composite_topics: primary_key_matches(
+            transaction,
+            "topics",
+            &["owner_type", "owner_id", "topic_id"],
+        )
+        .await?,
+        composite_messages: primary_key_matches(
+            transaction,
+            "messages",
+            &["owner_type", "owner_id", "topic_id", "msg_id"],
+        )
+        .await?,
+        composite_render_cache: primary_key_matches(
+            transaction,
+            "render_cache",
+            &["owner_type", "owner_id", "topic_id", "msg_id"],
+        )
+        .await?,
+        composite_message_attachments: primary_key_matches(
+            transaction,
+            "message_attachments",
+            &[
+                "owner_type",
+                "owner_id",
+                "topic_id",
+                "msg_id",
+                "attachment_order",
+            ],
+        )
+        .await?,
+        composite_active_generations: primary_key_matches(
+            transaction,
+            "active_generations",
+            &["owner_type", "owner_id", "topic_id", "msg_id"],
+        )
+        .await?,
+        topic_activity_clock: column_exists(transaction, "topics", "last_message_updated_at")
+            .await?,
+        fts_composite_identity: column_exists(transaction, "messages_fts", "owner_type").await?
+            && column_exists(transaction, "messages_fts", "owner_id").await?,
     })
 }
 
@@ -167,6 +245,39 @@ async fn column_exists(
         .fetch_one(&mut **transaction)
         .await
         .map_err(|error| format!("Bootstrap: failed to inspect column {table}.{column}: {error}"))
+}
+
+async fn primary_key_matches(
+    transaction: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    expected: &[&str],
+) -> Result<bool, String> {
+    let actual = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk",
+    )
+    .bind(table)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| format!("Bootstrap: failed to inspect primary key for {table}: {error}"))?;
+    Ok(actual
+        .iter()
+        .map(String::as_str)
+        .eq(expected.iter().copied()))
+}
+
+async fn fts_delete_triggers_include_topic_identity(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<bool, String> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'trigger'
+           AND name IN ('after_messages_physical_delete', 'after_messages_logical_delete')
+           AND instr(lower(sql), 'topic_id') > 0",
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| format!("Bootstrap: failed to inspect FTS delete triggers: {error}"))?;
+    Ok(count == 2)
 }
 
 #[derive(Debug)]

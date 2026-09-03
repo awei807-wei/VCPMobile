@@ -151,6 +151,7 @@ pub(super) const SEMANTICS: &[(&str, Category, Retry)] = &[
         Category::Protocol,
         Retry::AfterUserAction,
     ),
+    ("SYNC_SNAPSHOT_STALE", Category::Data, Retry::Manual),
     ("SYNC_STREAM_FAILED", Category::Connection, Retry::Manual),
     (
         "SYNC_VERSION_INCOMPATIBLE",

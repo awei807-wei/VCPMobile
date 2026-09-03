@@ -4,6 +4,7 @@ use crate::vcp_modules::sync_dto::{
     AgentSyncDTO, AgentTopicSyncDTO, GroupSyncDTO, GroupTopicSyncDTO,
 };
 use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::topic_types::TopicKey;
 use rusqlite::OptionalExtension;
 
 impl DbWriteQueue {
@@ -132,33 +133,55 @@ impl DbWriteQueue {
         topic_id: &str,
         dto: &AgentTopicSyncDTO,
     ) -> rusqlite::Result<()> {
-        validate_topic_input(topic_id, &dto.id, &dto.owner_id, "Agent topic")?;
-        validate_live_owner(tx, "agents", &dto.owner_id, "Agent topic", topic_id)?;
-        validate_existing_topic(tx, topic_id, &dto.owner_id, "agent", "Agent topic")?;
+        let key = TopicKey::new("agent", dto.owner_id.clone(), topic_id);
+        Self::rusqlite_upsert_agent_topic_for_key(tx, &key, dto)
+    }
+
+    pub(super) fn rusqlite_upsert_agent_topic_for_key(
+        tx: &rusqlite::Transaction<'_>,
+        key: &TopicKey,
+        dto: &AgentTopicSyncDTO,
+    ) -> rusqlite::Result<()> {
+        validate_topic_key(key, "Agent topic")?;
+        if key.owner_type != "agent" {
+            return Err(DbWriteQueue::sync_contract_error(
+                "Agent topic requires ownerType=agent",
+            ));
+        }
+        validate_topic_input(
+            &key.topic_id,
+            &dto.id,
+            &dto.owner_id,
+            &key.owner_id,
+            "Agent topic",
+        )?;
+        validate_live_owner(tx, "agents", &key.owner_id, "Agent topic", &key.topic_id)?;
+        validate_existing_topic(tx, key, "Agent topic")?;
         let now = chrono::Utc::now().timestamp_millis();
         let changed = tx.execute(
             "INSERT INTO topics (
-                topic_id, title, owner_id, owner_type, created_at, locked, unread, updated_at
+                owner_type, owner_id, topic_id, title, created_at, locked, unread, updated_at
             )
-            SELECT ?, ?, ?, 'agent', ?, ?, ?, ?
-            WHERE EXISTS (SELECT 1 FROM agents WHERE agent_id = ? AND deleted_at IS NULL)
-            ON CONFLICT(topic_id) DO UPDATE SET
+            VALUES ('agent', ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_type, owner_id, topic_id) DO UPDATE SET
                 title = excluded.title, locked = excluded.locked,
                 unread = excluded.unread, updated_at = excluded.updated_at",
             rusqlite::params![
-                topic_id,
+                &key.owner_id,
+                &key.topic_id,
                 &dto.name,
-                &dto.owner_id,
                 dto.created_at,
                 if dto.locked { 1 } else { 0 },
                 if dto.unread { 1 } else { 0 },
                 now,
-                &dto.owner_id
             ],
         )?;
         require_changed(
             changed,
-            format!("Agent topic {topic_id} upsert affected {changed} rows"),
+            format!(
+                "Agent topic {}/{} upsert affected {changed} rows",
+                key.owner_id, key.topic_id
+            ),
         )
     }
 
@@ -167,30 +190,46 @@ impl DbWriteQueue {
         topic_id: &str,
         dto: &GroupTopicSyncDTO,
     ) -> rusqlite::Result<()> {
-        validate_topic_input(topic_id, &dto.id, &dto.owner_id, "Group topic")?;
-        validate_live_owner(tx, "groups", &dto.owner_id, "Group topic", topic_id)?;
-        validate_existing_topic(tx, topic_id, &dto.owner_id, "group", "Group topic")?;
+        let key = TopicKey::new("group", dto.owner_id.clone(), topic_id);
+        Self::rusqlite_upsert_group_topic_for_key(tx, &key, dto)
+    }
+
+    pub(super) fn rusqlite_upsert_group_topic_for_key(
+        tx: &rusqlite::Transaction<'_>,
+        key: &TopicKey,
+        dto: &GroupTopicSyncDTO,
+    ) -> rusqlite::Result<()> {
+        validate_topic_key(key, "Group topic")?;
+        if key.owner_type != "group" {
+            return Err(DbWriteQueue::sync_contract_error(
+                "Group topic requires ownerType=group",
+            ));
+        }
+        validate_topic_input(
+            &key.topic_id,
+            &dto.id,
+            &dto.owner_id,
+            &key.owner_id,
+            "Group topic",
+        )?;
+        validate_live_owner(tx, "groups", &key.owner_id, "Group topic", &key.topic_id)?;
+        validate_existing_topic(tx, key, "Group topic")?;
         let now = chrono::Utc::now().timestamp_millis();
         let changed = tx.execute(
             "INSERT INTO topics (
-                topic_id, title, owner_id, owner_type, created_at, locked, unread, updated_at
+                owner_type, owner_id, topic_id, title, created_at, locked, unread, updated_at
             )
-            SELECT ?, ?, ?, 'group', ?, 1, 0, ?
-            WHERE EXISTS (SELECT 1 FROM groups WHERE group_id = ? AND deleted_at IS NULL)
-            ON CONFLICT(topic_id) DO UPDATE SET
+            VALUES ('group', ?, ?, ?, ?, 1, 0, ?)
+            ON CONFLICT(owner_type, owner_id, topic_id) DO UPDATE SET
                 title = excluded.title, updated_at = excluded.updated_at",
-            rusqlite::params![
-                topic_id,
-                &dto.name,
-                &dto.owner_id,
-                dto.created_at,
-                now,
-                &dto.owner_id
-            ],
+            rusqlite::params![&key.owner_id, &key.topic_id, &dto.name, dto.created_at, now,],
         )?;
         require_changed(
             changed,
-            format!("Group topic {topic_id} upsert affected {changed} rows"),
+            format!(
+                "Group topic {}/{} upsert affected {changed} rows",
+                key.owner_id, key.topic_id
+            ),
         )
     }
 }
@@ -265,15 +304,26 @@ fn exists_live(
     tx.query_row(&sql, [id], |row| row.get::<_, bool>(0))
 }
 
+fn validate_topic_key(key: &TopicKey, label: &str) -> rusqlite::Result<()> {
+    if !key.is_valid() {
+        return Err(DbWriteQueue::sync_contract_error(format!(
+            "{label} requires a valid composite topic identity"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_topic_input(
     topic_id: &str,
     dto_id: &str,
     owner_id: &str,
+    key_owner_id: &str,
     label: &str,
 ) -> rusqlite::Result<()> {
-    if topic_id.is_empty() || topic_id != dto_id || owner_id.is_empty() {
+    if topic_id.is_empty() || topic_id != dto_id || owner_id.is_empty() || owner_id != key_owner_id
+    {
         return Err(DbWriteQueue::sync_contract_error(format!(
-            "{label} requires matching non-empty topic and owner ids"
+            "{label} requires matching non-empty composite topic identity"
         )));
     }
     Ok(())
@@ -301,35 +351,24 @@ fn validate_live_owner(
 
 fn validate_existing_topic(
     tx: &rusqlite::Transaction<'_>,
-    topic_id: &str,
-    owner_id: &str,
-    owner_type: &str,
+    key: &TopicKey,
     label: &str,
 ) -> rusqlite::Result<()> {
     let existing = tx
         .query_row(
-            "SELECT owner_id, owner_type, deleted_at FROM topics WHERE topic_id = ?",
-            [topic_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                ))
-            },
+            "SELECT deleted_at FROM topics
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+            rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
+            |row| row.get::<_, Option<i64>>(0),
         )
         .optional()?;
-    let Some((existing_owner, existing_type, deleted_at)) = existing else {
+    let Some(deleted_at) = existing else {
         return Ok(());
     };
     if deleted_at.is_some() {
         return Err(DbWriteQueue::sync_contract_error(format!(
-            "{label} {topic_id} is tombstoned"
-        )));
-    }
-    if existing_owner != owner_id || existing_type != owner_type {
-        return Err(DbWriteQueue::sync_contract_error(format!(
-            "{label} {topic_id} owner conflicts with the existing live topic"
+            "{label} {}/{} is tombstoned",
+            key.owner_id, key.topic_id
         )));
     }
     Ok(())

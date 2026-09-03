@@ -1,4 +1,4 @@
-//! Wire 1.2 结构化同步错误契约。
+//! Wire 1.4 结构化同步错误契约。
 
 mod codec;
 mod payload;
@@ -10,8 +10,9 @@ mod validation;
 
 #[allow(unused_imports)]
 pub use codec::{
-    decode_wire_sync_error, encode_http_sync_error_body, encode_wire_sync_error,
-    encode_wire_sync_error_value, parse_wire_sync_error_frame, WIRE_ERROR_MARKER,
+    decode_wire_sync_error, encode_http_sync_error_body, encode_local_sync_error,
+    encode_wire_sync_error, encode_wire_sync_error_value, is_attempt_restart_code,
+    parse_wire_sync_error_frame, WIRE_ERROR_MARKER,
 };
 pub use payload::{build_local_error_payload, build_wire_error_payload};
 #[allow(unused_imports)]

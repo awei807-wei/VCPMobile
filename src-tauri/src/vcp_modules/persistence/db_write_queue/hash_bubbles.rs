@@ -2,23 +2,46 @@ use super::DbWriteQueue;
 
 use crate::vcp_modules::sync_dto::{AgentTopicSyncDTO, GroupTopicSyncDTO};
 use crate::vcp_modules::sync_hash::HashAggregator;
-use rusqlite::OptionalExtension;
+use crate::vcp_modules::sync_types::compute_merkle_root;
+use crate::vcp_modules::topic_types::TopicKey;
 
 impl DbWriteQueue {
     pub(super) fn rusqlite_bubble_topic_hash(
         tx: &rusqlite::Transaction<'_>,
         topic_id: &str,
     ) -> rusqlite::Result<()> {
-        require_non_empty(topic_id, "Topic hash bubble requires a non-empty topic id")?;
-        let (owner_id, owner_type) = load_live_topic_owner(tx, topic_id)?;
-        let content_hash = load_topic_content_hash(tx, topic_id)?;
-        let config_hash = topic_config_hash(tx, topic_id, &owner_type)?;
-        tx.execute(
-            "UPDATE topics SET content_hash = ?, config_hash = ? WHERE topic_id = ?",
-            rusqlite::params![content_hash, config_hash, topic_id],
+        let key = Self::rusqlite_resolve_topic_key(tx, topic_id)?;
+        Self::rusqlite_bubble_topic_hash_for_key(tx, &key)
+    }
+
+    pub(super) fn rusqlite_bubble_topic_hash_for_key(
+        tx: &rusqlite::Transaction<'_>,
+        key: &TopicKey,
+    ) -> rusqlite::Result<()> {
+        validate_topic_key(key)?;
+        validate_live_topic(tx, key)?;
+        let content_hash = load_topic_content_hash(tx, key)?;
+        let config_hash = topic_config_hash(tx, key)?;
+        let changed = tx.execute(
+            "UPDATE topics SET content_hash = ?, config_hash = ?
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
+               AND deleted_at IS NULL",
+            rusqlite::params![
+                content_hash,
+                config_hash,
+                &key.owner_type,
+                &key.owner_id,
+                &key.topic_id
+            ],
         )?;
-        let _ = owner_id;
-        Ok(())
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(DbWriteQueue::sync_contract_error(format!(
+                "Topic {}/{} disappeared during hash update",
+                key.owner_id, key.topic_id
+            )))
+        }
     }
 
     pub(super) fn rusqlite_bubble_agent_hash(
@@ -50,48 +73,39 @@ fn require_non_empty(value: &str, message: &str) -> rusqlite::Result<()> {
     }
 }
 
-fn load_live_topic_owner(
-    tx: &rusqlite::Transaction<'_>,
-    topic_id: &str,
-) -> rusqlite::Result<(String, String)> {
-    let topic = tx
-        .query_row(
-            "SELECT owner_id, owner_type, deleted_at FROM topics WHERE topic_id = ?",
-            [topic_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                ))
-            },
-        )
-        .optional()?
-        .ok_or_else(|| DbWriteQueue::sync_contract_error(format!("Topic {topic_id} is missing")))?;
-    if topic.2.is_some() {
-        return Err(DbWriteQueue::sync_contract_error(format!(
-            "Topic {topic_id} is tombstoned"
-        )));
+fn validate_topic_key(key: &TopicKey) -> rusqlite::Result<()> {
+    if key.is_valid() {
+        Ok(())
+    } else {
+        Err(DbWriteQueue::sync_contract_error(
+            "Topic hash bubble requires a valid composite topic identity",
+        ))
     }
-    let column = match topic.1.as_str() {
-        "agent" => "agent_id",
-        "group" => "group_id",
-        _ => {
-            return Err(DbWriteQueue::sync_contract_error(format!(
-                "Topic {topic_id} has unsupported owner type {}",
-                topic.1
-            )))
-        }
-    };
-    validate_live_owner(tx, owner_table(&topic.1), column, &topic.0, "Topic")?;
-    Ok((topic.0, topic.1))
 }
 
-fn owner_table(owner_type: &str) -> &'static str {
-    match owner_type {
-        "agent" => "agents",
-        "group" => "groups",
-        _ => "",
+fn validate_live_topic(tx: &rusqlite::Transaction<'_>, key: &TopicKey) -> rusqlite::Result<()> {
+    let live = tx.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM topics
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL
+         )",
+        rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if live {
+        match key.owner_type.as_str() {
+            "agent" => validate_live_owner(tx, "agents", "agent_id", &key.owner_id, "Agent"),
+            "group" => validate_live_owner(tx, "groups", "group_id", &key.owner_id, "Group"),
+            _ => Err(DbWriteQueue::sync_contract_error(format!(
+                "Topic {} has unsupported owner type {}",
+                key.topic_id, key.owner_type
+            ))),
+        }
+    } else {
+        Err(DbWriteQueue::sync_contract_error(format!(
+            "Topic {}/{} is missing or deleted",
+            key.owner_id, key.topic_id
+        )))
     }
 }
 
@@ -116,34 +130,41 @@ fn validate_live_owner(
 
 fn load_topic_content_hash(
     tx: &rusqlite::Transaction<'_>,
-    topic_id: &str,
+    key: &TopicKey,
 ) -> rusqlite::Result<String> {
     let mut statement = tx.prepare(
-        "SELECT content_hash FROM messages
-         WHERE topic_id = ? AND deleted_at IS NULL ORDER BY timestamp ASC, msg_id ASC",
+        "SELECT msg_id, content_hash FROM messages
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL
+         ORDER BY timestamp ASC, msg_id ASC",
     )?;
-    let hashes = statement
-        .query_map([topic_id], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(crate::vcp_modules::sync_types::compute_merkle_root(hashes))
+    let rows = statement.query_map(
+        rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    let mut leaves = Vec::new();
+    for row in rows {
+        let (message_id, message_hash) = row?;
+        leaves.push(HashAggregator::compute_message_leaf_hash(
+            &message_id,
+            &message_hash,
+        ));
+    }
+    Ok(compute_merkle_root(leaves))
 }
 
-fn topic_config_hash(
-    tx: &rusqlite::Transaction<'_>,
-    topic_id: &str,
-    owner_type: &str,
-) -> rusqlite::Result<String> {
-    match owner_type {
+fn topic_config_hash(tx: &rusqlite::Transaction<'_>, key: &TopicKey) -> rusqlite::Result<String> {
+    match key.owner_type.as_str() {
         "agent" => {
-            let dto = DbWriteQueue::rusqlite_load_agent_topic_dto(tx, topic_id)?;
+            let dto = DbWriteQueue::rusqlite_load_agent_topic_dto_for_key(tx, key)?;
             Ok(HashAggregator::compute_agent_topic_metadata_hash(&dto))
         }
         "group" => {
-            let dto = DbWriteQueue::rusqlite_load_group_topic_dto(tx, topic_id)?;
+            let dto = DbWriteQueue::rusqlite_load_group_topic_dto_for_key(tx, key)?;
             Ok(HashAggregator::compute_group_topic_metadata_hash(&dto))
         }
-        _ => Err(DbWriteQueue::sync_contract_error(format!(
-            "Topic {topic_id} has unsupported owner type {owner_type}"
+        other => Err(DbWriteQueue::sync_contract_error(format!(
+            "Topic {} has unsupported owner type {other}",
+            key.topic_id
         ))),
     }
 }
@@ -154,16 +175,27 @@ fn load_owner_topics_hash(
     owner_type: &str,
 ) -> rusqlite::Result<String> {
     let mut statement = tx.prepare(
-        "SELECT config_hash, content_hash FROM topics
-         WHERE owner_id = ? AND owner_type = ? AND deleted_at IS NULL ORDER BY topic_id ASC",
+        "SELECT topic_id, config_hash, content_hash FROM topics
+         WHERE owner_id = ? AND owner_type = ? AND deleted_at IS NULL
+         ORDER BY topic_id ASC",
     )?;
-    let mut rows = statement.query(rusqlite::params![owner_id, owner_type])?;
-    let mut hashes = Vec::new();
-    while let Some(row) = rows.next()? {
-        hashes.push(row.get::<_, String>(0)?);
-        hashes.push(row.get::<_, String>(1)?);
+    let rows = statement.query_map(rusqlite::params![owner_id, owner_type], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut leaves = Vec::new();
+    for row in rows {
+        let (topic_id, config_hash, content_hash) = row?;
+        leaves.push(HashAggregator::compute_topic_leaf_hash(
+            &topic_id,
+            &config_hash,
+            &content_hash,
+        ));
     }
-    Ok(crate::vcp_modules::sync_types::compute_merkle_root(hashes))
+    Ok(compute_merkle_root(leaves))
 }
 
 fn update_owner_hash(
@@ -174,7 +206,8 @@ fn update_owner_hash(
     root_hash: &str,
     label: &str,
 ) -> rusqlite::Result<()> {
-    let sql = format!("UPDATE {table} SET content_hash = ? WHERE {column} = ?");
+    let sql =
+        format!("UPDATE {table} SET content_hash = ? WHERE {column} = ? AND deleted_at IS NULL");
     let changed = tx.execute(&sql, rusqlite::params![root_hash, owner_id])?;
     if changed == 1 {
         Ok(())
@@ -190,10 +223,25 @@ impl DbWriteQueue {
         tx: &rusqlite::Transaction<'_>,
         topic_id: &str,
     ) -> rusqlite::Result<AgentTopicSyncDTO> {
+        let key = Self::rusqlite_resolve_topic_key(tx, topic_id)?;
+        Self::rusqlite_load_agent_topic_dto_for_key(tx, &key)
+    }
+
+    pub(super) fn rusqlite_load_agent_topic_dto_for_key(
+        tx: &rusqlite::Transaction<'_>,
+        key: &TopicKey,
+    ) -> rusqlite::Result<AgentTopicSyncDTO> {
+        validate_topic_key(key)?;
+        if key.owner_type != "agent" {
+            return Err(DbWriteQueue::sync_contract_error(
+                "Agent topic DTO requires ownerType=agent",
+            ));
+        }
         tx.query_row(
             "SELECT topic_id, title, created_at, locked, unread, owner_id
-             FROM topics WHERE topic_id = ?",
-            [topic_id],
+             FROM topics
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+            rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
             |row| {
                 Ok(AgentTopicSyncDTO {
                     id: row.get(0)?,
@@ -211,10 +259,25 @@ impl DbWriteQueue {
         tx: &rusqlite::Transaction<'_>,
         topic_id: &str,
     ) -> rusqlite::Result<GroupTopicSyncDTO> {
+        let key = Self::rusqlite_resolve_topic_key(tx, topic_id)?;
+        Self::rusqlite_load_group_topic_dto_for_key(tx, &key)
+    }
+
+    pub(super) fn rusqlite_load_group_topic_dto_for_key(
+        tx: &rusqlite::Transaction<'_>,
+        key: &TopicKey,
+    ) -> rusqlite::Result<GroupTopicSyncDTO> {
+        validate_topic_key(key)?;
+        if key.owner_type != "group" {
+            return Err(DbWriteQueue::sync_contract_error(
+                "Group topic DTO requires ownerType=group",
+            ));
+        }
         tx.query_row(
             "SELECT topic_id, title, created_at, owner_id
-             FROM topics WHERE topic_id = ?",
-            [topic_id],
+             FROM topics
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+            rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
             |row| {
                 Ok(GroupTopicSyncDTO {
                     id: row.get(0)?,

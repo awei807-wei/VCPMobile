@@ -2,6 +2,7 @@ use super::errors::encode_sync_command_error;
 use super::types::SyncState;
 use crate::vcp_modules::sync_logger::{redact_sync_diagnostic, LogLevel};
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
@@ -52,6 +53,7 @@ pub(crate) fn emit_operator_sync_log<R: Runtime>(
     level: &str,
     message: &str,
 ) {
+    let sync_state = app_handle.state::<SyncState>();
     let _ = app_handle.emit(
         "vcp-log",
         serde_json::json!({
@@ -60,6 +62,7 @@ pub(crate) fn emit_operator_sync_log<R: Runtime>(
             "category": "sync",
             "audience": "operator",
             "sessionId": session_id,
+            "attemptId": sync_state.current_attempt_id.load(Ordering::SeqCst),
             "message": message,
         }),
     );

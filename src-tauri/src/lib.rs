@@ -66,6 +66,10 @@ use vcp_modules::model_manager::{
 };
 use vcp_modules::runtime_diagnostics::{export_runtime_diagnostics, record_frontend_diagnostic};
 
+#[cfg(debug_assertions)]
+use vcp_modules::sync::wire14_debug::{
+    debug_get_wire14_scale_topic_hashes, debug_inject_invalid_attachment_for_wire14,
+};
 use vcp_modules::sync_service::{
     clear_old_sync_logs, get_sync_session_log_path, get_sync_status, is_sync_active,
     list_sync_log_files, read_sync_log_file, start_manual_sync, stop_sync,
@@ -359,6 +363,10 @@ pub fn run() {
                     confirm_frontend_boot,
                     record_frontend_diagnostic,
                     export_runtime_diagnostics,
+                    #[cfg(debug_assertions)]
+                    debug_get_wire14_scale_topic_hashes,
+                    #[cfg(debug_assertions)]
+                    debug_inject_invalid_attachment_for_wire14,
                 ]);
 
             move |invoke: tauri::ipc::Invoke<tauri::Wry>| {

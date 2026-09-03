@@ -31,7 +31,7 @@ pub(crate) fn build_sync_error_payload(
 fn service_error_canonical_code(code: &str) -> Option<&'static str> {
     match code {
         "TOKEN_MISMATCH" => Some("SYNC_AUTH_FAILED"),
-        "VCP_LOG_DISCONNECTED" => Some("SYNC_STREAM_FAILED"),
+        "SYNC_ACTIVE_GENERATION" => Some("SERVICE_BUSY"),
         "NETWORK_TIMEOUT"
         | "CONNECTION_REFUSED"
         | "NETWORK_UNREACHABLE"
@@ -139,6 +139,7 @@ pub(crate) async fn publish_sync_status_inner<R: Runtime>(
     message: &str,
     error: Option<SyncErrorPayload>,
 ) {
+    let sync_state = app_handle.state::<SyncState>();
     {
         let mut guard = status.write().await;
         if guard.as_str() == next_status
@@ -156,6 +157,7 @@ pub(crate) async fn publish_sync_status_inner<R: Runtime>(
         "message": message,
         "source": "Sync",
         "sessionId": session_id,
+        "attemptId": sync_state.current_attempt_id.load(Ordering::SeqCst),
     });
     if let Some(error) = error {
         payload["error"] = json!(error);
@@ -194,6 +196,7 @@ pub(crate) async fn publish_sync_completed(
         json!({
             "source": "Sync",
             "sessionId": session_id,
+            "attemptId": sync_state.current_attempt_id.load(Ordering::SeqCst),
             "status": terminal_status,
             "summary": summary,
             "agentsChanged": true,
@@ -214,6 +217,7 @@ pub(crate) async fn publish_sync_completed(
             "message": message,
             "source": "Sync",
             "sessionId": session_id,
+            "attemptId": sync_state.current_attempt_id.load(Ordering::SeqCst),
         }),
     );
     emit_operator_sync_log(app_handle, session_id, "info", message);

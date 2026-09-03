@@ -1,249 +1,278 @@
+use super::MAX_NDJSON_ENTITIES;
 use crate::vcp_modules::db_manager::DbState;
-use crate::vcp_modules::db_write_queue::{DbWriteQueue, DbWriteTask};
+use crate::vcp_modules::db_write_queue::{
+    DbWriteQueue, DbWriteTask, ExpectedMessageStates, SNAPSHOT_STALE_MARKER,
+};
 use crate::vcp_modules::message_repository::{ContentCompressor, MessageRenderCompiler};
+use crate::vcp_modules::sync::sync_types::validate_safe_non_negative_u64;
+use crate::vcp_modules::sync_dto::MessageSyncDTO;
+use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
 use crate::vcp_modules::sync_hash::HashAggregator;
-use sqlx::Row;
-use std::collections::{HashMap, HashSet};
-use tauri::{AppHandle, Manager, Runtime};
+use crate::vcp_modules::topic_types::TopicKey;
+use std::collections::HashSet;
+use tauri::{Manager, Runtime};
 
-type PreparedMessages = (
-    Vec<crate::vcp_modules::chat_manager::ChatMessage>,
-    Vec<String>,
-    Vec<Vec<u8>>,
-    Vec<Vec<u8>>,
-);
+type PreparedMessages = (Vec<MessageSyncDTO>, Vec<Vec<u8>>, Vec<Vec<u8>>);
 
-/// Resolve local attachment CAS paths, compile optional renders, compress text, and enqueue rows.
+struct AttachmentBinding {
+    message_id: String,
+    hash: String,
+    order: i32,
+}
+
+/// Validate and persist one canonical topic batch without materializing local
+/// filesystem paths from wire data. The queue owns the SQLite transaction and
+/// keeps compressed content, attachment relations and optional render cache in
+/// one atomic write.
 pub(crate) async fn process_topic_messages<R: Runtime>(
-    app: &AppHandle<R>,
-    topic_id: &str,
-    mut messages: Vec<crate::vcp_modules::chat_manager::ChatMessage>,
+    app: &tauri::AppHandle<R>,
+    topic: &TopicKey,
+    messages: Vec<MessageSyncDTO>,
+    expected_states: Option<ExpectedMessageStates>,
     write_queue: &DbWriteQueue,
     prerender_enabled: bool,
 ) -> Result<(usize, usize), String> {
-    let started = std::time::Instant::now();
-    let attachment_started = std::time::Instant::now();
-    let db = app.state::<DbState>();
-    let path_map = resolve_attachment_paths(&db.pool, &messages).await?;
-    fill_attachment_paths(&mut messages, &path_map);
-    let attachment_time = attachment_started.elapsed();
+    validate_messages(topic, &messages)?;
     let parsed_count = messages.len();
-    if parsed_count > 0 {
-        let block_started = std::time::Instant::now();
-        let prepared =
-            compile_messages_async(messages, topic_id.to_string(), prerender_enabled).await?;
-        let block_time = block_started.elapsed();
-        let submit_started = std::time::Instant::now();
-        submit_message_chunks(write_queue, topic_id, prepared).await?;
-        let submit_time = submit_started.elapsed();
-        log::debug!(
-            "[PullExecutor] [ProfileDetail] topic={} msgs={} | sql_att={:?} spawn_blocking={:?} submit_queue={:?} | total_proc={:?}",
-            topic_id,
-            parsed_count,
-            attachment_time,
-            block_time,
-            submit_time,
-            started.elapsed()
-        );
+    if parsed_count == 0 {
+        return Ok((0, 0));
     }
+    let attachment_bindings = collect_attachment_bindings(&messages)?;
+    let prepared = prepare_messages(messages, prerender_enabled).await?;
+    write_queue
+        .submit(DbWriteTask::TopicMessagesCanonical {
+            topic: topic.clone(),
+            messages: prepared.0,
+            compressed_contents: prepared.1,
+            render_bytes: prepared.2,
+            expected_states,
+            skip_bubble: false,
+        })
+        .await?;
+    // A pull topic is the transaction boundary. The explicit flush also
+    // propagates queue/storage errors to this topic's result before the next
+    // NDJSON frame is consumed.
+    write_queue
+        .flush()
+        .await
+        .map_err(|error| map_write_error(topic, error))?;
+    reconcile_attachment_bindings(app, topic, &attachment_bindings).await?;
     Ok((parsed_count, 0))
 }
 
-async fn resolve_attachment_paths(
-    pool: &sqlx::SqlitePool,
-    messages: &[crate::vcp_modules::chat_manager::ChatMessage],
-) -> Result<HashMap<String, String>, String> {
-    let hashes = collect_attachment_hashes(messages);
-    let mut path_map = HashMap::new();
-    for chunk in hashes.chunks(500) {
-        if chunk.is_empty() {
-            continue;
-        }
-        let placeholders = vec!["?"; chunk.len()].join(", ");
-        let query_text =
-            format!("SELECT hash, internal_path FROM attachments WHERE hash IN ({placeholders})");
-        let mut query = sqlx::query(&query_text);
-        for hash in chunk {
-            query = query.bind(hash);
-        }
-        let rows = query
-            .fetch_all(pool)
-            .await
-            .map_err(|error| format!("Failed to resolve local attachment CAS paths: {error}"))?;
-        decode_attachment_rows(rows, &mut path_map).await?;
+fn map_write_error(topic: &TopicKey, error: String) -> String {
+    if !error.contains(SNAPSHOT_STALE_MARKER) {
+        return error;
     }
-    Ok(path_map)
+    encode_local_sync_error(
+        SNAPSHOT_STALE_MARKER,
+        SyncErrorStage::Messages,
+        "Local message changed after the Phase 3 snapshot; restarting sync",
+        vec![topic.topic_id.clone()],
+    )
 }
 
-fn collect_attachment_hashes(
-    messages: &[crate::vcp_modules::chat_manager::ChatMessage],
-) -> Vec<String> {
-    let mut hashes = HashSet::new();
+fn collect_attachment_bindings(
+    messages: &[MessageSyncDTO],
+) -> Result<Vec<AttachmentBinding>, String> {
+    let mut bindings = Vec::new();
     for message in messages {
-        if let Some(attachments) = &message.attachments {
-            for attachment in attachments {
-                if let Some(hash) = &attachment.hash {
-                    if !hash.is_empty() {
-                        hashes.insert(hash.clone());
-                    }
-                }
+        for (index, attachment) in message
+            .attachments
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
+            let order = attachment.attachment_order.unwrap_or(index as i32);
+            if order < 0 {
+                return Err(format!(
+                    "Message {} attachment {} has a negative attachment order",
+                    message.id, attachment.name
+                ));
             }
+            bindings.push(AttachmentBinding {
+                message_id: message.id.clone(),
+                hash: attachment.hash.clone(),
+                order,
+            });
         }
     }
-    hashes.into_iter().collect()
+    Ok(bindings)
 }
 
-async fn decode_attachment_rows(
-    rows: Vec<sqlx::sqlite::SqliteRow>,
-    path_map: &mut HashMap<String, String>,
+async fn reconcile_attachment_bindings<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    topic: &TopicKey,
+    bindings: &[AttachmentBinding],
 ) -> Result<(), String> {
-    for row in rows {
-        let hash = row
-            .try_get::<String, _>("hash")
-            .map_err(|error| format!("Failed to decode attachment hash: {error}"))?;
-        let path = row
-            .try_get::<String, _>("internal_path")
-            .map_err(|error| format!("Failed to decode attachment path: {error}"))?;
-        let clean_path = path.trim_start_matches("file://");
-        if clean_path.is_empty() {
-            continue;
-        }
-        match tokio::fs::metadata(clean_path).await {
-            Ok(metadata) if metadata.is_file() => {
-                path_map.insert(hash, clean_path.to_string());
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    let db = app.state::<DbState>();
+    let pool = &db.pool;
+    for binding in bindings {
+        let resolved =
+            crate::vcp_modules::file_manager::resolve_attachment_cas_file(app, pool, &binding.hash)
+                .await;
+        let (src, status) = match resolved {
+            Ok(file) => (format!("file://{}", file.path.to_string_lossy()), "ready"),
+            Err(_) => {
+                sqlx::query("UPDATE attachments SET internal_path = '' WHERE hash = ?")
+                    .bind(&binding.hash)
+                    .execute(pool)
+                    .await
+                    .map_err(|error| format!("attachment CAS unlink failed: {error}"))?;
+                (String::new(), "desktop_only")
             }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Failed to inspect local attachment {hash}: {error}"
-                ));
+        };
+        let updated = sqlx::query(
+            "UPDATE message_attachments SET src = ?, status = ?
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
+               AND msg_id = ? AND hash = ? AND attachment_order = ?
+               AND deleted_at IS NULL",
+        )
+        .bind(src)
+        .bind(status)
+        .bind(&topic.owner_type)
+        .bind(&topic.owner_id)
+        .bind(&topic.topic_id)
+        .bind(&binding.message_id)
+        .bind(&binding.hash)
+        .bind(binding.order)
+        .execute(pool)
+        .await
+        .map_err(|error| format!("attachment binding update failed: {error}"))?;
+        if updated.rows_affected() != 1 {
+            return Err(format!(
+                "attachment binding disappeared for message {}",
+                binding.message_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_messages(topic: &TopicKey, messages: &[MessageSyncDTO]) -> Result<(), String> {
+    if !topic.is_valid() {
+        return Err("message pull requires a complete TopicKey".to_string());
+    }
+    if messages.len() > MAX_NDJSON_ENTITIES {
+        return Err(format!(
+            "Topic {}/{}/{} exceeds the message budget",
+            topic.owner_type, topic.owner_id, topic.topic_id
+        ));
+    }
+    let mut ids = HashSet::with_capacity(messages.len());
+    for message in messages {
+        validate_message(topic, message, &mut ids)?;
+    }
+    Ok(())
+}
+
+fn validate_message(
+    topic: &TopicKey,
+    message: &MessageSyncDTO,
+    ids: &mut HashSet<String>,
+) -> Result<(), String> {
+    if message.id.is_empty() || message.role.is_empty() {
+        return Err("canonical message requires non-empty id and role".to_string());
+    }
+    if !ids.insert(message.id.clone()) {
+        return Err(format!(
+            "Topic {} contains duplicate message {}",
+            topic.topic_id, message.id
+        ));
+    }
+    if message
+        .topic_id
+        .as_deref()
+        .is_some_and(|message_topic| message_topic != topic.topic_id)
+    {
+        return Err(format!(
+            "Message {} topicId conflicts with {}",
+            message.id, topic.topic_id
+        ));
+    }
+    validate_safe_non_negative_u64(
+        message.timestamp,
+        &format!("Message {} timestamp", message.id),
+    )?;
+    validate_safe_non_negative_u64(
+        message.updated_at,
+        &format!("Message {} updatedAt", message.id),
+    )?;
+    validate_content_hash(message)?;
+    validate_message_attachments(message)
+}
+
+fn validate_content_hash(message: &MessageSyncDTO) -> Result<(), String> {
+    if let Some(received_hash) = message.content_hash.as_deref() {
+        let expected_hash = HashAggregator::compute_message_fingerprint_for_dto(message);
+        if received_hash != expected_hash {
+            return Err(format!(
+                "Message {} contentHash does not match canonical content",
+                message.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_message_attachments(message: &MessageSyncDTO) -> Result<(), String> {
+    if let Some(attachments) = &message.attachments {
+        for attachment in attachments {
+            validate_safe_non_negative_u64(
+                attachment.size,
+                &format!("Message {} attachment {} size", message.id, attachment.name),
+            )?;
+            if let Some(created_at) = attachment.created_at {
+                validate_safe_non_negative_u64(
+                    created_at,
+                    &format!(
+                        "Message {} attachment {} createdAt",
+                        message.id, attachment.name
+                    ),
+                )?;
             }
         }
     }
     Ok(())
 }
 
-fn fill_attachment_paths(
-    messages: &mut [crate::vcp_modules::chat_manager::ChatMessage],
-    path_map: &HashMap<String, String>,
-) {
-    for message in messages {
-        let Some(attachments) = &mut message.attachments else {
-            continue;
-        };
-        for attachment in attachments {
-            let Some(hash) = &attachment.hash else {
-                continue;
-            };
-            if hash.is_empty() {
-                continue;
-            }
-            if let Some(path) = path_map.get(hash) {
-                attachment.internal_path = path.clone();
-                attachment.src = format!("file://{path}");
-                attachment.status = Some("ready".to_string());
-            } else {
-                attachment.internal_path.clear();
-                attachment.src.clear();
-                attachment.status = Some("desktop_only".to_string());
-            }
+async fn prepare_messages(
+    messages: Vec<MessageSyncDTO>,
+    prerender_enabled: bool,
+) -> Result<PreparedMessages, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut compressed = Vec::with_capacity(messages.len());
+        let mut renders = Vec::with_capacity(messages.len());
+        for message in &messages {
+            compressed.push(ContentCompressor::compress(&message.content)?);
+            renders.push(compile_render(message, prerender_enabled));
         }
-    }
+        Ok((messages, compressed, renders))
+    })
+    .await
+    .map_err(|error| format!("message preparation task failed: {error}"))?
 }
 
-async fn compile_messages_async(
-    messages: Vec<crate::vcp_modules::chat_manager::ChatMessage>,
-    topic_id: String,
-    prerender_enabled: bool,
-) -> Result<PreparedMessages, String> {
-    tokio::task::spawn_blocking(move || compile_messages(messages, &topic_id, prerender_enabled))
-        .await
-        .map_err(|error| format!("Spawn blocking failed: {error}"))?
-}
-
-fn compile_messages(
-    messages: Vec<crate::vcp_modules::chat_manager::ChatMessage>,
-    topic_id: &str,
-    prerender_enabled: bool,
-) -> Result<PreparedMessages, String> {
-    let mut content_hashes = Vec::with_capacity(messages.len());
-    let mut render_bytes = Vec::with_capacity(messages.len());
-    let mut compressed_contents = Vec::with_capacity(messages.len());
-    for message in &messages {
-        let attachment_hashes = message
-            .attachments
-            .as_ref()
-            .map(|attachments| {
-                attachments
-                    .iter()
-                    .filter_map(|attachment| attachment.hash.clone())
-                    .filter(|hash| !hash.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        content_hashes.push(HashAggregator::compute_message_fingerprint(
-            &message.content,
-            &attachment_hashes,
-        ));
-        render_bytes.push(compile_render(message, topic_id, prerender_enabled));
-        compressed_contents.push(ContentCompressor::compress(&message.content)?);
-    }
-    Ok((messages, content_hashes, render_bytes, compressed_contents))
-}
-
-fn compile_render(
-    message: &crate::vcp_modules::chat_manager::ChatMessage,
-    topic_id: &str,
-    prerender_enabled: bool,
-) -> Vec<u8> {
-    if !prerender_enabled {
+fn compile_render(message: &MessageSyncDTO, enabled: bool) -> Vec<u8> {
+    if !enabled {
         return Vec::new();
     }
-    let message_id = message.id.clone();
-    let content = &message.content;
+    let content = message.content.clone();
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let blocks = MessageRenderCompiler::compile(content);
+        let blocks = MessageRenderCompiler::compile(&content);
         MessageRenderCompiler::serialize(&blocks).unwrap_or_default()
     })) {
-        Ok(render) => render,
+        Ok(bytes) => bytes,
         Err(_) => {
             log::warn!(
-                "[PullExecutor] Compile panicked for msg {} (topic {})",
-                message_id,
-                topic_id
+                "[PullExecutor] pre-render panicked for canonical message {}",
+                message.id
             );
             Vec::new()
         }
-    }
-}
-
-async fn submit_message_chunks(
-    write_queue: &DbWriteQueue,
-    topic_id: &str,
-    prepared: PreparedMessages,
-) -> Result<(), String> {
-    const WRITE_CHUNK_MESSAGES: usize = 250;
-    let (messages, hashes, renders, compressed) = prepared;
-    let mut messages = messages.into_iter();
-    let mut hashes = hashes.into_iter();
-    let mut renders = renders.into_iter();
-    let mut compressed = compressed.into_iter();
-    loop {
-        let chunk: Vec<_> = messages.by_ref().take(WRITE_CHUNK_MESSAGES).collect();
-        if chunk.is_empty() {
-            return Ok(());
-        }
-        let chunk_len = chunk.len();
-        write_queue
-            .submit(DbWriteTask::TopicMessages {
-                topic_id: topic_id.to_string(),
-                messages: chunk,
-                compressed_contents: compressed.by_ref().take(chunk_len).collect(),
-                render_bytes: renders.by_ref().take(chunk_len).collect(),
-                content_hashes: hashes.by_ref().take(chunk_len).collect(),
-                skip_bubble: true,
-            })
-            .await?;
     }
 }

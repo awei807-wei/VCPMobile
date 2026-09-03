@@ -182,7 +182,7 @@ require_pattern "必须开启后才能继续引导" src/components/layout/Permis
 reject_pattern "ringRecommendedMissing" src/components/layout/PermissionGate.vue
 require_pattern "vcp-lifecycle" src/components/layout/PermissionGate.vue
 require_pattern "permission-gate-bottom-action" src/components/layout/PermissionGate.vue
-require_pattern "!pStatus\\.ring" src/core/stores/appLifecycle.ts
+require_pattern "Object\\.values\\(permissions\\)\\.every\\(Boolean\\)" src/core/stores/appLifecycle.ts
 reject_pattern "continuing bootstrap with silent" src/core/stores/appLifecycle.ts
 require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
 require_pattern "ACTION_APP_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
@@ -198,10 +198,10 @@ require_pattern "max-page-size=16384" .cargo/config.toml
 require_pattern "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" .github/workflows/release.yml
 require_pattern 'features = \[[^]]*"custom-protocol"' src-tauri/Cargo.toml
 require_pattern "Notification requested but Android delivery failed" src-tauri/src/distributed/tools/notification.rs
-require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_memo.rs
-require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_sponsor.rs
-require_pattern "select_topic_content_hash" src-tauri/src/distributed/tools/topic_sponsor.rs
-require_pattern "contentCorrupted" src-tauri/src/distributed/tools/topic_sponsor.rs
+require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_memo_support.rs
+require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_sponsor_support.rs
+require_pattern "bubble_from_topic_for_key" src-tauri/src/distributed/tools/topic_sponsor_handlers.rs
+require_pattern "contentCorrupted" src-tauri/src/distributed/tools/topic_sponsor_support.rs
 require_pattern "parseAndroidNotification" src/core/utils/agentMessagePayload.ts
 require_pattern "MAX_AGENT_PAYLOAD_DEPTH = 6" src/core/utils/agentMessagePayload.ts
 run python3 qa/check_vcp_mobile_acl.py
@@ -224,7 +224,7 @@ require_pattern "enableVibration\\(true\\)" src-tauri/plugins/vcp-mobile/android
 require_pattern "schema_version: u32" src-tauri/src/distributed/tool_registry.rs
 require_pattern "Unsupported disabled tools schemaVersion" src-tauri/src/distributed/tool_registry.rs
 require_pattern "MAX_CHECK_NEW_TOPICS_DAYS" src-tauri/src/distributed/tools/topic_sponsor.rs
-require_pattern "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor.rs
+require_pattern "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor_handlers.rs
 require_pattern "DISTRIBUTED_HEARTBEAT_INTERVAL" src-tauri/src/distributed/client.rs
 require_pattern "DISTRIBUTED_HEARTBEAT_TIMEOUT" src-tauri/src/distributed/client.rs
 require_pattern "Message::Ping\\(Vec::new\\(\\)\\.into\\(\\)\\)" src-tauri/src/distributed/client.rs
@@ -268,11 +268,11 @@ require_pattern "expected-abi arm64-v8a" scripts/build_android_phone.sh
 require_pattern "read_elf_load_alignments" scripts/verify_android_apk.py
 require_pattern "normalize_message_content\(&pool\)\.await\?" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs
 require_pattern "normalize_legacy_message_content\(pool\)" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs
-require_pattern 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
-require_pattern 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
-require_pattern 'ContentCompressor::compress\(content\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
+require_pattern 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client_active.rs
+require_pattern 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client_active.rs
+require_pattern 'ContentCompressor::compress\(content\)' src-tauri/src/vcp_modules/infra/vcp_client_resume.rs
 require_pattern 'ContentCompressor::compress\("\[已清空\]"\)' src-tauri/src/vcp_modules/sync/sync_executor/delete_executor.rs
-reject_pattern 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs
+reject_pattern 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra
 reject_pattern "decompress_database_migration" src-tauri/src/vcp_modules/persistence
 if rg -U -q 'registerActivityLifecycleCallbacks\(activityLifecycleCallbacks\)\s*startHelperServiceInternal\(\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
   printf 'SseProxyService 不得在插件初始化阶段无条件启动\n' >&2

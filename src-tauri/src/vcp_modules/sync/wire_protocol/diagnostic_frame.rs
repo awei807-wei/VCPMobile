@@ -1,4 +1,4 @@
-//! Strict validation for Linux desktop diagnostic frames on Wire 1.2.
+//! Strict validation for desktop diagnostic frames on Wire 1.4.
 
 use serde_json::{Map, Value};
 

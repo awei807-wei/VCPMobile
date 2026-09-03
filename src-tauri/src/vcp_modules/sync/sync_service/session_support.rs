@@ -1,3 +1,4 @@
+use super::connection_config::ConnectionSettings;
 use super::errors::{publish_sync_error, publish_sync_nonterminal_status};
 use super::logs::emit_operator_sync_log;
 use super::protocol::{
@@ -17,8 +18,6 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::RwLock;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tokio_util::sync::CancellationToken;
-
-use super::session::ConnectionSettings;
 
 pub(crate) async fn build_http_client(
     app: &AppHandle,
@@ -85,27 +84,6 @@ pub(crate) async fn create_session_resources(
             .map_err(|_| "Sync logger state lock is poisoned".to_string())? = Some(logger.clone());
     }
     Ok((Arc::new(queue), logger))
-}
-
-pub(crate) async fn load_connection_settings(
-    app: &AppHandle,
-) -> Result<ConnectionSettings, String> {
-    let state = app.state::<crate::vcp_modules::settings_manager::SettingsState>();
-    let settings = crate::vcp_modules::settings_manager::read_settings(app.clone(), state)
-        .await
-        .map_err(|error| format!("无法读取同步配置: {error}"))?;
-    if settings.sync_server_url.is_empty() || settings.sync_http_url.is_empty() {
-        return Err("同步服务 URL 未配置".to_string());
-    }
-    let mut url = url::Url::parse(&settings.sync_server_url)
-        .map_err(|error| format!("同步服务 URL 格式非法: {error}"))?;
-    url.set_query(Some(&format!("token={}", settings.sync_token)));
-    Ok(ConnectionSettings {
-        ws_url: url.to_string(),
-        http_url: settings.sync_http_url,
-        token: settings.sync_token,
-        prerender_enabled: settings.sync_prerender_enabled,
-    })
 }
 
 pub(crate) async fn connect_with_cancel(
@@ -201,30 +179,18 @@ pub(crate) async fn start_owner_phase(
     true
 }
 
-pub(crate) async fn ensure_owner_hashes(
+pub(crate) async fn ensure_sync_hashes(
     app: &AppHandle,
     session_id: u64,
     status: &Arc<RwLock<String>>,
 ) -> Result<(), ()> {
     let db = app.state::<DbState>();
-    if let Err(error) = HashInitializer::ensure_all_agent_hashes(&db.pool).await {
+    if let Err(error) = HashInitializer::ensure_wire14_hashes(&db.pool).await {
         publish_sync_error(
             app,
             session_id,
             status,
-            "AGENT_HASH_INIT_DB_FAILED",
-            &error.to_string(),
-            Vec::new(),
-        )
-        .await;
-        return Err(());
-    }
-    if let Err(error) = HashInitializer::ensure_all_group_hashes(&db.pool).await {
-        publish_sync_error(
-            app,
-            session_id,
-            status,
-            "GROUP_HASH_INIT_DB_FAILED",
+            "SYNC_HASH_INIT_DB_FAILED",
             &error.to_string(),
             Vec::new(),
         )

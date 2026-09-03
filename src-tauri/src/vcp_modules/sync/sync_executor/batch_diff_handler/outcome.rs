@@ -1,84 +1,104 @@
+use crate::vcp_modules::sync_error::{decode_wire_sync_error, is_attempt_restart_code};
+use crate::vcp_modules::topic_types::TopicKey;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
 pub(crate) struct TopicBatchOutcome {
-    pub(crate) topic_id: String,
+    pub(crate) topic: TopicKey,
     pub(crate) success: bool,
     pub(crate) error: Option<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct TopicBatchFailure {
+    pub(crate) message: String,
+    pub(crate) restart_code: Option<String>,
+}
+
 pub(crate) fn validate_topic_batch_outcomes(
     operation: &str,
-    expected: &[String],
+    expected: &[TopicKey],
     batch_result: Result<Vec<TopicBatchOutcome>, String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<TopicKey>, TopicBatchFailure> {
     let outcomes = batch_result.map_err(|error| batch_error(operation, expected, error))?;
     let expected_set = expected.iter().cloned().collect::<HashSet<_>>();
     let mut outcomes_by_topic = HashMap::new();
     for outcome in outcomes {
-        if !expected_set.contains(&outcome.topic_id) {
-            return Err(format!(
-                "Phase 3 {operation} response contains unexpected topic {}",
-                outcome.topic_id
-            ));
+        if !expected_set.contains(&outcome.topic) {
+            return Err(TopicBatchFailure {
+                message: format!(
+                    "Phase 3 {operation} response contains unexpected topic {}",
+                    outcome.topic.topic_id
+                ),
+                restart_code: None,
+            });
         }
         if outcomes_by_topic
-            .insert(outcome.topic_id.clone(), outcome)
+            .insert(outcome.topic.clone(), outcome)
             .is_some()
         {
-            return Err(format!(
-                "Phase 3 {operation} response contains duplicate topic"
-            ));
+            return Err(TopicBatchFailure {
+                message: format!("Phase 3 {operation} response contains duplicate topic"),
+                restart_code: None,
+            });
         }
     }
+    collect_outcomes(operation, expected, outcomes_by_topic)
+}
 
+fn collect_outcomes(
+    operation: &str,
+    expected: &[TopicKey],
+    outcomes: HashMap<TopicKey, TopicBatchOutcome>,
+) -> Result<Vec<TopicKey>, TopicBatchFailure> {
     let mut successful = Vec::new();
     let mut failed = Vec::new();
-    for topic_id in expected {
-        match outcomes_by_topic.get(topic_id) {
-            Some(outcome) if outcome.success => successful.push(topic_id.clone()),
-            Some(outcome) => failed.push(format!(
-                "{}: {}",
-                topic_id,
-                outcome.error.as_deref().unwrap_or("unknown error")
-            )),
-            None => failed.push(format!("{}: missing from batch response", topic_id)),
+    let mut restart_code = None;
+    let mut all_failures_restartable = true;
+    for topic in expected {
+        match outcomes.get(topic) {
+            Some(outcome) if outcome.success => successful.push(topic.clone()),
+            Some(outcome) => {
+                let detail = outcome.error.as_deref().unwrap_or("unknown error");
+                let code = restart_code_for(detail);
+                if let Some(code) = code {
+                    restart_code.get_or_insert(code);
+                } else {
+                    all_failures_restartable = false;
+                }
+                failed.push(format!("{}: {detail}", topic.topic_id));
+            }
+            None => {
+                all_failures_restartable = false;
+                failed.push(format!("{}: missing from batch response", topic.topic_id));
+            }
         }
     }
     if failed.is_empty() {
-        Ok(successful)
-    } else {
-        failed.sort();
-        Err(format!(
-            "Phase 3 {operation} failed topics: {}",
-            failed.join(", ")
-        ))
+        return Ok(successful);
     }
+    failed.sort();
+    Err(TopicBatchFailure {
+        message: format!("Phase 3 {operation} failed topics: {}", failed.join(", ")),
+        restart_code: all_failures_restartable.then_some(restart_code).flatten(),
+    })
 }
 
-fn batch_error(operation: &str, expected: &[String], error: String) -> String {
+fn batch_error(operation: &str, expected: &[TopicKey], error: String) -> TopicBatchFailure {
     let mut topics = expected.to_vec();
     topics.sort();
-    format!(
-        "Phase 3 {operation} batch failed for topics {:?}: {}",
-        topics, error
-    )
+    let restart_code = restart_code_for(&error);
+    TopicBatchFailure {
+        message: format!(
+            "Phase 3 {operation} batch failed for topics {:?}: {error}",
+            topics
+        ),
+        restart_code,
+    }
 }
 
-pub(crate) fn validate_phase3_result_topics(
-    expected: &HashSet<String>,
-    results: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
-    let actual: HashSet<String> = results.keys().cloned().collect();
-    if actual == *expected {
-        return Ok(());
-    }
-    let mut missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
-    let mut unexpected = actual.difference(expected).cloned().collect::<Vec<_>>();
-    missing.sort();
-    unexpected.sort();
-    Err(format!(
-        "Phase 3 response topic mismatch: missing={:?}, unexpected={:?}",
-        missing, unexpected
-    ))
+fn restart_code_for(error: &str) -> Option<String> {
+    decode_wire_sync_error(error)
+        .filter(|wire| is_attempt_restart_code(&wire.code))
+        .map(|wire| wire.code)
 }

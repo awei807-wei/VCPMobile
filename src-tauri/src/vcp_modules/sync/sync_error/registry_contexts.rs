@@ -171,6 +171,11 @@ pub(super) const CONTEXTS: &[(&str, Origin, Stage)] = &[
         Stage::OwnerMetadata,
     ),
     ("SYNC_REQUEST_INVALID", Origin::MobileSync, Stage::Connect),
+    (
+        "SYNC_SNAPSHOT_STALE",
+        Origin::DesktopPlugin,
+        Stage::Messages,
+    ),
     ("SYNC_STREAM_FAILED", Origin::MobileSync, Stage::Messages),
     (
         "SYNC_VERSION_INCOMPATIBLE",

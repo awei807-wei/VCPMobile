@@ -147,7 +147,59 @@ describe("useAppLifecycle stream recovery", () => {
     ]);
     expect(mocks.invoke).toHaveBeenLastCalledWith("recover_active_generation", {
       msgId: "message-1",
+      ownerId: "agent-1",
+      ownerType: "agent",
+      topicId: "topic-1",
     });
+  });
+
+  it("同名 Agent/Group 消息按完整复合身份分别恢复", async () => {
+    mocks.lifecycleStore!.state = "READY";
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "get_active_generations") {
+        return Promise.resolve([
+          {
+            msgId: "shared-message",
+            topicId: "shared-topic",
+            ownerId: "agent-owner",
+            ownerType: "agent",
+            createdAt: 1,
+          },
+          {
+            msgId: "shared-message",
+            topicId: "shared-topic",
+            ownerId: "group-owner",
+            ownerType: "group",
+            createdAt: 2,
+          },
+        ]);
+      }
+      return Promise.resolve();
+    });
+
+    mountLifecycle();
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(
+      2,
+      "recover_active_generation",
+      {
+        msgId: "shared-message",
+        ownerId: "agent-owner",
+        ownerType: "agent",
+        topicId: "shared-topic",
+      },
+    );
+    expect(mocks.invoke).toHaveBeenNthCalledWith(
+      3,
+      "recover_active_generation",
+      {
+        msgId: "shared-message",
+        ownerId: "group-owner",
+        ownerType: "group",
+        topicId: "shared-topic",
+      },
+    );
   });
 
   it("核心离开 READY 后不调用恢复命令，重新 READY 时再执行", async () => {

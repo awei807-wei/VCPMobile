@@ -216,13 +216,16 @@ pub async fn internal_process_group_chat_message(
             .map(|ip| ip.replace("{{VCPChatAgentName}}", &agent_name));
 
         let messages = crate::vcp_modules::context_assembler::orchestrate_chat_context(
-            &db_pool,
-            &full_history_for_context,
-            &topic_id,
-            &agent_name,
-            "group",
-            base_system_prompt,
-            invite_prompt_processed,
+            crate::vcp_modules::context_assembler::ChatContextRequest {
+                pool: &db_pool,
+                history: &full_history_for_context,
+                owner_id: &group_id,
+                topic_id: &topic_id,
+                agent_name: &agent_name,
+                scope: "group",
+                base_system_prompt,
+                invite_prompt: invite_prompt_processed,
+            },
         )
         .await?;
 
@@ -300,6 +303,7 @@ pub async fn internal_process_group_chat_message(
                     name: Some(agent_name),
                     content: full_content.to_string(),
                     timestamp: final_ts,
+                    updated_at: Some(final_ts),
                     is_thinking: Some(false),
                     agent_id: Some(agent_id.clone()),
                     group_id: Some(group_id.clone()),

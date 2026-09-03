@@ -1,11 +1,19 @@
-use super::http::{parse_success_response, require_exact_object_keys};
-use super::types::generate_idempotency_key;
+use super::http::{http_transport_error, parse_json_response};
 use crate::vcp_modules::agent_service;
 use crate::vcp_modules::group_service;
-use crate::vcp_modules::sync_dto::{AgentSyncDTO, GroupSyncDTO};
-use crate::vcp_modules::sync_error::encode_wire_sync_error_value;
+use crate::vcp_modules::sync::sync_error::{encode_wire_sync_error, SyncErrorStage};
+use crate::vcp_modules::sync::sync_hash::HashAggregator;
+use crate::vcp_modules::sync::sync_types::{
+    EntityPushData, EntityPushItem, EntityPushRequest, EntityPushResponse, EntitySelector,
+    OwnerType,
+};
+use sha2::{Digest, Sha256};
+use sqlx::Row;
 use std::collections::HashSet;
 use tauri::{AppHandle, Manager, Runtime};
+
+const ENTITY_REQUEST_LIMIT_BYTES: usize = 10 * 1024 * 1024;
+const OWNER_PUSH_IDEMPOTENCY_DOMAIN: &[u8] = b"VCPMobileSync.OwnerPush.Idempotency.v1";
 
 pub(super) async fn push_agent<R: Runtime>(
     app: &AppHandle<R>,
@@ -16,9 +24,32 @@ pub(super) async fn push_agent<R: Runtime>(
 ) -> Result<(), String> {
     let config =
         agent_service::read_agent_config_internal(app, &app.state(), agent_id, None).await?;
-    let dto = AgentSyncDTO::from(&config);
-    let body = send_entity(client, http_url, sync_token, agent_id, "agent", dto).await?;
-    validate_identity_response(&body, agent_id, "Push agent")
+    let dto = crate::vcp_modules::sync_dto::AgentSyncDTO::from(&config);
+    let config_hash = HashAggregator::compute_agent_config_hash(&dto);
+    let version = load_owner_push_version(
+        &app.state::<crate::vcp_modules::db_manager::DbState>().pool,
+        OwnerType::Agent,
+        agent_id,
+        &config_hash,
+    )
+    .await?;
+    send_entity_items(
+        client,
+        http_url,
+        sync_token,
+        vec![EntityPushItem::Owner {
+            owner_type: OwnerType::Agent,
+            owner_id: agent_id.to_string(),
+            data: EntityPushData::Agent(dto),
+        }],
+        Some(owner_push_idempotency_key(
+            OwnerType::Agent,
+            agent_id,
+            &config_hash,
+            version,
+        )),
+    )
+    .await
 }
 
 pub(super) async fn push_group<R: Runtime>(
@@ -30,186 +61,194 @@ pub(super) async fn push_group<R: Runtime>(
 ) -> Result<(), String> {
     let config =
         group_service::read_group_config(app.clone(), app.state(), group_id.to_string()).await?;
-    let dto = GroupSyncDTO::from(&config);
-    let body = send_entity(client, http_url, sync_token, group_id, "group", dto).await?;
-    validate_identity_response(&body, group_id, "Push group")
+    let dto = crate::vcp_modules::sync_dto::GroupSyncDTO::from(&config);
+    let config_hash = HashAggregator::compute_group_config_hash(&dto);
+    let version = load_owner_push_version(
+        &app.state::<crate::vcp_modules::db_manager::DbState>().pool,
+        OwnerType::Group,
+        group_id,
+        &config_hash,
+    )
+    .await?;
+    send_entity_items(
+        client,
+        http_url,
+        sync_token,
+        vec![EntityPushItem::Owner {
+            owner_type: OwnerType::Group,
+            owner_id: group_id.to_string(),
+            data: EntityPushData::Group(dto),
+        }],
+        Some(owner_push_idempotency_key(
+            OwnerType::Group,
+            group_id,
+            &config_hash,
+            version,
+        )),
+    )
+    .await
 }
 
-async fn send_entity<T: serde::Serialize>(
+pub(super) async fn push_entities_batch(
     client: &reqwest::Client,
     http_url: &str,
     sync_token: &str,
-    id: &str,
-    entity_type: &str,
-    data: T,
-) -> Result<serde_json::Value, String> {
-    let idempotency_key = generate_idempotency_key("push", entity_type, id);
-    let response = client
-        .post(format!("{http_url}/api/mobile-sync/upload-entity"))
-        .header("x-sync-token", sync_token)
-        .header("Authorization", format!("Bearer {sync_token}"))
-        .header("x-idempotency-key", idempotency_key)
-        .header("Content-Type", "application/json")
-        .body(serialize_entity_request(id, entity_type, data)?)
-        .send()
-        .await
-        .map_err(|error| format!("Push {entity_type} {id} request failed: {error}"))?;
-    parse_success_response(response, &format!("Push {entity_type}")).await
-}
-
-fn serialize_entity_request<T: serde::Serialize>(
-    id: &str,
-    entity_type: &str,
-    data: T,
-) -> Result<Vec<u8>, String> {
-    let body = serde_json::to_vec(&serde_json::json!({
-        "id": id,
-        "type": entity_type,
-        "data": data
-    }))
-    .map_err(|error| format!("Push {entity_type} request serialization failed: {error}"))?;
-    if body.len() > 5 * 1024 * 1024 {
-        return Err(format!("Push {entity_type} request exceeds 5 MiB"));
-    }
-    Ok(body)
-}
-
-pub(super) fn validate_identity_response(
-    value: &serde_json::Value,
-    expected_id: &str,
-    operation: &str,
+    items: Vec<EntityPushItem>,
 ) -> Result<(), String> {
-    let object = require_exact_object_keys(value, &["success", "id"], operation)?;
-    if object.get("success").and_then(serde_json::Value::as_bool) != Some(true)
-        || object.get("id").and_then(serde_json::Value::as_str) != Some(expected_id)
-    {
+    send_entity_items(client, http_url, sync_token, items, None).await
+}
+
+pub(super) async fn load_owner_push_version(
+    pool: &sqlx::SqlitePool,
+    owner_type: OwnerType,
+    owner_id: &str,
+    expected_config_hash: &str,
+) -> Result<i64, String> {
+    let query = match owner_type {
+        OwnerType::Agent => {
+            "SELECT config_hash, updated_at FROM agents
+             WHERE agent_id = ? AND deleted_at IS NULL"
+        }
+        OwnerType::Group => {
+            "SELECT config_hash, updated_at FROM groups
+             WHERE group_id = ? AND deleted_at IS NULL"
+        }
+    };
+    let row = sqlx::query(query)
+        .bind(owner_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| {
+            format!("Owner push version query failed for {owner_type}/{owner_id}: {error}")
+        })?
+        .ok_or_else(|| format!("Owner {owner_type}/{owner_id} is unavailable for push"))?;
+    let stored_hash: String = row.try_get("config_hash").map_err(|error| {
+        format!("Owner config hash decode failed for {owner_type}/{owner_id}: {error}")
+    })?;
+    if stored_hash != expected_config_hash {
         return Err(format!(
-            "{operation} response id mismatch for {expected_id}"
+            "Owner {owner_type}/{owner_id} changed while preparing its push snapshot"
         ));
     }
-    Ok(())
+    let version: i64 = row.try_get("updated_at").map_err(|error| {
+        format!("Owner update version decode failed for {owner_type}/{owner_id}: {error}")
+    })?;
+    if version < 0 {
+        return Err(format!(
+            "Owner {owner_type}/{owner_id} has an invalid negative update version"
+        ));
+    }
+    Ok(version)
 }
 
-pub(super) async fn push_entities_batch<R: Runtime>(
-    _app: &AppHandle<R>,
+async fn send_entity_items(
     client: &reqwest::Client,
     http_url: &str,
     sync_token: &str,
-    items: Vec<serde_json::Value>,
+    items: Vec<EntityPushItem>,
+    idempotency_key: Option<String>,
 ) -> Result<(), String> {
-    if items.is_empty() {
-        return Ok(());
+    let request = EntityPushRequest { items };
+    request.validate()?;
+    let expected = request
+        .items
+        .iter()
+        .map(EntityPushItem::selector)
+        .collect::<HashSet<_>>();
+    let body = serde_json::to_vec(&request)
+        .map_err(|error| format!("Entity push serialization failed: {error}"))?;
+    if body.len() > ENTITY_REQUEST_LIMIT_BYTES {
+        return Err("Entity push request exceeds 10 MiB".to_string());
     }
-    let expected_ids = validate_entity_items(&items)?;
-    let request_body = serde_json::json!({ "items": items });
-    let request_size = serde_json::to_vec(&request_body)
-        .map_err(|error| format!("Batch push entity serialization failed: {error}"))?
-        .len();
-    if request_size > 10 * 1024 * 1024 {
-        return Err("Batch push entity request exceeds 10 MiB".to_string());
-    }
-    let response = client
-        .post(format!("{http_url}/api/mobile-sync/upload-entities-batch"))
-        .header("x-sync-token", sync_token)
+    let stage = if expected
+        .iter()
+        .any(|selector| matches!(selector, EntitySelector::Topic { .. }))
+    {
+        SyncErrorStage::TopicMetadata
+    } else {
+        SyncErrorStage::OwnerMetadata
+    };
+    let mut builder = client
+        .post(format!("{http_url}/api/mobile-sync/entities/push"))
         .header("Authorization", format!("Bearer {sync_token}"))
-        .json(&request_body)
+        .header("Content-Type", "application/json");
+    if let Some(key) = idempotency_key {
+        builder = builder.header("x-idempotency-key", key);
+    }
+    let response = builder
+        .body(body)
         .send()
         .await
-        .map_err(|error| format!("Batch push request failed: {error}"))?;
-    let response_body =
-        super::http::parse_success_response(response, "Batch push entities").await?;
-    validate_batch_response(&response_body, &expected_ids)
+        .map_err(|error| http_transport_error("Entity push request", stage, &error))?;
+    let response: EntityPushResponse = parse_json_response(response, "Entity push", stage).await?;
+    validate_entity_response(response, &expected)
 }
 
-fn validate_entity_items(items: &[serde_json::Value]) -> Result<HashSet<String>, String> {
-    let mut expected_ids = HashSet::new();
-    for item in items {
-        let id = item
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| "Batch push entity item requires a non-empty id".to_string())?;
-        if !expected_ids.insert(id.to_string()) {
+fn validate_entity_response(
+    response: EntityPushResponse,
+    expected: &HashSet<EntitySelector>,
+) -> Result<(), String> {
+    response.validate()?;
+    let mut seen = HashSet::new();
+    for result in response.results {
+        let (identity, ok, error) = result.into_parts();
+        if !expected.contains(&identity) {
             return Err(format!(
-                "Batch push entity request contains duplicate id {id}"
+                "Entity push returned unexpected {}",
+                identity.label()
             ));
         }
+        if !seen.insert(identity.clone()) {
+            return Err(format!(
+                "Entity push returned duplicate {}",
+                identity.label()
+            ));
+        }
+        match (ok, error) {
+            (true, None) => {}
+            (true, Some(_)) => {
+                return Err(format!(
+                    "Successful entity push {} must not contain error",
+                    identity.label()
+                ));
+            }
+            (false, Some(error)) => {
+                let encoded = encode_wire_sync_error(&error)?;
+                return Err(format!(
+                    "Entity push {} failed: {encoded}",
+                    identity.label()
+                ));
+            }
+            (false, None) => {
+                return Err(format!(
+                    "Entity push {} failure requires error",
+                    identity.label()
+                ));
+            }
+        }
     }
-    Ok(expected_ids)
-}
-
-fn validate_batch_response(
-    response_body: &serde_json::Value,
-    expected_ids: &HashSet<String>,
-) -> Result<(), String> {
-    let object = require_exact_object_keys(
-        response_body,
-        &["success", "results"],
-        "Batch push entities",
-    )?;
-    if object.get("success").and_then(serde_json::Value::as_bool) != Some(true) {
-        return Err("Batch push entities response must report success=true".to_string());
-    }
-    let results = object
-        .get("results")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "Batch push entities response results must be an array".to_string())?;
-    let mut seen_ids = HashSet::new();
-    for result in results {
-        validate_batch_result(result, expected_ids, &mut seen_ids)?;
-    }
-    if seen_ids != *expected_ids {
-        let mut missing = expected_ids
-            .difference(&seen_ids)
-            .cloned()
-            .collect::<Vec<_>>();
-        missing.sort();
-        return Err(format!(
-            "Batch push entities missing results for {missing:?}"
-        ));
+    if seen != *expected {
+        return Err("Entity push response is missing one or more requested identities".to_string());
     }
     Ok(())
 }
 
-fn validate_batch_result(
-    result: &serde_json::Value,
-    expected_ids: &HashSet<String>,
-    seen_ids: &mut HashSet<String>,
-) -> Result<(), String> {
-    let object = result
-        .as_object()
-        .ok_or_else(|| "Batch push entity result must be an object".to_string())?;
-    let id = object
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "Batch push entity result requires a non-empty id".to_string())?;
-    if !expected_ids.contains(id) {
-        return Err(format!("Batch push entities returned unexpected id {id}"));
+pub(super) fn owner_push_idempotency_key(
+    owner_type: OwnerType,
+    owner_id: &str,
+    config_hash: &str,
+    updated_at: i64,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(OWNER_PUSH_IDEMPOTENCY_DOMAIN);
+    for field in [
+        owner_type.as_str().as_bytes(),
+        owner_id.as_bytes(),
+        config_hash.as_bytes(),
+        updated_at.to_be_bytes().as_slice(),
+    ] {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
     }
-    if !seen_ids.insert(id.to_string()) {
-        return Err(format!("Batch push entities returned duplicate id {id}"));
-    }
-    let success = object
-        .get("success")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| format!("Batch push entity {id} requires boolean success"))?;
-    let allowed = if success {
-        &["id", "success"][..]
-    } else {
-        &["id", "success", "error"][..]
-    };
-    if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) {
-        return Err(format!(
-            "Batch push entity {id} response has unexpected fields"
-        ));
-    }
-    if !success {
-        let error = object
-            .get("error")
-            .ok_or_else(|| format!("Batch push entity {id} failure is missing error"))
-            .and_then(encode_wire_sync_error_value)?;
-        return Err(format!("Batch push entity {id} failed: {error}"));
-    }
-    Ok(())
+    format!("{:x}", hasher.finalize())
 }

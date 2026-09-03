@@ -19,5 +19,5 @@ pub use registration::{register_attachment_internal, AttachmentData};
 pub(crate) use validation::{
     canonical_file_within_root, check_existing_cas_size, check_existing_cas_size_async,
     normalize_attachment_mime, resolve_attachment_cas_file, safe_storage_extension,
-    store_file_semaphore, validate_attachment_cas_path, verify_expected_hash,
+    store_file_semaphore, validate_attachment_cas_path, verify_expected_hash, verify_file_sha256,
 };

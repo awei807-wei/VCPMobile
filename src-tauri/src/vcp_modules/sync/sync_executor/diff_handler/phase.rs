@@ -1,17 +1,18 @@
 use super::context::DiffContext;
+use super::manifest::ManifestDecision;
 use crate::vcp_modules::sync_service::{emit_sync_log, SyncCommand};
-use crate::vcp_modules::sync_types::SyncDataType;
-use serde_json::Value;
+use crate::vcp_modules::sync_types::{ManifestAction, ManifestType};
 use std::sync::atomic::Ordering;
 
 pub(crate) async fn record_manifest(
     ctx: &DiffContext,
-    items: &[Value],
+    manifest_type: ManifestType,
+    items: &[ManifestDecision],
     current_phase: u8,
     all_manifest_types_received: bool,
 ) -> Result<(), String> {
     let total_ops = count_operations(items);
-    log_manifest(ctx, items, total_ops);
+    log_manifest(ctx, manifest_type, items, total_ops);
     ctx.pending_tasks.fetch_add(total_ops, Ordering::SeqCst);
     ctx.total_tasks.fetch_add(total_ops, Ordering::SeqCst);
     let received = ctx
@@ -21,7 +22,7 @@ pub(crate) async fn record_manifest(
     let expected = ctx.expected_manifest_count.load(Ordering::SeqCst);
     if received > expected {
         return Err(format!(
-            "SYNC_DIFF_RESULTS response count exceeds phase {current_phase} expectation"
+            "SYNC_MANIFEST_RESULT response count exceeds phase {current_phase} expectation"
         ));
     }
     if all_manifest_types_received && received == expected {
@@ -30,62 +31,62 @@ pub(crate) async fn record_manifest(
     Ok(())
 }
 
-fn count_operations(items: &[Value]) -> u32 {
+fn count_operations(items: &[ManifestDecision]) -> u32 {
     items
         .iter()
-        .filter(|item| {
-            matches!(
-                item.get("action").and_then(Value::as_str),
-                Some("PULL" | "PUSH" | "DELETE" | "PUSH_DELETE")
-            )
-        })
+        .filter(|item| item.action() != ManifestAction::Skip)
         .count() as u32
 }
 
-fn log_manifest(ctx: &DiffContext, items: &[Value], total_ops: u32) {
+fn log_manifest(
+    ctx: &DiffContext,
+    manifest_type: ManifestType,
+    items: &[ManifestDecision],
+    total_ops: u32,
+) {
     if total_ops == 0 {
         return;
     }
-    let counts =
-        ["PULL", "PUSH", "DELETE", "PUSH_DELETE"].map(|action| count_action(items, action));
-    let phase_tag = match &ctx.data_type {
-        SyncDataType::Agent | SyncDataType::Group | SyncDataType::Avatar => "owner_metadata",
-        SyncDataType::Topic => "topic_metadata",
-        SyncDataType::Message => "messages",
+    let counts = [
+        ManifestAction::Pull,
+        ManifestAction::Push,
+        ManifestAction::PullDelete,
+        ManifestAction::PushDelete,
+    ]
+    .map(|action| count_action(items, action));
+    let phase_tag = match manifest_type {
+        ManifestType::Owner | ManifestType::Avatar => "owner_metadata",
+        ManifestType::Topic => "topic_metadata",
     };
     let message = format!(
-        "[{}] Diff: pull={} push={} delete={} push_delete={}",
-        ctx.data_type, counts[0], counts[1], counts[2], counts[3]
+        "[{}] Diff: pull={} push={} pull_delete={} push_delete={}",
+        manifest_type, counts[0], counts[1], counts[2], counts[3]
     );
     log::info!("[Sync] [{}] {}", phase_tag, message);
     emit_sync_log(&ctx.app_handle, "info", &message);
     if let Ok(mut logger) = ctx.logger.lock() {
         logger.log_operation(
             phase_tag,
-            &ctx.data_type.to_string(),
+            &manifest_type.to_string(),
             "manifest",
             true,
             Some(&format!(
-                "pull={} push={} delete={} push_delete={}",
+                "pull={} push={} pull_delete={} push_delete={}",
                 counts[0], counts[1], counts[2], counts[3]
             )),
         );
     }
 }
 
-fn count_action(items: &[Value], action: &str) -> u32 {
-    items
-        .iter()
-        .filter(|item| item.get("action").and_then(Value::as_str) == Some(action))
-        .count() as u32
+fn count_action(items: &[ManifestDecision], action: ManifestAction) -> u32 {
+    items.iter().filter(|item| item.action() == action).count() as u32
 }
 
 async fn advance_or_watch(ctx: &DiffContext, current_phase: u8) {
     let pending = ctx.pending_tasks.load(Ordering::SeqCst);
     log::info!(
-        "[SyncService] All manifests received for Phase {}: dataType={}, pending={}",
+        "[SyncService] All manifests received for Phase {}: pending={}",
         current_phase,
-        ctx.data_type,
         pending
     );
     if pending == 0 {
@@ -207,6 +208,7 @@ pub(crate) fn complete_operations(ctx: &DiffContext, count: u32) {
         "vcp-sync-progress",
         serde_json::json!({
             "sessionId": ctx.session_id,
+            "attemptId": ctx.attempt_id,
             "phase": phase,
             "total": total,
             "completed": done,

@@ -34,7 +34,11 @@ const selectTopic = async (
   }
 
   // 使用统一的 sessionStore 选择话题，历史加载由 ChatView 的 watcher 响应
-  await sessionStore.selectTopicById(itemId, topicId);
+  const ownerType = sessionStore.currentSelectedItem?.type;
+  if (ownerType !== "agent" && ownerType !== "group") {
+    throw new Error(`Topic ${topicId} has no complete owner identity`);
+  }
+  await sessionStore.selectTopicById(itemId, ownerType, topicId);
 
   const createdTopic = topicStore.topics.find((topic) => topic.id === topicId);
   if (createdTopic) {
@@ -47,10 +51,7 @@ const selectTopic = async (
 const handleCreateTopic = async () => {
   if (isCreating.value) return;
 
-  console.info(
-    "[TopicCreator] create-topic clicked",
-    sessionStore.currentSelectedItem,
-  );
+  console.info("[TopicCreator] create-topic clicked");
 
   if (!currentItemId.value) {
     notificationStore.addNotification({
@@ -71,9 +72,13 @@ const handleCreateTopic = async () => {
   })}`;
 
   try {
-    const ownerType = assistantStore.agents.some((a) => a.id === currentItemId.value)
-      ? "agent"
-      : "group";
+    const selected = sessionStore.currentSelectedItem;
+    const ownerType = selected?.id === currentItemId.value
+      ? selected.type
+      : "agent";
+    if (ownerType !== "agent" && ownerType !== "group") {
+      throw new Error(`Owner ${currentItemId.value} has no complete identity`);
+    }
 
     const newTopic = await topicStore.createTopic(
       currentItemId.value,

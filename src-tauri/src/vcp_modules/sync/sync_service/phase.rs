@@ -1,5 +1,5 @@
 use super::attempt::{AttemptAction, AttemptContext};
-use super::batching::build_diff_batches;
+use super::batching::{build_diff_batches, Phase3DiffBatch};
 use super::protocol::{
     enforce_manifest_response_deadline, enforce_topic_hash_response_deadline,
     send_ws_with_deadline, PHASE3_WATCHDOG_STUCK_TICKS, PHASE3_WATCHDOG_TICK,
@@ -8,28 +8,26 @@ use super::protocol::{
 use super::types::SyncCommand;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::sync_pipeline::{Phase1Metadata, Phase3Message};
-use crate::vcp_modules::sync_types::SyncDataType;
-use serde_json::json;
+use crate::vcp_modules::sync_types::{
+    ManifestRequestFrame, ManifestType, OwnerType, SyncPhase, TopicDiffRequestFrame, TopicDiffState,
+};
+use crate::vcp_modules::topic_types::TopicKey;
+use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 pub(crate) async fn handle_pipeline_command(
     ctx: &mut AttemptContext,
     command: crate::vcp_modules::sync_pipeline::pipeline::PipelineCommand,
 ) -> AttemptAction {
+    use crate::vcp_modules::sync_pipeline::pipeline::PipelineCommand;
     match command {
-        crate::vcp_modules::sync_pipeline::pipeline::PipelineCommand::StartTopicMetadata => {
-            start_topic_metadata(ctx).await
-        }
-        crate::vcp_modules::sync_pipeline::pipeline::PipelineCommand::StartTopicValidation => {
-            start_topic_validation(ctx).await
-        }
-        crate::vcp_modules::sync_pipeline::pipeline::PipelineCommand::StartMessages => {
-            start_messages(ctx).await
-        }
-        crate::vcp_modules::sync_pipeline::pipeline::PipelineCommand::Finalize => {
+        PipelineCommand::StartTopicMetadata => start_topic_metadata(ctx).await,
+        PipelineCommand::StartTopicValidation => start_topic_validation(ctx).await,
+        PipelineCommand::StartMessages => start_messages(ctx).await,
+        PipelineCommand::Finalize => {
             emit_sync_log(
                 ctx,
                 "info",
@@ -41,7 +39,6 @@ pub(crate) async fn handle_pipeline_command(
 }
 
 async fn start_topic_metadata(ctx: &mut AttemptContext) -> AttemptAction {
-    let db = ctx.app.state::<DbState>();
     let owners = ctx
         .changed_owners
         .lock()
@@ -56,53 +53,64 @@ async fn start_topic_metadata(ctx: &mut AttemptContext) -> AttemptAction {
         });
         return AttemptAction::Continue;
     }
+
+    let db = ctx.app.state::<DbState>();
     let manifest = match Phase1Metadata::build_targeted_topic_manifest(&db.pool, &owners).await {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            return fail_attempt(ctx, "TOPIC_MANIFEST_DB_FAILED", error.to_string()).await;
+        Ok(manifest) if manifest.manifest_type() == ManifestType::Topic => manifest,
+        Ok(_) => {
+            return fail_attempt(
+                ctx,
+                "TOPIC_MANIFEST_INVALID",
+                "Targeted topic manifest returned an unexpected manifest type".to_string(),
+            )
+            .await;
         }
+        Err(error) => return fail_attempt(ctx, "TOPIC_MANIFEST_DB_FAILED", error).await,
     };
-    if manifest.data_type != SyncDataType::Topic {
-        return fail_attempt(
-            ctx,
-            "TOPIC_MANIFEST_INVALID",
-            "Targeted topic manifest returned an unexpected data type".to_string(),
-        )
-        .await;
-    }
     ctx.manifest_phase.store(3, Ordering::SeqCst);
-    set_manifest_expectation(ctx, ["topic"]);
-    send_manifest(ctx, manifest.items, manifest.data_type, 2, owners).await
+    set_manifest_expectation(ctx, HashSet::from([ManifestType::Topic]));
+    ctx.pending_tasks.store(0, Ordering::SeqCst);
+    ctx.total_tasks.store(0, Ordering::SeqCst);
+
+    if send_phase_start(ctx, SyncPhase::TopicMetadata).await == AttemptAction::Stop {
+        return AttemptAction::Stop;
+    }
+    let frame = ManifestRequestFrame::new(manifest);
+    if send_frame(ctx, &frame).await == AttemptAction::Stop {
+        return AttemptAction::Stop;
+    }
+    schedule_manifest_deadline(ctx, 3).await;
+    AttemptAction::Continue
 }
 
 async fn start_topic_validation(ctx: &mut AttemptContext) -> AttemptAction {
     emit_sync_log(ctx, "info", "=== Phase 2.5: Validating Topic Hashes ===");
-    let (hashes, topics) = match collect_topic_hashes(ctx).await {
+    let (topics, expected_topics) = match collect_topic_states(ctx).await {
         Ok(value) => value,
         Err(action) => return action,
     };
-    let overlap = {
+    let response_overlap = {
         let mut expected = ctx.expected_topic_hash_results.lock().await;
         if expected.is_some() {
             true
         } else {
-            *expected = Some(hashes.keys().cloned().collect());
+            *expected = Some(expected_topics);
             false
         }
     };
-    if overlap {
+    if response_overlap {
         return fail_attempt(
             ctx,
             "TOPIC_HASH_RESPONSE_OVERLAP",
-            "A topic hash response is already pending".to_string(),
+            "A topic diff response is already pending".to_string(),
         )
         .await;
     }
-    let value = json!({"type": "SYNC_TOPIC_HASH_BATCH_V2", "hashes": hashes, "topics": topics});
-    if send_ws_with_deadline(&mut ctx.ws, Message::Text(value.to_string().into()))
-        .await
-        .is_err()
-    {
+    let frame = TopicDiffRequestFrame::new(topics);
+    if let Err(error) = frame.validate() {
+        return fail_attempt(ctx, "TOPIC_HASH_STATE_INVALID", error).await;
+    }
+    if send_frame(ctx, &frame).await == AttemptAction::Stop {
         return AttemptAction::Stop;
     }
     ctx.task_tracker
@@ -118,16 +126,9 @@ async fn start_topic_validation(ctx: &mut AttemptContext) -> AttemptAction {
     AttemptAction::Continue
 }
 
-async fn collect_topic_hashes(
+async fn collect_topic_states(
     ctx: &mut AttemptContext,
-) -> Result<
-    (
-        serde_json::Map<String, serde_json::Value>,
-        Vec<serde_json::Value>,
-    ),
-    AttemptAction,
-> {
-    let db = ctx.app.state::<DbState>();
+) -> Result<(Vec<TopicDiffState>, HashSet<TopicKey>), AttemptAction> {
     let owners = ctx
         .changed_owners
         .lock()
@@ -135,107 +136,131 @@ async fn collect_topic_hashes(
         .iter()
         .cloned()
         .collect::<Vec<_>>();
-    let topic_hashes = match Phase3Message::get_targeted_topic_hashes(&db.pool, &owners).await {
-        Ok(value) => value,
-        Err(error) => {
-            return Err(fail_attempt(ctx, "TOPIC_HASH_DB_FAILED", error.to_string()).await);
-        }
-    };
-    if topic_hashes.len() > super::protocol::MAX_SYNC_TOPICS {
-        return Err(fail_attempt(
+    let db = ctx.app.state::<DbState>();
+    let hashes = Phase3Message::get_targeted_topic_hashes(&db.pool, &owners)
+        .await
+        .map_err(|error| queue_failure(ctx, "TOPIC_HASH_DB_FAILED", error))?;
+    if hashes.len() > super::protocol::MAX_SYNC_TOPICS {
+        return Err(queue_failure(
             ctx,
             "TOPIC_HASH_BUDGET_EXCEEDED",
-            "Topic hash batch exceeds the configured topic budget".to_string(),
-        )
-        .await);
+            "Topic diff exceeds the configured topic budget".to_string(),
+        ));
     }
-    let mut hashes = serde_json::Map::new();
-    let mut topics = Vec::new();
-    for (topic_id, state) in topic_hashes {
-        hashes.insert(
-            topic_id.clone(),
-            json!({"configHash": state.config_hash, "contentHash": state.content_hash}),
-        );
-        topics.push(json!({"topicId": topic_id, "ownerType": state.owner_type, "ownerId": state.owner_id, "configHash": state.config_hash, "contentHash": state.content_hash}));
+
+    let mut expected = HashSet::with_capacity(hashes.len());
+    let mut topics = Vec::with_capacity(hashes.len());
+    for (key, state) in hashes {
+        let owner_type = OwnerType::try_from(key.owner_type.as_str()).map_err(|_| {
+            queue_failure(
+                ctx,
+                "TOPIC_HASH_STATE_INVALID",
+                format!("Topic {} has invalid ownerType", key.topic_id),
+            )
+        })?;
+        expected.insert(key.clone());
+        topics.push(TopicDiffState {
+            owner_type,
+            owner_id: key.owner_id,
+            topic_id: key.topic_id,
+            config_hash: state.config_hash,
+            content_hash: state.content_hash,
+        });
     }
-    Ok((hashes, topics))
+    Ok((topics, expected))
+}
+
+fn queue_failure(ctx: &AttemptContext, code: &'static str, message: String) -> AttemptAction {
+    let _ = ctx.tx.send(SyncCommand::FailAttempt {
+        attempt_id: ctx.attempt_id,
+        code,
+        message,
+    });
+    AttemptAction::Continue
 }
 
 async fn start_messages(ctx: &mut AttemptContext) -> AttemptAction {
     emit_sync_log(ctx, "info", "=== Phase 3: Messages ===");
-    if send_phase_start(ctx, "messages").await == AttemptAction::Stop {
+    ctx.message_phase_barrier.reset();
+    if send_phase_start(ctx, SyncPhase::Messages).await == AttemptAction::Stop {
         return AttemptAction::Stop;
     }
-    let changed_ids = ctx.changed_topics.lock().await.clone();
-    if changed_ids.is_empty() {
+    let changed_topics = ctx.changed_topics.lock().await.clone();
+    if changed_topics.is_empty() {
         let _ = ctx.tx.send(SyncCommand::Finalize {
             attempt_id: ctx.attempt_id,
         });
         return AttemptAction::Continue;
     }
     let db = ctx.app.state::<DbState>();
-    let states = match Phase3Message::get_topic_message_hashes(&db.pool, &changed_ids).await {
+    let states = match Phase3Message::get_topic_message_hashes(&db.pool, &changed_topics).await {
         Ok(value) => value,
-        Err(error) => {
-            return fail_attempt(ctx, "PHASE3_HASH_PREP_FAILED", error.to_string()).await;
-        }
+        Err(error) => return fail_attempt(ctx, "PHASE3_HASH_PREP_FAILED", error).await,
     };
+    prepare_phase3_tracker(ctx, states.len()).await;
+    let first = match prepare_phase3_batches(ctx, states).await {
+        Ok(batch) => batch,
+        Err(error) => return fail_attempt(ctx, "PHASE3_DIFF_BUDGET_EXCEEDED", error).await,
+    };
+    if send_phase3_batch(ctx, first).await == AttemptAction::Stop {
+        return AttemptAction::Stop;
+    }
+    start_phase3_watchdog(ctx).await;
+    AttemptAction::Continue
+}
+
+async fn prepare_phase3_tracker(ctx: &AttemptContext, topic_count: usize) {
     ctx.pending_topics
         .total
-        .store(states.len(), Ordering::SeqCst);
-    clear_phase3_tracker(ctx).await;
-    let batches = match build_diff_batches(states) {
-        Ok(value) if !value.is_empty() => value,
-        Ok(_) => {
-            return fail_attempt(
-                ctx,
-                "PHASE3_DIFF_MISSING",
-                "Phase 3 produced no request batch for changed topics".to_string(),
-            )
-            .await;
-        }
-        Err(error) => {
-            return fail_attempt(ctx, "PHASE3_DIFF_BUDGET_EXCEEDED", error).await;
-        }
-    };
-    let first = {
-        let mut pending = ctx.pending_batches.lock().await;
-        *pending = batches;
-        pending.pop_front()
-    };
-    let Some(first) = first else {
-        return AttemptAction::Stop;
-    };
-    send_batch(ctx, first).await
+        .store(topic_count, Ordering::SeqCst);
+    ctx.pending_topics.completed.lock().await.clear();
+    ctx.pending_topics.modified.lock().await.clear();
+    ctx.pending_topics.failed.lock().await.clear();
+    ctx.pending_topics
+        .legacy_attachment_warnings
+        .store(0, Ordering::SeqCst);
+    let _ = ctx.app.emit(
+        "vcp-sync-progress",
+        serde_json::json!({
+            "sessionId": ctx.session_id,
+            "attemptId": ctx.attempt_id,
+            "phase": "messages",
+            "total": topic_count,
+            "completed": 0,
+            "successfulTopics": 0,
+            "totalTopics": topic_count,
+            "failedTopics": 0,
+            "legacyAttachmentWarnings": 0,
+        }),
+    );
 }
 
-async fn send_phase_start(ctx: &mut AttemptContext, phase: &str) -> AttemptAction {
-    let value = json!({"type": "PHASE_START", "phase": phase});
-    if send_ws_with_deadline(&mut ctx.ws, Message::Text(value.to_string().into()))
-        .await
-        .is_ok()
-    {
-        AttemptAction::Continue
-    } else {
-        AttemptAction::Stop
-    }
+async fn prepare_phase3_batches(
+    ctx: &AttemptContext,
+    states: std::collections::HashMap<
+        TopicKey,
+        crate::vcp_modules::sync_pipeline::phase3_message::TopicLocalState,
+    >,
+) -> Result<Phase3DiffBatch, String> {
+    let mut batches = build_diff_batches(states)?;
+    let first = batches
+        .pop_front()
+        .ok_or_else(|| "Phase 3 produced no request batch for changed topics".to_string())?;
+    *ctx.pending_batches.lock().await = batches;
+    Ok(first)
 }
 
-async fn send_batch(
-    ctx: &mut AttemptContext,
-    batch: serde_json::Map<String, serde_json::Value>,
-) -> AttemptAction {
-    {
-        let mut expected = ctx.expected_phase3_batch.lock().await;
-        *expected = batch.keys().cloned().collect();
+async fn send_phase3_batch(ctx: &mut AttemptContext, batch: Phase3DiffBatch) -> AttemptAction {
+    *ctx.expected_phase3_states.lock().await = batch.message_snapshots();
+    *ctx.expected_phase3_batch.lock().await = batch.keys;
+    let frame = crate::vcp_modules::sync_types::MessageDiffRequestFrame::new(batch.topics);
+    if let Err(error) = frame.validate() {
+        return fail_attempt(ctx, "PHASE3_DIFF_BUDGET_EXCEEDED", error).await;
     }
-    let value = json!({"type": "SYNC_MESSAGE_DIFF_BATCH", "topics": batch});
-    if send_ws_with_deadline(&mut ctx.ws, Message::Text(value.to_string().into()))
-        .await
-        .is_err()
-    {
-        return AttemptAction::Stop;
-    }
+    send_frame(ctx, &frame).await
+}
+
+async fn start_phase3_watchdog(ctx: &AttemptContext) {
     let tracker = ctx.pending_topics.clone();
     let tx = ctx.tx.clone();
     let attempt_id = ctx.attempt_id;
@@ -267,16 +292,45 @@ async fn send_batch(
             }
         })
         .await;
-    AttemptAction::Continue
 }
 
-async fn clear_phase3_tracker(ctx: &mut AttemptContext) {
-    ctx.pending_topics.completed.lock().await.clear();
-    ctx.pending_topics.modified.lock().await.clear();
-    ctx.pending_topics.failed.lock().await.clear();
-    ctx.pending_topics
-        .legacy_attachment_warnings
-        .store(0, Ordering::SeqCst);
+async fn send_phase_start(ctx: &mut AttemptContext, phase: SyncPhase) -> AttemptAction {
+    send_frame(
+        ctx,
+        &serde_json::json!({"type": "PHASE_START", "phase": phase}),
+    )
+    .await
+}
+
+async fn send_frame<T: Serialize>(ctx: &mut AttemptContext, frame: &T) -> AttemptAction {
+    let text = match serde_json::to_string(frame) {
+        Ok(text) => text,
+        Err(error) => {
+            return fail_attempt(
+                ctx,
+                "PROTOCOL_FRAME_INVALID",
+                format!("Failed to serialize sync frame: {error}"),
+            )
+            .await;
+        }
+    };
+    match send_ws_with_deadline(&mut ctx.ws, Message::Text(text.into())).await {
+        Ok(()) => AttemptAction::Continue,
+        Err(_) => AttemptAction::Stop,
+    }
+}
+
+pub(crate) async fn schedule_manifest_deadline(ctx: &AttemptContext, expected_phase: u8) {
+    ctx.task_tracker
+        .spawn(enforce_manifest_response_deadline(
+            ctx.expected_manifest_types.clone(),
+            ctx.manifest_phase.clone(),
+            expected_phase,
+            ctx.tx.clone(),
+            ctx.attempt_id,
+            PHASE_RESPONSE_TIMEOUT,
+        ))
+        .await;
 }
 
 fn clear_manifest_expectation(ctx: &AttemptContext) {
@@ -287,56 +341,20 @@ fn clear_manifest_expectation(ctx: &AttemptContext) {
     }
 }
 
-fn set_manifest_expectation<const N: usize>(ctx: &AttemptContext, values: [&str; N]) {
-    ctx.expected_manifest_count
-        .store(N as u32, Ordering::SeqCst);
-    ctx.manifest_responses_received.store(0, Ordering::SeqCst);
-    if let Ok(mut expected) = ctx.expected_manifest_types.lock() {
-        *expected = values.into_iter().map(str::to_string).collect();
-    }
+pub(crate) fn set_manifest_expectation_for_command(
+    ctx: &AttemptContext,
+    values: HashSet<ManifestType>,
+) {
+    set_manifest_expectation(ctx, values);
 }
 
-pub(crate) fn set_manifest_expectation_for_command(ctx: &AttemptContext, values: HashSet<String>) {
+fn set_manifest_expectation(ctx: &AttemptContext, values: HashSet<ManifestType>) {
     ctx.expected_manifest_count
         .store(values.len() as u32, Ordering::SeqCst);
     ctx.manifest_responses_received.store(0, Ordering::SeqCst);
     if let Ok(mut expected) = ctx.expected_manifest_types.lock() {
         *expected = values;
     }
-}
-
-async fn send_manifest(
-    ctx: &mut AttemptContext,
-    items: Vec<crate::vcp_modules::sync_types::EntityState>,
-    data_type: SyncDataType,
-    phase: u8,
-    owners: Vec<String>,
-) -> AttemptAction {
-    let value = json!({"type": "PHASE_START", "phase": "topic_metadata"});
-    if send_ws_with_deadline(&mut ctx.ws, Message::Text(value.to_string().into()))
-        .await
-        .is_err()
-    {
-        return AttemptAction::Stop;
-    }
-    let value = json!({"type": "SYNC_MANIFEST", "data": items, "dataType": data_type, "phase": phase, "targetedOwners": owners});
-    if send_ws_with_deadline(&mut ctx.ws, Message::Text(value.to_string().into()))
-        .await
-        .is_err()
-    {
-        return AttemptAction::Stop;
-    }
-    ctx.task_tracker
-        .spawn(enforce_manifest_response_deadline(
-            ctx.expected_manifest_types.clone(),
-            ctx.manifest_phase.clone(),
-            3,
-            ctx.tx.clone(),
-            ctx.attempt_id,
-            PHASE_RESPONSE_TIMEOUT,
-        ))
-        .await;
-    AttemptAction::Continue
 }
 
 fn emit_sync_log(ctx: &AttemptContext, level: &str, message: &str) {

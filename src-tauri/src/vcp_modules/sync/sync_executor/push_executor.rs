@@ -1,4 +1,3 @@
-mod attachments;
 mod avatar;
 mod entities;
 mod http;
@@ -11,10 +10,9 @@ mod types;
 
 pub use types::PushBatchResult;
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use crate::vcp_modules::sync_types::EntityPushItem;
+use crate::vcp_modules::topic_types::TopicKey;
 use tauri::{AppHandle, Runtime};
-use tokio::sync::RwLock;
 
 pub struct PushExecutor;
 
@@ -40,13 +38,13 @@ impl PushExecutor {
     }
 
     pub async fn push_entities_batch<R: Runtime>(
-        app: &AppHandle<R>,
+        _app: &AppHandle<R>,
         client: &reqwest::Client,
         http_url: &str,
         sync_token: &str,
-        items: Vec<serde_json::Value>,
+        items: Vec<EntityPushItem>,
     ) -> Result<(), String> {
-        entities::push_entities_batch(app, client, http_url, sync_token, items).await
+        entities::push_entities_batch(client, http_url, sync_token, items).await
     }
 
     pub async fn push_avatar<R: Runtime>(
@@ -65,18 +63,9 @@ impl PushExecutor {
         client: &reqwest::Client,
         http_url: &str,
         sync_token: &str,
-        topic_ids: &[String],
-        uploaded_hashes: Arc<RwLock<HashSet<String>>>,
+        topics: &[TopicKey],
     ) -> Result<Vec<PushBatchResult>, String> {
-        orchestration::push_messages_batch(
-            app,
-            client,
-            http_url,
-            sync_token,
-            topic_ids,
-            uploaded_hashes,
-        )
-        .await
+        orchestration::push_messages_batch(app, client, http_url, sync_token, topics).await
     }
 }
 

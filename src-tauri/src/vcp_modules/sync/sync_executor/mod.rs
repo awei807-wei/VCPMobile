@@ -10,6 +10,8 @@ pub use batch_diff_handler::BatchDiffHandler;
 pub use delete_executor::DeleteExecutor;
 #[allow(unused_imports)]
 pub use diff_handler::DiffHandler;
-pub use pull_executor::{BatchPullResult, PullExecutor, PullProgressContext};
+pub use pull_executor::{
+    BatchPullResult, MessageBatchPullRequest, PullExecutor, PullProgressContext,
+};
 #[allow(unused_imports)]
 pub use push_executor::{PushBatchResult, PushExecutor};

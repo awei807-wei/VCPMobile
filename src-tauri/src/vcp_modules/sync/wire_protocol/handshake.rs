@@ -1,14 +1,18 @@
-//! Wire 1.2 version handshake contract.
+//! Wire 1.4 version handshake contract.
 
 use super::strict_json::parse_strict_json;
 use serde_json::{json, Value};
 use std::fmt;
 
-/// The only desktop plugin package version compatible with this client.
-pub const EXPECTED_PLUGIN_VERSION: &str = "1.2.0";
+/// The desktop plugin version currently used as the deployment baseline.
+///
+/// Wire compatibility is owned by [`WIRE_PROTOCOL_VERSION`].  The plugin
+/// version is retained for diagnostics and baseline pinning; patch releases
+/// that keep the same wire contract are not rejected by the ACK parser.
+pub const EXPECTED_PLUGIN_VERSION: &str = "1.4.0";
 
 /// The hard-cut wire protocol version used by the mobile sync service.
-pub const WIRE_PROTOCOL_VERSION: &str = "1.2";
+pub const WIRE_PROTOCOL_VERSION: &str = "1.4";
 
 /// A validated desktop `VERSION_ACK` payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,9 +29,21 @@ pub enum VersionAckError {
     UnknownField(String),
     MissingField(&'static str),
     InvalidFieldType(&'static str),
+    InvalidFieldValue(&'static str),
     InvalidMessageType,
-    PluginVersionMismatch { expected: String, received: String },
-    ProtocolVersionMismatch { expected: String, received: String },
+    /// Retained for callers that classify package diagnostics separately.
+    ///
+    /// The Wire 1.4 compatibility gate intentionally does not emit this
+    /// variant: plugin patch versions are diagnostic, while the wire version
+    /// is the hard compatibility boundary.
+    PluginVersionMismatch {
+        expected: String,
+        received: String,
+    },
+    ProtocolVersionMismatch {
+        expected: String,
+        received: String,
+    },
 }
 
 impl fmt::Display for VersionAckError {
@@ -39,6 +55,9 @@ impl fmt::Display for VersionAckError {
             Self::MissingField(field) => write!(formatter, "missing VERSION_ACK field: {field}"),
             Self::InvalidFieldType(field) => {
                 write!(formatter, "VERSION_ACK.{field} must be a string")
+            }
+            Self::InvalidFieldValue(field) => {
+                write!(formatter, "VERSION_ACK.{field} must be non-empty")
             }
             Self::InvalidMessageType => formatter.write_str("expected VERSION_ACK"),
             Self::PluginVersionMismatch { expected, received } => write!(
@@ -97,15 +116,8 @@ pub fn parse_version_ack(payload: &Value) -> Result<VersionAck, VersionAckError>
         return Err(VersionAckError::InvalidMessageType);
     }
 
-    let plugin_version = required_string(object, "pluginVersion")?;
-    if plugin_version != EXPECTED_PLUGIN_VERSION {
-        return Err(VersionAckError::PluginVersionMismatch {
-            expected: EXPECTED_PLUGIN_VERSION.to_owned(),
-            received: plugin_version.to_owned(),
-        });
-    }
-
-    let protocol_version = required_string(object, "protocolVersion")?;
+    let plugin_version = required_nonempty_string(object, "pluginVersion")?;
+    let protocol_version = required_nonempty_string(object, "protocolVersion")?;
     if protocol_version != WIRE_PROTOCOL_VERSION {
         return Err(VersionAckError::ProtocolVersionMismatch {
             expected: WIRE_PROTOCOL_VERSION.to_owned(),
@@ -135,6 +147,17 @@ fn required_string<'a>(
         .ok_or(VersionAckError::InvalidFieldType(field))
 }
 
+fn required_nonempty_string<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &'static str,
+) -> Result<&'a str, VersionAckError> {
+    let value = required_string(object, field)?;
+    if value.is_empty() {
+        return Err(VersionAckError::InvalidFieldValue(field));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -144,9 +167,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn version_constants_are_wire_1_2() {
-        assert_eq!(EXPECTED_PLUGIN_VERSION, "1.2.0");
-        assert_eq!(WIRE_PROTOCOL_VERSION, "1.2");
+    fn version_constants_are_wire_1_4() {
+        assert_eq!(EXPECTED_PLUGIN_VERSION, "1.4.0");
+        assert_eq!(WIRE_PROTOCOL_VERSION, "1.4");
     }
 
     #[test]
@@ -156,7 +179,7 @@ mod tests {
             json!({
                 "type": "VERSION_CHECK",
                 "mobileVersion": "1.1.4",
-                "protocolVersion": "1.2",
+                "protocolVersion": "1.4",
             })
         );
     }
@@ -164,17 +187,17 @@ mod tests {
     #[test]
     fn accepts_exact_version_ack() {
         let ack = parse_version_ack_json(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":"1.2"}"#,
+            r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#,
         )
-        .expect("the exact Wire 1.2 ACK should pass");
-        assert_eq!(ack.plugin_version, "1.2.0");
-        assert_eq!(ack.protocol_version, "1.2");
+        .expect("the exact Wire 1.4 ACK should pass");
+        assert_eq!(ack.plugin_version, "1.4.0");
+        assert_eq!(ack.protocol_version, "1.4");
     }
 
     #[test]
     fn rejects_unknown_ack_fields() {
         let error = parse_version_ack_json(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":"1.2","version":"1.2.0"}"#,
+            r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":"1.4","version":"1.4.0"}"#,
         )
         .expect_err("unknown fields must fail closed");
         assert!(matches!(error, VersionAckError::UnknownField(field) if field == "version"));
@@ -182,7 +205,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_ack_fields() {
-        let error = parse_version_ack_json(r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0"}"#)
+        let error = parse_version_ack_json(r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0"}"#)
             .expect_err("missing protocol version must fail closed");
         assert!(matches!(
             error,
@@ -191,18 +214,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_old_plugin_and_wire_versions() {
-        let old_plugin = parse_version_ack_json(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.0.0","protocolVersion":"1.2"}"#,
-        )
-        .expect_err("old plugin version must fail closed");
-        assert!(matches!(
-            old_plugin,
-            VersionAckError::PluginVersionMismatch { .. }
-        ));
-
+    fn rejects_old_wire_versions() {
         let old_wire = parse_version_ack_json(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":"1.1"}"#,
+            r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":"1.2"}"#,
         )
         .expect_err("old wire version must fail closed");
         assert!(matches!(
@@ -215,8 +229,8 @@ mod tests {
     fn rejects_wrong_types_and_message_type() {
         let wrong_type = parse_version_ack(&json!({
             "type": "VERSION_CHECK",
-            "pluginVersion": "1.2.0",
-            "protocolVersion": "1.2",
+            "pluginVersion": "1.4.0",
+            "protocolVersion": "1.4",
         }))
         .expect_err("wrong message type must fail closed");
         assert_eq!(wrong_type, VersionAckError::InvalidMessageType);
@@ -224,7 +238,7 @@ mod tests {
         let wrong_field_type = parse_version_ack(&json!({
             "type": "VERSION_ACK",
             "pluginVersion": 120,
-            "protocolVersion": "1.2",
+            "protocolVersion": "1.4",
         }))
         .expect_err("wrong field types must fail closed");
         assert_eq!(
@@ -236,9 +250,33 @@ mod tests {
     #[test]
     fn rejects_duplicate_ack_keys_before_schema_validation() {
         let error = parse_version_ack_json(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","pluginVersion":"1.2.0","protocolVersion":"1.2"}"#,
+            r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#,
         )
         .expect_err("duplicate ACK keys must fail closed");
         assert!(matches!(error, VersionAckError::InvalidJson(_)));
+    }
+
+    #[test]
+    fn accepts_a_patch_plugin_release_when_wire_is_compatible() {
+        let ack = parse_version_ack_json(
+            r#"{"type":"VERSION_ACK","pluginVersion":"1.4.9","protocolVersion":"1.4"}"#,
+        )
+        .expect("plugin patch releases do not change the wire contract");
+        assert_eq!(ack.plugin_version, "1.4.9");
+    }
+
+    #[test]
+    fn rejects_empty_ack_versions() {
+        for field in ["pluginVersion", "protocolVersion"] {
+            let input = if field == "pluginVersion" {
+                r#"{"type":"VERSION_ACK","pluginVersion":"","protocolVersion":"1.4"}"#
+            } else {
+                r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":""}"#
+            };
+            assert!(matches!(
+                parse_version_ack_json(input),
+                Err(VersionAckError::InvalidFieldValue(actual)) if actual == field
+            ));
+        }
     }
 }

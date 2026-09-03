@@ -4,7 +4,7 @@ use crate::vcp_modules::sync::sync_error::{
 use crate::vcp_modules::sync::wire_protocol::parse_strict_json;
 use futures_util::StreamExt;
 
-/// Read a bounded HTTP response body without trusting Content-Length alone.
+/// Read a bounded HTTP response body without trusting `Content-Length` alone.
 pub(crate) async fn read_response_limited(
     response: reqwest::Response,
     max_bytes: usize,
@@ -37,30 +37,31 @@ pub(crate) fn http_status_error(
     match encode_http_sync_error_body(bytes) {
         Ok(Some(encoded)) => encoded,
         Ok(None) => {
-            format!("{operation} failed with HTTP {status} without a Wire 1.2 error object")
+            format!("{operation} failed with HTTP {status} without a Wire 1.4 error object")
         }
-        Err(error) => format!("{operation} returned an invalid Wire 1.2 error: {error}"),
+        Err(error) => format!("{operation} returned an invalid Wire 1.4 error: {error}"),
     }
 }
 
-/// Parse a stream-level error line using the same strict JSON decoder as Wire 1.2 frames.
+/// Parse the only stream-level error accepted by the Wire 1.4 message pull.
 pub(crate) fn parse_stream_error_frame(bytes: &[u8]) -> Result<Option<String>, String> {
-    let text =
-        std::str::from_utf8(bytes).map_err(|error| format!("Malformed NDJSON frame: {error}"))?;
-    let value =
-        parse_strict_json(text).map_err(|error| format!("Malformed NDJSON frame: {error}"))?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| format!("Malformed NDJSON stream error: {error}"))?;
+    let value = parse_strict_json(text)
+        .map_err(|error| format!("Malformed NDJSON stream error: {error}"))?;
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
-    let Some(error) = object.get("_stream_error") else {
+    if object.get("kind").and_then(serde_json::Value::as_str) != Some("streamError") {
         return Ok(None);
-    };
-    if object.len() != 1 {
-        return Err("NDJSON _stream_error envelope contains unknown fields".to_string());
     }
-    if error.is_null() {
-        return Err("NDJSON _stream_error must be a Wire 1.2 error object".to_string());
+    if object.len() != 2 || !object.contains_key("error") {
+        return Err("NDJSON streamError must contain exactly kind and error".to_string());
     }
+    let error = object
+        .get("error")
+        .filter(|value| !value.is_null())
+        .ok_or_else(|| "NDJSON streamError requires a Wire 1.4 error object".to_string())?;
     encode_wire_sync_error_value(error).map(Some)
 }
 
@@ -87,7 +88,7 @@ impl NdjsonBudget {
             .checked_add(bytes)
             .ok_or_else(|| "NDJSON response size overflow".to_string())?;
         if self.total_bytes > super::MAX_NDJSON_TOTAL_BYTES {
-            return Err("NDJSON response exceeds 256MB budget".to_string());
+            return Err("NDJSON response exceeds 256 MiB total budget".to_string());
         }
         Ok(())
     }
@@ -98,9 +99,12 @@ impl NdjsonBudget {
         entities: usize,
     ) -> Result<(), String> {
         if line_bytes > super::MAX_NDJSON_LINE_BYTES {
-            return Err("NDJSON frame exceeds 32MB budget".to_string());
+            return Err("NDJSON frame exceeds 32 MiB budget".to_string());
         }
-        self.frames += 1;
+        self.frames = self
+            .frames
+            .checked_add(1)
+            .ok_or_else(|| "NDJSON frame count overflow".to_string())?;
         if self.frames > self.max_frames {
             return Err("NDJSON response contains more frames than requested topics".to_string());
         }
@@ -113,10 +117,4 @@ impl NdjsonBudget {
         }
         Ok(())
     }
-}
-
-pub(crate) fn pull_worker_permits(frame_bytes: usize) -> Result<u32, String> {
-    let units = frame_bytes.saturating_add(super::PULL_WORKER_BUDGET_UNIT_BYTES - 1)
-        / super::PULL_WORKER_BUDGET_UNIT_BYTES;
-    u32::try_from(units.max(1)).map_err(|_| "Pull worker permit count overflow".to_string())
 }

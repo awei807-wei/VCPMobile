@@ -143,6 +143,16 @@ pub(super) async fn column_exists_on_pool(pool: &Pool<Sqlite>, table: &str, colu
         .expect("column probe should succeed")
 }
 
+pub(super) async fn primary_key_columns_on_pool(pool: &Pool<Sqlite>, table: &str) -> Vec<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk",
+    )
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .expect("primary-key probe should succeed")
+}
+
 pub(super) async fn migration_versions(pool: &Pool<Sqlite>) -> Vec<i64> {
     sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
         .fetch_all(pool)

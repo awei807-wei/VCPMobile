@@ -1,18 +1,27 @@
-use super::action_dispatch::{failed_ids, send_failure};
+use super::action_dispatch::send_failure;
 use super::context::DiffContext;
-use super::diff_item_validation::OwnerIdentity;
 use super::phase;
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::sync_dto::{AgentTopicSyncDTO, GroupTopicSyncDTO};
 use crate::vcp_modules::sync_executor::PushExecutor;
-use crate::vcp_modules::sync_types::SyncDataType;
-use serde_json::{json, Value};
+use crate::vcp_modules::sync_types::{EntityPushData, EntityPushItem, OwnerType};
+use crate::vcp_modules::topic_types::TopicKey;
 use sqlx::Row;
 use tauri::Manager;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct TopicPushRequest {
-    pub(crate) id: String,
-    pub(crate) owner: OwnerIdentity,
+    pub(crate) key: TopicKey,
+}
+
+impl TopicPushRequest {
+    pub(crate) fn new(key: TopicKey) -> Self {
+        Self { key }
+    }
+
+    pub(crate) fn topic_id(&self) -> &str {
+        &self.key.topic_id
+    }
 }
 
 pub(crate) async fn spawn_topic_push(ctx: &DiffContext, requests: Vec<TopicPushRequest>) {
@@ -30,7 +39,14 @@ pub(crate) async fn spawn_topic_push(ctx: &DiffContext, requests: Vec<TopicPushR
             for chunk in batch.chunks(1000) {
                 let sub_batch = chunk.to_vec();
                 let count = sub_batch.len() as u32;
-                let failed_topic_ids = failed_ids(&sub_batch, &SyncDataType::Topic);
+                let failed_topic_ids = sub_batch
+                    .iter()
+                    .filter_map(|item| match item {
+                        EntityPushItem::Topic { topic_id, .. } => Some(topic_id.clone()),
+                        EntityPushItem::Owner { .. } => None,
+                    })
+                    .take(8)
+                    .collect();
                 if let Err(error) = PushExecutor::push_entities_batch(
                     &context.app_handle,
                     &context.http_client,
@@ -73,32 +89,41 @@ impl TopicPushFailure {
 async fn build_topic_push_batch(
     pool: &sqlx::SqlitePool,
     requests: &[TopicPushRequest],
-) -> Result<Vec<Value>, TopicPushFailure> {
+) -> Result<Vec<EntityPushItem>, TopicPushFailure> {
     let mut batch = Vec::with_capacity(requests.len());
     for request in requests {
         let row = sqlx::query(
             "SELECT topic_id, title, created_at, locked, unread, owner_id, owner_type
-             FROM topics WHERE topic_id = ? AND deleted_at IS NULL",
+             FROM topics
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL",
         )
-        .bind(&request.id)
+        .bind(&request.key.owner_type)
+        .bind(&request.key.owner_id)
+        .bind(&request.key.topic_id)
         .fetch_optional(pool)
         .await
         .map_err(|error| {
             TopicPushFailure::one(
                 "TOPIC_PUSH_DB_FAILED",
-                format!("Failed to load topic {} for push: {error}", request.id),
-                &request.id,
+                format!(
+                    "Failed to load topic {}/{}/{} for push: {error}",
+                    request.key.owner_type, request.key.owner_id, request.key.topic_id
+                ),
+                request.topic_id(),
             )
         })?
         .ok_or_else(|| {
             TopicPushFailure::one(
                 "TOPIC_PUSH_SOURCE_MISSING",
-                format!("Topic selected for push is missing: {}", request.id),
-                &request.id,
+                format!(
+                    "Topic selected for push is missing: {}/{}/{}",
+                    request.key.owner_type, request.key.owner_id, request.key.topic_id
+                ),
+                request.topic_id(),
             )
         })?;
-        let item = topic_push_item(&row, request).map_err(|message| {
-            TopicPushFailure::one("TOPIC_PUSH_DB_DECODE_FAILED", message, &request.id)
+        let item = topic_push_item(&row, &request.key).map_err(|message| {
+            TopicPushFailure::one("TOPIC_PUSH_DB_DECODE_FAILED", message, request.topic_id())
         })?;
         batch.push(item);
     }
@@ -107,9 +132,9 @@ async fn build_topic_push_batch(
 
 fn topic_push_item(
     row: &sqlx::sqlite::SqliteRow,
-    request: &TopicPushRequest,
-) -> Result<Value, String> {
-    let tid: String = row
+    key: &TopicKey,
+) -> Result<EntityPushItem, String> {
+    let topic_id: String = row
         .try_get("topic_id")
         .map_err(|error| format!("topic id: {error}"))?;
     let title: String = row
@@ -130,29 +155,54 @@ fn topic_push_item(
     let owner_type: String = row
         .try_get("owner_type")
         .map_err(|error| format!("owner_type: {error}"))?;
-    validate_topic_owner(request, &owner_type, &owner_id)?;
-    let type_str = if owner_type == "group" {
-        "group_topic"
-    } else {
-        "agent_topic"
+    validate_topic_owner(key, &owner_type, &owner_id, &topic_id)?;
+    let owner_type = OwnerType::try_from(owner_type.as_str())
+        .map_err(|_| format!("Topic {key:?} has an invalid owner type"))?;
+    let data = match owner_type {
+        OwnerType::Agent => EntityPushData::AgentTopic(AgentTopicSyncDTO {
+            id: topic_id.clone(),
+            name: title,
+            created_at,
+            locked: locked != 0,
+            unread: unread != 0,
+            owner_id: owner_id.clone(),
+        }),
+        OwnerType::Group => EntityPushData::GroupTopic(GroupTopicSyncDTO {
+            id: topic_id.clone(),
+            name: title,
+            created_at,
+            owner_id: owner_id.clone(),
+        }),
     };
-    let data = if owner_type == "group" {
-        json!({ "id": tid, "name": title, "createdAt": created_at, "ownerId": owner_id })
-    } else {
-        json!({ "id": tid, "name": title, "createdAt": created_at, "locked": locked != 0, "unread": unread != 0, "ownerId": owner_id })
+    let item = EntityPushItem::Topic {
+        owner_type,
+        owner_id,
+        topic_id,
+        data,
     };
-    Ok(json!({ "id": request.id, "type": type_str, "data": data }))
+    if !item.is_consistent() {
+        return Err(format!("Topic {key:?} push identity is inconsistent"));
+    }
+    Ok(item)
 }
 
 pub(crate) fn validate_topic_owner(
-    request: &TopicPushRequest,
+    key: &TopicKey,
     actual_type: &str,
     actual_id: &str,
+    actual_topic_id: &str,
 ) -> Result<(), String> {
-    if actual_id != request.owner.owner_id || actual_type != request.owner.owner_type {
+    if !key.is_valid()
+        || !matches!(actual_type, "agent" | "group")
+        || actual_id.is_empty()
+        || actual_topic_id.is_empty()
+        || actual_id != key.owner_id
+        || actual_type != key.owner_type
+        || actual_topic_id != key.topic_id
+    {
         return Err(format!(
-            "Topic {} owner does not match the Phase 1 decision",
-            request.id
+            "Topic {}/{}/{} owner does not match the manifest decision",
+            key.owner_type, key.owner_id, key.topic_id
         ));
     }
     Ok(())

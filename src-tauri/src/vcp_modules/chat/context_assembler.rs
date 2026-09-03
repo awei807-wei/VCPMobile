@@ -13,41 +13,78 @@ use sqlx::{Pool, Sqlite};
 // 3. 【统一装配外观】(orchestrate_chat_context)：向单聊与群聊业务模块提供极度纯净的 Facade 入口。
 
 /// 统一上下文级联装配外观入口 (Facade Orchestrator)
+pub struct ChatContextRequest<'a> {
+    pub pool: &'a Pool<Sqlite>,
+    pub history: &'a [ChatMessage],
+    pub owner_id: &'a str,
+    pub topic_id: &'a str,
+    pub agent_name: &'a str,
+    pub scope: &'a str, // "agent" | "group"
+    pub base_system_prompt: String,
+    pub invite_prompt: Option<String>,
+}
+
 pub async fn orchestrate_chat_context(
-    pool: &Pool<Sqlite>,
-    history: &[ChatMessage],
-    topic_id: &str,
-    agent_name: &str,
-    scope: &str, // "agent" | "group"
-    base_system_prompt: String,
-    invite_prompt: Option<String>,
+    request: ChatContextRequest<'_>,
 ) -> Result<Vec<Value>, String> {
-    // 1. 快速查询会话内时间锚定机制 V2 的启用状态
-    let enable_time_anchoring = match sqlx::query_scalar::<_, i32>(
-        "SELECT is_enabled FROM tarven_rules WHERE id = 'time_anchoring_v2'",
-    )
-    .fetch_optional(pool)
-    .await
-    {
-        Ok(Some(val)) => val != 0,
-        _ => false,
-    };
+    let ChatContextRequest {
+        pool,
+        history,
+        owner_id,
+        topic_id,
+        agent_name,
+        scope,
+        base_system_prompt,
+        invite_prompt,
+    } = request;
+    let enable_time_anchoring = load_time_anchoring_enabled(pool).await;
 
     // 2. 第一阶段：微观编织。进行强类型的发言人前缀及物理 Token 换行符时间隔离注入
     let is_group = scope == "group";
     let mut messages = assemble_history_for_vcp(history, is_group, enable_time_anchoring);
 
     // 3. 如果是群聊且存在主动邀请词 (Invite Prompt)，将其作为最新一轮用户消息拼装，以接受后续 Tavern 规则注入
-    if let Some(invite) = invite_prompt {
-        if !invite.is_empty() {
-            messages.push(json!({
-                "role": "user",
-                "content": invite
-            }));
-        }
-    }
+    append_invite_prompt(&mut messages, invite_prompt);
 
     // 4. 将基础的 System Prompt 注入 Payload 首部
+    prepend_system_prompt(&mut messages, base_system_prompt);
+
+    // 5. 第二阶段：宏观拦截。调用 Tavern 拦截器流水线进行环境真理及 System/User 规则的终极拼装
+    crate::vcp_modules::chat::context_injection::apply_tarven_pipeline(
+        pool,
+        owner_id,
+        topic_id,
+        agent_name,
+        scope,
+        &mut messages,
+    )
+    .await?;
+
+    Ok(messages)
+}
+
+async fn load_time_anchoring_enabled(pool: &Pool<Sqlite>) -> bool {
+    match sqlx::query_scalar::<_, i32>(
+        "SELECT is_enabled FROM tarven_rules WHERE id = 'time_anchoring_v2'",
+    )
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(Some(value)) => value != 0,
+        _ => false,
+    }
+}
+
+fn append_invite_prompt(messages: &mut Vec<Value>, invite_prompt: Option<String>) {
+    if let Some(invite) = invite_prompt.filter(|invite| !invite.is_empty()) {
+        messages.push(json!({
+            "role": "user",
+            "content": invite
+        }));
+    }
+}
+
+fn prepend_system_prompt(messages: &mut Vec<Value>, base_system_prompt: String) {
     if !base_system_prompt.is_empty() {
         messages.insert(
             0,
@@ -57,18 +94,6 @@ pub async fn orchestrate_chat_context(
             }),
         );
     }
-
-    // 5. 第二阶段：宏观拦截。调用 Tavern 拦截器流水线进行环境真理及 System/User 规则的终极拼装
-    crate::vcp_modules::chat::context_injection::apply_tarven_pipeline(
-        pool,
-        topic_id,
-        agent_name,
-        scope,
-        &mut messages,
-    )
-    .await?;
-
-    Ok(messages)
 }
 
 /// =================================================================

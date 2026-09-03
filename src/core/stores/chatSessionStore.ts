@@ -12,10 +12,14 @@ export interface PickedFileInfo {
   thumbnailPath?: string;
 }
 
+export type ConversationOwnerType = "agent" | "group";
+
 export const useChatSessionStore = defineStore("chatSession", () => {
   const currentSelectedItem = ref<any>(null);
   const currentTopicId = ref<string | null>(null);
   const lastActiveTopicMap = ref<Record<string, string>>({});
+  const ownerMapKey = (ownerType: ConversationOwnerType, ownerId: string) =>
+    `${ownerType}:${ownerId}`;
 
   // Share intent prefill state
   const sharePrefillText = ref("");
@@ -56,7 +60,7 @@ export const useChatSessionStore = defineStore("chatSession", () => {
     }
 
     // 3. 选择 topic（设置 currentSelectedItem 和 currentTopicId）
-    await selectTopicById(agentId, newTopic.id);
+    await selectTopicById(agentId, "agent", newTopic.id);
 
     // 4. 存储预填数据（由 ChatView/InputEnhancer 消费后清空）
     sharePrefillText.value = sharedText;
@@ -81,28 +85,27 @@ export const useChatSessionStore = defineStore("chatSession", () => {
    * @param loadHistoryCallback 回调函数，用于触发历史加载 (解耦 HistoryStore)
    */
   const selectTopicById = async (
-    itemId: string, 
-    topicId: string, 
+    itemId: string,
+    ownerType: ConversationOwnerType,
+    topicId: string,
     loadHistoryCallback?: (itemId: string, ownerType: string, topicId: string) => Promise<void>
   ) => {
-    // 立即更新 currentTopicId，确保话题列表高亮实时响应
-    currentTopicId.value = topicId;
-    
-    // 记录在该 itemId 下最后一次选中的活跃话题 ID
-    lastActiveTopicMap.value[itemId] = topicId;
-
-    const ownerType = assistantStore.agents.some((a) => a.id === itemId)
-      ? "agent"
-      : "group";
-
     // 设置当前选中的项目详情 (确保头像和色调同步)
-    const agent = assistantStore.agents.find((a: any) => a.id === itemId);
-    const group = assistantStore.groups.find((g) => g.id === itemId);
-    if (agent) {
+    const agent = ownerType === "agent"
+      ? assistantStore.agents.find((a: any) => a.id === itemId)
+      : undefined;
+    const group = ownerType === "group"
+      ? assistantStore.groups.find((g) => g.id === itemId)
+      : undefined;
+    if (ownerType === "agent" && agent) {
       currentSelectedItem.value = { ...agent, type: "agent" };
-    } else if (group) {
+    } else if (ownerType === "group" && group) {
       currentSelectedItem.value = { ...group, type: "group" };
+    } else {
+      throw new Error(`Conversation owner ${ownerType}:${itemId} not found`);
     }
+    currentTopicId.value = topicId;
+    lastActiveTopicMap.value[ownerMapKey(ownerType, itemId)] = topicId;
 
     if (loadHistoryCallback) {
       await loadHistoryCallback(itemId, ownerType, topicId);
@@ -119,15 +122,22 @@ export const useChatSessionStore = defineStore("chatSession", () => {
     if (!item) return;
     
     const ownerId = item.id;
-    const ownerType = item.members ? 'group' : 'agent';
+    if (item.type !== "agent" && item.type !== "group") {
+      throw new Error(`Conversation owner ${ownerId} has no valid type`);
+    }
+    const ownerType: ConversationOwnerType = item.type;
     
     // 如果已经选中了该项，且当前已有话题，则不重复加载
-    if (currentSelectedItem.value?.id === ownerId && currentTopicId.value) {
+    if (
+      currentSelectedItem.value?.id === ownerId &&
+      currentSelectedItem.value?.type === ownerType &&
+      currentTopicId.value
+    ) {
       return;
     }
 
     // 1. 优先从 Pinia 持久化的 lastActiveTopicMap 中获取最后一次打开的话题 ID
-    let targetTopicId = lastActiveTopicMap.value[ownerId];
+    let targetTopicId = lastActiveTopicMap.value[ownerMapKey(ownerType, ownerId)];
 
     // 2. 如果 Pinia 中没有记录，则尝试获取该 Owner 下最新的话题
     if (!targetTopicId) {
@@ -146,7 +156,7 @@ export const useChatSessionStore = defineStore("chatSession", () => {
     }
 
     if (targetTopicId) {
-      await selectTopicById(ownerId, targetTopicId, loadHistoryCallback);
+      await selectTopicById(ownerId, ownerType, targetTopicId, loadHistoryCallback);
     } else {
       // 没有任何话题的极端情况
       console.warn(`[ChatSessionStore] No topics found for ${ownerId}`);

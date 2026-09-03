@@ -1,7 +1,8 @@
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_service::{SyncCommand, SyncTaskTracker};
-use crate::vcp_modules::sync_types::SyncDataType;
+use crate::vcp_modules::sync_types::ManifestType;
+use crate::vcp_modules::topic_types::OwnerKey;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, AtomicU8};
 use std::sync::{Arc, Mutex};
@@ -9,7 +10,7 @@ use tokio::sync::mpsc;
 
 pub(crate) struct DiffContextParams<'a> {
     pub(crate) app_handle: &'a tauri::AppHandle,
-    pub(crate) data_type: SyncDataType,
+    pub(crate) manifest_type: ManifestType,
     pub(crate) http_client: &'a reqwest::Client,
     pub(crate) base_url: &'a str,
     pub(crate) token: &'a str,
@@ -18,10 +19,10 @@ pub(crate) struct DiffContextParams<'a> {
     pub(crate) total_tasks: &'a Arc<AtomicU32>,
     pub(crate) manifest_responses_received: &'a Arc<AtomicU32>,
     pub(crate) expected_manifest_count: &'a Arc<AtomicU32>,
-    pub(crate) expected_manifest_types: &'a Arc<Mutex<HashSet<String>>>,
+    pub(crate) expected_manifest_types: &'a Arc<Mutex<HashSet<ManifestType>>>,
     pub(crate) manifest_phase: &'a Arc<AtomicU8>,
     pub(crate) tx_internal: &'a mpsc::UnboundedSender<SyncCommand>,
-    pub(crate) changed_owners: &'a Arc<tokio::sync::Mutex<HashSet<String>>>,
+    pub(crate) changed_owners: &'a Arc<tokio::sync::Mutex<HashSet<OwnerKey>>>,
     pub(crate) logger: &'a Arc<Mutex<SyncLogger>>,
     pub(crate) task_tracker: &'a Arc<SyncTaskTracker>,
     pub(crate) session_id: u64,
@@ -31,7 +32,7 @@ pub(crate) struct DiffContextParams<'a> {
 #[derive(Clone)]
 pub struct DiffContext {
     pub(crate) app_handle: tauri::AppHandle,
-    pub(crate) data_type: SyncDataType,
+    pub(crate) manifest_type: ManifestType,
     pub(crate) http_client: reqwest::Client,
     pub(crate) base_url: String,
     pub(crate) token: String,
@@ -40,10 +41,10 @@ pub struct DiffContext {
     pub(crate) total_tasks: Arc<AtomicU32>,
     pub(crate) manifest_responses_received: Arc<AtomicU32>,
     pub(crate) expected_manifest_count: Arc<AtomicU32>,
-    pub(crate) expected_manifest_types: Arc<Mutex<HashSet<String>>>,
+    pub(crate) expected_manifest_types: Arc<Mutex<HashSet<ManifestType>>>,
     pub(crate) manifest_phase: Arc<AtomicU8>,
     pub(crate) tx_internal: mpsc::UnboundedSender<SyncCommand>,
-    pub(crate) changed_owners: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    pub(crate) changed_owners: Arc<tokio::sync::Mutex<HashSet<OwnerKey>>>,
     pub(crate) logger: Arc<Mutex<SyncLogger>>,
     pub(crate) task_tracker: Arc<SyncTaskTracker>,
     pub(crate) session_id: u64,
@@ -54,7 +55,7 @@ impl DiffContext {
     pub(crate) fn new(params: DiffContextParams<'_>) -> Self {
         Self {
             app_handle: params.app_handle.clone(),
-            data_type: params.data_type,
+            manifest_type: params.manifest_type,
             http_client: params.http_client.clone(),
             base_url: params.base_url.to_string(),
             token: params.token.to_string(),

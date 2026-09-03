@@ -1,34 +1,27 @@
 use super::action_dispatch;
 use super::context::DiffContext;
-use super::diff_item_validation::{validate_and_filter_diff_items, validate_diff_frame};
-use super::manifest::consume_manifest_response_type;
+use super::manifest::{consume_manifest_response_type, validate_manifest_result};
 use super::phase;
-use serde_json::Value;
+use crate::vcp_modules::sync_types::ManifestResultFrame;
 use std::sync::atomic::Ordering;
 
-pub(crate) async fn handle_diff(ctx: &DiffContext, payload: &Value) -> Result<(), String> {
-    let items = validate_diff_frame(payload, &ctx.data_type)?;
-    let (items, exempt_default_topics) = validate_and_filter_diff_items(items, &ctx.data_type)?;
-    log_default_topic_exemptions(ctx, exempt_default_topics);
-
+pub(crate) async fn handle_diff(
+    ctx: &DiffContext,
+    result: ManifestResultFrame,
+) -> Result<(), String> {
+    let (manifest_type, decisions) = validate_manifest_result(result)?;
     let current_phase = ctx.manifest_phase.load(Ordering::SeqCst);
-    let all_types_received = consume_manifest_response_type(
-        payload,
-        &ctx.data_type,
+    let all_types_received =
+        consume_manifest_response_type(manifest_type, current_phase, &ctx.expected_manifest_types)?;
+    phase::record_manifest(
+        ctx,
+        manifest_type,
+        &decisions,
         current_phase,
-        &ctx.expected_manifest_types,
-    )?;
-    phase::record_manifest(ctx, &items, current_phase, all_types_received).await?;
-    let buckets = action_dispatch::classify_items(items, ctx).await?;
+        all_types_received,
+    )
+    .await?;
+    let buckets = action_dispatch::classify_items(manifest_type, decisions, ctx).await?;
     action_dispatch::dispatch_buckets(ctx, buckets).await;
     Ok(())
-}
-
-fn log_default_topic_exemptions(ctx: &DiffContext, count: u32) {
-    if count > 0 {
-        log::info!(
-            "[Sync] Exempted {count} default-topic action(s) from {} diff results (contract: default topics are not synced)",
-            ctx.data_type
-        );
-    }
 }

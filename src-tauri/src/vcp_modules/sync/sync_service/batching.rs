@@ -1,10 +1,33 @@
 use crate::vcp_modules::sync_pipeline::phase3_message::TopicLocalState;
-use serde_json::{Map, Value};
-use std::collections::{HashMap, VecDeque};
+use crate::vcp_modules::sync_types::{MessageDiffTopicState, MessageVersionState, OwnerType};
+use crate::vcp_modules::topic_types::TopicKey;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Write;
 
 pub(crate) const MAX_MESSAGES_PER_BATCH: usize = 10_000;
 pub(crate) const MAX_WS_DIFF_BATCH_BYTES: usize = 8 * 1024 * 1024;
+const DIFF_ENVELOPE_BYTES: usize = br#"{"type":"SYNC_MESSAGE_DIFF_REQUEST","topics":[]}"#.len();
+
+pub(crate) struct Phase3DiffBatch {
+    pub(crate) topics: Vec<MessageDiffTopicState>,
+    pub(crate) keys: HashSet<TopicKey>,
+}
+
+pub(crate) type Phase3MessageSnapshots = HashMap<TopicKey, BTreeMap<String, MessageVersionState>>;
+
+impl Phase3DiffBatch {
+    pub(crate) fn message_snapshots(&self) -> Phase3MessageSnapshots {
+        self.topics
+            .iter()
+            .map(|topic| {
+                (
+                    TopicKey::new(topic.owner_type.as_str(), &topic.owner_id, &topic.topic_id),
+                    topic.messages.clone(),
+                )
+            })
+            .collect()
+    }
+}
 
 struct JsonSizeCounter {
     bytes: usize,
@@ -32,93 +55,94 @@ impl Write for JsonSizeCounter {
     }
 }
 
-pub(crate) fn build_diff_batches(
-    topic_states: HashMap<String, TopicLocalState>,
-) -> Result<VecDeque<Map<String, Value>>, String> {
-    let mut batches = VecDeque::new();
-    let mut current_batch = Map::new();
-    let mut current_msg_count = 0;
-    let envelope_bytes = br#"{"type":"SYNC_MESSAGE_DIFF_BATCH","topics":{}}"#.len();
-    let mut current_bytes = envelope_bytes;
-    let mut topic_states = topic_states.into_iter().collect::<Vec<_>>();
-    topic_states.sort_by(|left, right| left.0.cmp(&right.0));
-    for (topic_id, state) in topic_states {
-        let entry = build_topic_entry(&topic_id, state)?;
-        let entry_bytes = entry.0;
-        let msg_count = entry.1;
-        if envelope_bytes.saturating_add(entry_bytes) > MAX_WS_DIFF_BATCH_BYTES {
-            return Err(format!(
-                "Phase 3 diff topic {topic_id} exceeds the 8 MiB WebSocket frame limit"
-            ));
-        }
-        let separator = usize::from(!current_batch.is_empty());
-        if should_start_new_batch(
-            current_batch.is_empty(),
-            current_msg_count,
-            msg_count,
-            current_bytes,
-            separator,
-            entry_bytes,
-        ) {
-            batches.push_back(current_batch);
-            current_batch = Map::new();
-            current_msg_count = 0;
-            current_bytes = envelope_bytes;
-        }
-        current_bytes = current_bytes
-            .saturating_add(usize::from(!current_batch.is_empty()))
-            .saturating_add(entry_bytes);
-        current_batch.insert(topic_id, entry.2);
-        current_msg_count = current_msg_count.saturating_add(msg_count);
-    }
-    if !current_batch.is_empty() {
-        batches.push_back(current_batch);
-    }
-    Ok(batches)
+struct SizedTopic {
+    key: TopicKey,
+    state: MessageDiffTopicState,
+    message_count: usize,
+    bytes: usize,
 }
 
-fn build_topic_entry(
-    topic_id: &str,
-    state: TopicLocalState,
-) -> Result<(usize, usize, Value), String> {
-    let msg_count = state.messages.len();
-    if msg_count > MAX_MESSAGES_PER_BATCH {
+fn size_topic(key: TopicKey, state: TopicLocalState) -> Result<SizedTopic, String> {
+    let message_count = state.messages.len();
+    if message_count > MAX_MESSAGES_PER_BATCH {
         return Err(format!(
-            "Phase 3 diff topic {topic_id} exceeds the {MAX_MESSAGES_PER_BATCH}-message batch limit"
+            "Phase 3 diff topic {} exceeds the {MAX_MESSAGES_PER_BATCH}-message batch limit",
+            key.topic_id
         ));
     }
-    let mut msg_map = Map::new();
-    let mut messages = state.messages.into_iter().collect::<Vec<_>>();
-    messages.sort_by(|left, right| left.0.cmp(&right.0));
-    for (message_id, hash) in messages {
-        msg_map.insert(message_id, Value::String(hash));
-    }
-    let topic_obj = serde_json::json!({
-        "ownerType": state.owner_type,
-        "ownerId": state.owner_id,
-        "topicHash": state.topic_hash,
-        "messages": msg_map,
-    });
+    let owner_type = OwnerType::try_from(key.owner_type.as_str())
+        .map_err(|_| format!("Phase 3 topic {} has invalid ownerType", key.topic_id))?;
+    let topic = MessageDiffTopicState {
+        owner_type,
+        owner_id: key.owner_id.clone(),
+        topic_id: key.topic_id.clone(),
+        content_hash: state.content_hash,
+        messages: state.messages,
+    };
     let mut counter = JsonSizeCounter::new(MAX_WS_DIFF_BATCH_BYTES);
-    serde_json::to_writer(&mut counter, &topic_id)
-        .and_then(|_| counter.write_all(b":").map_err(serde_json::Error::io))
-        .and_then(|_| serde_json::to_writer(&mut counter, &topic_obj))
-        .map_err(|error| format!("Failed to size Phase 3 topic {topic_id}: {error}"))?;
-    Ok((counter.bytes, msg_count, topic_obj))
+    serde_json::to_writer(&mut counter, &topic)
+        .map_err(|error| format!("Failed to size Phase 3 topic {}: {error}", key.topic_id))?;
+    if DIFF_ENVELOPE_BYTES.saturating_add(counter.bytes) > MAX_WS_DIFF_BATCH_BYTES {
+        return Err(format!(
+            "Phase 3 diff topic {} exceeds the 8 MiB WebSocket frame limit",
+            key.topic_id
+        ));
+    }
+    Ok(SizedTopic {
+        key,
+        state: topic,
+        message_count,
+        bytes: counter.bytes,
+    })
 }
 
-fn should_start_new_batch(
-    current_empty: bool,
-    current_msg_count: usize,
-    msg_count: usize,
-    current_bytes: usize,
-    separator: usize,
-    entry_bytes: usize,
+fn should_flush(
+    current: &Phase3DiffBatch,
+    messages: usize,
+    bytes: usize,
+    next: &SizedTopic,
 ) -> bool {
-    !current_empty
-        && (current_msg_count.saturating_add(msg_count) > MAX_MESSAGES_PER_BATCH
-            || current_bytes
-                .saturating_add(separator)
-                .saturating_add(entry_bytes)
-                > MAX_WS_DIFF_BATCH_BYTES)
+    !current.topics.is_empty()
+        && (messages.saturating_add(next.message_count) > MAX_MESSAGES_PER_BATCH
+            || bytes.saturating_add(1).saturating_add(next.bytes) > MAX_WS_DIFF_BATCH_BYTES)
+}
+
+fn push_batch(queue: &mut VecDeque<Phase3DiffBatch>, batch: &mut Phase3DiffBatch) {
+    if batch.topics.is_empty() {
+        return;
+    }
+    queue.push_back(Phase3DiffBatch {
+        topics: std::mem::take(&mut batch.topics),
+        keys: std::mem::take(&mut batch.keys),
+    });
+}
+
+pub(crate) fn build_diff_batches(
+    topic_states: HashMap<TopicKey, TopicLocalState>,
+) -> Result<VecDeque<Phase3DiffBatch>, String> {
+    let mut ordered = topic_states.into_iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut queue = VecDeque::new();
+    let mut batch = Phase3DiffBatch {
+        topics: Vec::new(),
+        keys: HashSet::new(),
+    };
+    let mut messages = 0usize;
+    let mut bytes = DIFF_ENVELOPE_BYTES;
+    for (key, state) in ordered {
+        let next = size_topic(key, state)?;
+        if should_flush(&batch, messages, bytes, &next) {
+            push_batch(&mut queue, &mut batch);
+            messages = 0;
+            bytes = DIFF_ENVELOPE_BYTES;
+        }
+        bytes = bytes
+            .saturating_add(usize::from(!batch.topics.is_empty()))
+            .saturating_add(next.bytes);
+        messages = messages.saturating_add(next.message_count);
+        batch.keys.insert(next.key);
+        batch.topics.push(next.state);
+    }
+    push_batch(&mut queue, &mut batch);
+    Ok(queue)
 }

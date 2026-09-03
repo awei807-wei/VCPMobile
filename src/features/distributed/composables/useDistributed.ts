@@ -27,7 +27,7 @@ const status = ref<DistributedStatus>({
 
 const loading = ref(false);
 
-let listenPromise: Promise<UnlistenFn> | null = null;
+let listenPromise: Promise<void> | null = null;
 let unlisten: UnlistenFn | null = null;
 let listenerCount = 0;
 
@@ -40,13 +40,17 @@ async function setupListener() {
         console.log("[Distributed] State transition:", JSON.stringify(event.payload));
         status.value = event.payload;
       },
-    );
+    ).then((stopListening) => {
+      if (listenerCount <= 0) {
+        stopListening();
+        return;
+      }
+      unlisten = stopListening;
+    }).finally(() => {
+      listenPromise = null;
+    });
   }
-  const resolvedUnlisten = await listenPromise;
-  if (!unlisten) {
-    unlisten = resolvedUnlisten;
-    listenPromise = null;
-  }
+  await listenPromise;
 }
 
 function teardownListener() {
@@ -64,6 +68,7 @@ export function useDistributed() {
     isThisInstanceActive.value = true;
     listenerCount++;
     await setupListener();
+    if (!isThisInstanceActive.value) return;
     // Fetch initial status
     await refreshStatus();
   }

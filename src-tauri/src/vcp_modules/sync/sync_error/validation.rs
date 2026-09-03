@@ -111,6 +111,6 @@ pub(crate) fn validate_wire_error(error: WireSyncError) -> Result<WireSyncError,
 
 pub fn parse_wire_sync_error(value: &Value) -> Result<WireSyncError, String> {
     let error = serde_json::from_value::<WireSyncError>(value.clone())
-        .map_err(|parse_error| format!("invalid Wire 1.2 error object: {parse_error}"))?;
+        .map_err(|parse_error| format!("invalid Wire 1.4 error object: {parse_error}"))?;
     validate_wire_error(error)
 }

@@ -1,0 +1,17 @@
+.agent-settings-view {
+  background-color: var(--primary-bg);
+}
+
+.card-modern {
+  @apply bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-xl p-4 shadow-sm;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.flex-center {
+  @apply flex items-center justify-center;
+}

@@ -17,7 +17,7 @@ fn fallback_copy(category: SyncErrorCategory) -> (&'static str, &'static str) {
             "将两端更新到同一兼容版本后再试。",
         ),
         SyncErrorCategory::Protocol => (
-            "同步响应不符合 Wire 1.2 规范，已安全停止",
+            "同步响应不符合 Wire 1.4 规范，已安全停止",
             "确认两端版本一致并重启电脑端同步插件；若仍出现，请保留日志。",
         ),
         SyncErrorCategory::Data => (

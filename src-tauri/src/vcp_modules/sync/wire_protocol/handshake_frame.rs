@@ -1,4 +1,4 @@
-//! Strict dispatch for the two frames allowed during the Wire 1.2 handshake.
+//! Strict dispatch for the frames allowed during the Wire 1.4 handshake.
 
 use super::{
     parse_desktop_diagnostic_frame, parse_strict_json, parse_version_ack, DesktopDiagnosticFrame,
@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn accepts_exact_ack_and_structured_error() {
         let ack = parse_version_handshake_json(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":"1.2"}"#,
+            r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#,
         )
         .expect("ack");
         assert!(matches!(ack, VersionHandshakeFrame::VersionAck(_)));

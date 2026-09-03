@@ -55,11 +55,11 @@ rg -q "require_db_state\(&app_handle\)\?" src-tauri/src/vcp_modules/infra/settin
   || fail "settings 读取必须在 DbState 缺失时返回 CORE_NOT_READY 而不是 panic"
 rg -q "Network restored before DbState registration" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs \
   || fail "网络恢复路径必须在数据库注册前延后执行"
-rg -q 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs \
+rg -q 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client_active.rs \
   || fail "启动期活跃生成恢复必须使用兼容解码读取消息正文"
-rg -q 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client.rs \
+rg -q 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client_active.rs \
   || fail "流式错误回写必须保持 zstd BLOB 存储约定"
-if rg -q 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra/vcp_client.rs; then
+if rg -q 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra; then
   fail "启动恢复不得把 messages.content BLOB 按 Option<String> 读取"
 fi
 if rg -q "decompress_database_migration" src-tauri/src/vcp_modules/persistence; then
@@ -97,7 +97,7 @@ rg -q "ringBlockingMissing" src/components/layout/PermissionGate.vue \
 if rg -q "ringRecommendedMissing|continuing bootstrap with silent" src/components/layout/PermissionGate.vue src/core/stores/appLifecycle.ts; then
   fail "通知铃声不得再作为推荐项放行启动流程"
 fi
-rg -q "!pStatus\\.ring" src/core/stores/appLifecycle.ts \
+rg -q "Object\\.values\\(permissions\\)\\.every\\(Boolean\\)" src/core/stores/appLifecycle.ts \
   || fail "启动编排必须在响铃权限缺失时停留权限门，防止异常路径跳过引导"
 rg -q "vcp-lifecycle" src/components/layout/PermissionGate.vue \
   || fail "权限门必须监听 Android 生命周期恢复，避免设置页返回后状态不刷新"
@@ -134,7 +134,7 @@ rg -q "disable_all_tools" src-tauri/src/distributed/tool_registry.rs \
   || fail "禁用工具配置解析失败必须失败关闭"
 rg -q "MAX_CHECK_NEW_TOPICS_DAYS" src-tauri/src/distributed/tools/topic_sponsor.rs \
   || fail "MobileTopicSponsor CheckNewTopics days 必须设置上限"
-rg -q "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor.rs \
+rg -q "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor_handlers.rs \
   || fail "MobileTopicSponsor CheckNewTopics cutoff 必须使用饱和计算"
 
 log "分布式长连接保活哨兵"

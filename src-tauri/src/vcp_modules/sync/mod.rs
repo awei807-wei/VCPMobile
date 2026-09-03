@@ -7,5 +7,7 @@ pub mod sync_logger;
 pub mod sync_pipeline;
 pub mod sync_service;
 pub mod sync_types;
-pub mod wire_frame;
 pub mod wire_protocol;
+
+#[cfg(debug_assertions)]
+pub mod wire14_debug;

@@ -2,12 +2,15 @@ use super::commands;
 use super::frames;
 use super::phase;
 use super::types::{
-    NetworkAwareSemaphore, PendingDiffBatch, PendingFinalAck, Phase3Tracker, SyncCommand,
-    SyncTaskTracker, SyncWebSocket,
+    MessagePhaseBarrier, NetworkAwareSemaphore, PendingDiffBatch, PendingFinalAck, Phase3Tracker,
+    SyncCommand, SyncTaskTracker, SyncWebSocket,
 };
+use super::Phase3MessageSnapshots;
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_pipeline::pipeline::{PipelineCommand, SyncPipeline};
+use crate::vcp_modules::sync_types::ManifestType;
+use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use std::collections::{HashSet, VecDeque};
@@ -87,16 +90,18 @@ pub(crate) struct AttemptContext {
     pub(crate) pending_tasks: Arc<AtomicU32>,
     pub(crate) total_tasks: Arc<AtomicU32>,
     pub(crate) pending_topics: Arc<Phase3Tracker>,
-    pub(crate) expected_phase3_batch: Arc<AsyncMutex<HashSet<String>>>,
+    pub(crate) expected_phase3_batch: Arc<AsyncMutex<HashSet<TopicKey>>>,
+    pub(crate) expected_phase3_states: Arc<AsyncMutex<Phase3MessageSnapshots>>,
     pub(crate) phase3_inflight: Arc<AtomicBool>,
     pub(crate) pending_batches: Arc<AsyncMutex<VecDeque<PendingDiffBatch>>>,
-    pub(crate) changed_topics: Arc<AsyncMutex<Vec<String>>>,
-    pub(crate) changed_owners: Arc<AsyncMutex<HashSet<String>>>,
+    pub(crate) changed_topics: Arc<AsyncMutex<Vec<TopicKey>>>,
+    pub(crate) changed_owners: Arc<AsyncMutex<HashSet<OwnerKey>>>,
     pub(crate) expected_manifest_count: Arc<AtomicU32>,
     pub(crate) manifest_responses_received: Arc<AtomicU32>,
-    pub(crate) expected_manifest_types: Arc<Mutex<HashSet<String>>>,
+    pub(crate) expected_manifest_types: Arc<Mutex<HashSet<ManifestType>>>,
     pub(crate) manifest_phase: Arc<AtomicU8>,
-    pub(crate) expected_topic_hash_results: Arc<AsyncMutex<Option<HashSet<String>>>>,
+    pub(crate) expected_topic_hash_results: Arc<AsyncMutex<Option<HashSet<TopicKey>>>>,
+    pub(crate) message_phase_barrier: MessagePhaseBarrier,
     pub(crate) awaiting_final_ack: PendingFinalAck,
     pub(crate) heartbeat: Interval,
     pub(crate) success: bool,
@@ -140,6 +145,7 @@ impl AttemptContext {
                 total: std::sync::atomic::AtomicUsize::new(0),
             }),
             expected_phase3_batch: Arc::new(AsyncMutex::new(HashSet::new())),
+            expected_phase3_states: Arc::new(AsyncMutex::new(Phase3MessageSnapshots::new())),
             phase3_inflight: Arc::new(AtomicBool::new(false)),
             pending_batches: Arc::new(AsyncMutex::new(VecDeque::new())),
             changed_topics: Arc::new(AsyncMutex::new(Vec::new())),
@@ -149,6 +155,7 @@ impl AttemptContext {
             expected_manifest_types: Arc::new(Mutex::new(HashSet::new())),
             manifest_phase: Arc::new(AtomicU8::new(1)),
             expected_topic_hash_results: Arc::new(AsyncMutex::new(None)),
+            message_phase_barrier: MessagePhaseBarrier::default(),
             awaiting_final_ack: Arc::new(Mutex::new(None)),
             heartbeat: interval(std::time::Duration::from_secs(15)),
             success: false,

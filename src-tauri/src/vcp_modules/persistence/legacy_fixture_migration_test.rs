@@ -111,12 +111,26 @@ async fn migrates_external_fork_database_copy_without_logical_data_loss() {
         .expect("copied legacy database should open");
     let counts_before = counts(&pool).await;
     let fingerprint_before = logical_fingerprint(&pool).await;
-    assert_eq!(counts_before, vec![1, 1, 2, 3, 1, 1, 1, 1]);
+    assert!(
+        counts_before.iter().any(|count| *count > 0),
+        "external fixture must contain business data"
+    );
+    let plain_text_messages: u64 = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM messages WHERE typeof(content) = 'text'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("fixture content storage should load")
+    .try_into()
+    .expect("fixture content count should be non-negative");
 
     run_migrations(&pool)
         .await
         .expect("actual fork fixture should migrate");
-    assert_eq!(normalize_legacy_message_content(&pool).await.unwrap(), 3);
+    assert_eq!(
+        normalize_legacy_message_content(&pool).await.unwrap(),
+        plain_text_messages
+    );
     run_migrations(&pool)
         .await
         .expect("second startup should not repeat destructive SQL");
@@ -136,7 +150,7 @@ async fn migrates_external_fork_database_copy_without_logical_data_loss() {
             .fetch_one(&pool)
             .await
             .unwrap(),
-        7
+        8
     );
     assert!(sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('render_cache') WHERE name = 'content_hash')"

@@ -1,8 +1,8 @@
 use super::batching::{build_diff_batches, MAX_MESSAGES_PER_BATCH, MAX_WS_DIFF_BATCH_BYTES};
-use super::commands::build_local_change_frame;
+use super::connection_config::resolve_connection_settings;
 use super::diagnostics::{check_loopback_on_mobile, diagnose_connection_failure};
 use super::errors::{build_sync_error_payload, encode_sync_command_error};
-use super::frames::{is_valid_intermediate_ack, parse_topic_hash_result};
+use super::frames::{is_valid_intermediate_ack, validate_changed_topics};
 use super::lifecycle::cancel_and_join_session;
 use super::lifecycle::create_session_command_channel;
 use super::logs::count_log_removal;
@@ -13,10 +13,16 @@ use super::protocol::{
     VersionHandshakeError, MAX_SYNC_RETRIES, MAX_SYNC_TOPICS,
 };
 use super::session_support::perform_handshake;
-use super::types::{FinalAckKey, SyncSessionHandle, SyncTaskTracker};
+use super::types::{FinalAckKey, MessagePhaseBarrier, SyncSessionHandle, SyncTaskTracker};
 use super::*;
+use crate::vcp_modules::settings_manager::{ConnectionProfile, Settings};
 use crate::vcp_modules::sync_error::decode_wire_sync_error;
 use crate::vcp_modules::sync_error::SyncErrorCategory;
+use crate::vcp_modules::sync_types::{
+    DeleteNotificationFrame, DeleteTarget, ManifestType, MessageLiveState, MessageVersionState,
+    TopicDiffResultFrame,
+};
+use crate::vcp_modules::topic_types::TopicKey;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -26,6 +32,129 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::http::{Response, StatusCode};
 use tokio_util::sync::CancellationToken;
+
+#[test]
+fn connection_settings_use_the_selected_profile_and_freeze_its_values() {
+    let settings = Settings {
+        active_connection_profile_id: "wan".to_string(),
+        sync_server_url: "ws://stale.example/ws".to_string(),
+        sync_http_url: "http://stale.example".to_string(),
+        sync_token: "stale".to_string(),
+        connection_profiles: vec![ConnectionProfile {
+            id: "wan".to_string(),
+            name: "外网".to_string(),
+            sync_server_url: "wss://sync.example/ws?device=mobile&token=old".to_string(),
+            sync_http_url: "https://sync.example/".to_string(),
+            sync_token: "a token&value".to_string(),
+            ..ConnectionProfile::default()
+        }],
+        ..Settings::default()
+    };
+
+    let resolved = resolve_connection_settings(&settings, false).expect("resolve selected profile");
+
+    assert_eq!(resolved.profile_id, "wan");
+    assert_eq!(resolved.http_url, "https://sync.example");
+    assert_eq!(resolved.token, "a token&value");
+    let url = url::Url::parse(&resolved.ws_url).expect("parse resolved websocket URL");
+    let query = url
+        .query_pairs()
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        query.get("device").map(|value| value.as_ref()),
+        Some("mobile")
+    );
+    assert_eq!(
+        query.get("token").map(|value| value.as_ref()),
+        Some("a token&value")
+    );
+}
+
+#[test]
+fn connection_settings_reject_a_missing_selected_profile() {
+    let settings = Settings {
+        active_connection_profile_id: "wan".to_string(),
+        connection_profiles: vec![ConnectionProfile {
+            id: "lan".to_string(),
+            ..ConnectionProfile::default()
+        }],
+        ..Settings::default()
+    };
+
+    let error = match resolve_connection_settings(&settings, false) {
+        Ok(_) => panic!("missing profile must fail"),
+        Err(error) => error,
+    };
+    assert!(error.contains("wan"));
+}
+
+#[test]
+fn connection_settings_keep_legacy_global_fallback_without_profiles() {
+    let settings = Settings {
+        active_connection_profile_id: "lan".to_string(),
+        sync_server_url: "ws://192.0.2.10:5975/ws".to_string(),
+        sync_http_url: "http://192.0.2.10:5975".to_string(),
+        sync_token: "legacy-token".to_string(),
+        ..Settings::default()
+    };
+
+    let resolved = resolve_connection_settings(&settings, false).expect("resolve legacy settings");
+
+    assert_eq!(resolved.profile_id, "lan");
+    assert_eq!(resolved.http_url, "http://192.0.2.10:5975");
+}
+
+#[test]
+fn connection_settings_reject_duplicate_profiles_and_unsafe_urls() {
+    let profile = ConnectionProfile {
+        id: "lan".to_string(),
+        sync_server_url: "ws://sync.example:5975".to_string(),
+        sync_http_url: "http://sync.example:5974".to_string(),
+        sync_token: "token".to_string(),
+        ..ConnectionProfile::default()
+    };
+    let duplicate = Settings {
+        active_connection_profile_id: "lan".to_string(),
+        connection_profiles: vec![profile.clone(), profile.clone()],
+        ..Settings::default()
+    };
+    assert!(resolve_connection_settings(&duplicate, false).is_err());
+
+    for (ws_url, http_url) in [
+        ("ws://user:pass@sync.example", "http://sync.example"),
+        ("ws://sync.example#fragment", "http://sync.example"),
+        ("ws://sync.example", "http://sync.example?token=unsafe"),
+    ] {
+        let settings = Settings {
+            active_connection_profile_id: "lan".to_string(),
+            connection_profiles: vec![ConnectionProfile {
+                sync_server_url: ws_url.to_string(),
+                sync_http_url: http_url.to_string(),
+                ..profile.clone()
+            }],
+            ..Settings::default()
+        };
+        assert!(resolve_connection_settings(&settings, false).is_err());
+    }
+}
+
+#[test]
+fn connection_settings_reject_android_loopback_endpoints() {
+    let settings = Settings {
+        active_connection_profile_id: "lan".to_string(),
+        connection_profiles: vec![ConnectionProfile {
+            id: "lan".to_string(),
+            sync_server_url: "ws://127.0.0.1:5975".to_string(),
+            sync_http_url: "http://10.0.2.2:5974".to_string(),
+            sync_token: "token".to_string(),
+            ..ConnectionProfile::default()
+        }],
+        ..Settings::default()
+    };
+
+    assert!(resolve_connection_settings(&settings, false).is_ok());
+    assert!(resolve_connection_settings(&settings, true).is_err());
+}
 
 #[test]
 fn sync_error_contract_keeps_raw_detail_out_of_the_user_payload() {
@@ -73,7 +202,7 @@ fn sync_error_classification_covers_connection_protocol_and_data_failures() {
 #[test]
 fn command_errors_use_the_structured_transport_prefix() {
     let encoded = encode_sync_command_error(
-        "VCP_LOG_DISCONNECTED",
+        "SYNC_ACTIVE_GENERATION",
         "Bearer raw-secret should stay in native logs only",
     );
     let json = encoded
@@ -81,8 +210,9 @@ fn command_errors_use_the_structured_transport_prefix() {
         .expect("structured sync command prefix");
     let payload: Value = serde_json::from_str(json).expect("structured sync error JSON");
 
-    assert_eq!(payload["code"], "VCP_LOG_DISCONNECTED");
+    assert_eq!(payload["code"], "SYNC_ACTIVE_GENERATION");
     assert_eq!(payload["category"], "connection");
+    assert_eq!(payload["retryAction"], "manual");
     assert!(!encoded.contains("raw-secret"));
 }
 
@@ -134,8 +264,8 @@ fn retry_budget_is_shared_across_connection_stages() {
 #[tokio::test]
 async fn missing_manifest_frame_fails_the_current_attempt() {
     let expected = Arc::new(Mutex::new(HashSet::from([
-        "agent".to_string(),
-        "group".to_string(),
+        ManifestType::Owner,
+        ManifestType::Avatar,
     ])));
     let phase = Arc::new(AtomicU8::new(1));
     let (tx, mut rx) = mpsc::unbounded_channel::<SyncCommand>();
@@ -149,8 +279,8 @@ async fn missing_manifest_frame_fails_the_current_attempt() {
         } => {
             assert_eq!(attempt_id, 7);
             assert_eq!(code, "MANIFEST_RESPONSE_TIMEOUT");
-            assert!(message.contains("agent"));
-            assert!(message.contains("group"));
+            assert!(message.contains("owner"));
+            assert!(message.contains("avatar"));
         }
         _ => panic!("unexpected deadline command"),
     }
@@ -158,9 +288,9 @@ async fn missing_manifest_frame_fails_the_current_attempt() {
 
 #[tokio::test]
 async fn missing_topic_hash_frame_fails_the_current_attempt() {
-    let expected = Arc::new(AsyncMutex::new(Some(HashSet::from(
-        ["topic-a".to_string()],
-    ))));
+    let expected = Arc::new(AsyncMutex::new(Some(HashSet::from([TopicKey::new(
+        "agent", "agent-a", "topic-a",
+    )]))));
     let phase = Arc::new(AtomicU8::new(3));
     let (tx, mut rx) = mpsc::unbounded_channel::<SyncCommand>();
     enforce_topic_hash_response_deadline(expected, phase, 3, tx, 8, Duration::from_millis(1)).await;
@@ -176,24 +306,24 @@ async fn missing_topic_hash_frame_fails_the_current_attempt() {
 }
 
 #[test]
-fn protocol_1_2_version_ack_is_strict_and_uses_public_field_names() {
+fn protocol_1_4_version_ack_is_strict_and_uses_public_field_names() {
     let ack = parse_version_handshake_payload(
-        r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":"1.2"}"#,
+        r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#,
     )
-    .expect("strict 1.2 acknowledgement")
+    .expect("strict 1.4 acknowledgement")
     .expect("version acknowledgement frame");
-    assert_eq!(ack.plugin_version, "1.2.0");
-    assert_eq!(ack.protocol_version, "1.2");
+    assert_eq!(ack.plugin_version, "1.4.0");
+    assert_eq!(ack.protocol_version, "1.4");
 
     assert!(
-        parse_version_handshake_payload(r#"{"type":"VERSION_ACK","version":"1.2.0"}"#).is_err()
+        parse_version_handshake_payload(r#"{"type":"VERSION_ACK","version":"1.4.0"}"#).is_err()
     );
     assert!(parse_version_handshake_payload(
-        r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":1.2}"#
+        r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":1.4}"#
     )
     .is_err());
     assert!(parse_version_handshake_payload(
-            r#"{"type":"VERSION_ACK","type":"SYNC_LOG_EVENT","pluginVersion":"1.2.0","protocolVersion":"1.2"}"#
+            r#"{"type":"VERSION_ACK","type":"SYNC_LOG_EVENT","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#
         )
         .is_err());
 }
@@ -258,12 +388,12 @@ async fn handshake_accepts_the_current_linux_pre_ack_log_sequence() {
             json!({
                 "type": "VERSION_CHECK",
                 "mobileVersion": env!("CARGO_PKG_VERSION"),
-                "protocolVersion": "1.2"
+                "protocolVersion": "1.4"
             })
         );
 
         ws.send(Message::Text(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.2.0","protocolVersion":"1.2"}"#.into(),
+            r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#.into(),
         ))
         .await
         .expect("send version acknowledgement");
@@ -313,23 +443,35 @@ fn changed_topic_list_rejects_wrong_types_empty_ids_and_duplicates() {
 }
 
 #[test]
-fn topic_hash_results_and_intermediate_acks_require_exact_current_shapes() {
-    let expected = HashSet::from(["topic-a".to_string(), "topic-b".to_string()]);
+fn topic_diff_results_and_intermediate_acks_require_exact_current_shapes() {
+    let topic_a = TopicKey::new("agent", "agent-a", "topic-a");
+    let topic_b = TopicKey::new("group", "group-b", "topic-b");
+    let expected = HashSet::from([topic_a.clone(), topic_b.clone()]);
+    let result: TopicDiffResultFrame = serde_json::from_value(json!({
+        "type":"SYNC_TOPIC_DIFF_RESULT",
+        "changedTopics":[{
+            "ownerType":"group",
+            "ownerId":"group-b",
+            "topicId":"topic-b"
+        }]
+    }))
+    .expect("exact topic diff result");
     assert_eq!(
-        parse_topic_hash_result(
-            &json!({"type":"SYNC_TOPIC_HASH_RESULTS","changedTopics":["topic-b"]}),
-            &expected,
-        )
-        .expect("exact topic hash result"),
-        vec!["topic-b".to_string()]
+        validate_changed_topics(result.changed_topics, &expected)
+            .expect("expected changed identity"),
+        vec![topic_b]
     );
-    for payload in [
-        json!({"type":"SYNC_TOPIC_HASH_RESULTS","changedTopics":[],"debug":true}),
-        json!({"type":"SYNC_TOPIC_HASH_RESULTS"}),
-        json!({"type":"SYNC_TOPIC_HASH_RESULTS","changedTopics":["topic-c"]}),
-    ] {
-        assert!(parse_topic_hash_result(&payload, &expected).is_err());
-    }
+    assert!(validate_changed_topics(
+        vec![TopicKey::new("agent", "agent-a", "topic-c")],
+        &expected,
+    )
+    .is_err());
+    assert!(serde_json::from_value::<TopicDiffResultFrame>(json!({
+        "type":"SYNC_TOPIC_DIFF_RESULT",
+        "changedTopics":[],
+        "debug":true
+    }))
+    .is_err());
 
     assert!(is_valid_intermediate_ack(
         &json!({"type":"PHASE_ACK","phase":"owner_metadata"})
@@ -346,19 +488,20 @@ fn topic_hash_results_and_intermediate_acks_require_exact_current_shapes() {
 #[test]
 fn phase3_diff_batches_enforce_serialized_byte_budget() {
     use crate::vcp_modules::sync_pipeline::phase3_message::TopicLocalState;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     let mut states = HashMap::new();
     for index in 0..3 {
         states.insert(
-            format!("topic-{index}"),
+            TopicKey::new("agent", "agent-a", format!("topic-{index}")),
             TopicLocalState {
-                owner_type: "agent".to_string(),
-                owner_id: "agent-a".to_string(),
-                topic_hash: "h".repeat(64),
-                messages: HashMap::from([(
+                content_hash: "a".repeat(64),
+                messages: BTreeMap::from([(
                     format!("message-{index}-{}", "x".repeat(3 * 1024 * 1024)),
-                    "m".repeat(64),
+                    MessageVersionState::Live(MessageLiveState {
+                        message_hash: "b".repeat(64),
+                        updated_at: 7,
+                    }),
                 )]),
             },
         );
@@ -367,33 +510,43 @@ fn phase3_diff_batches_enforce_serialized_byte_budget() {
     assert!(batches.len() >= 2);
     for batch in batches {
         let bytes = serde_json::to_vec(&json!({
-            "type": "SYNC_MESSAGE_DIFF_BATCH",
-            "topics": batch,
+            "type": "SYNC_MESSAGE_DIFF_REQUEST",
+            "topics": batch.topics,
         }))
         .expect("serialize batch");
         assert!(bytes.len() <= MAX_WS_DIFF_BATCH_BYTES);
     }
 
     let oversized = HashMap::from([(
-        "topic-oversized".to_string(),
+        TopicKey::new("agent", "agent-a", "topic-oversized"),
         TopicLocalState {
-            owner_type: "agent".to_string(),
-            owner_id: "agent-a".to_string(),
-            topic_hash: "h".repeat(64),
-            messages: HashMap::from([("x".repeat(MAX_WS_DIFF_BATCH_BYTES), "m".repeat(64))]),
+            content_hash: "a".repeat(64),
+            messages: BTreeMap::from([(
+                "x".repeat(MAX_WS_DIFF_BATCH_BYTES),
+                MessageVersionState::Live(MessageLiveState {
+                    message_hash: "b".repeat(64),
+                    updated_at: 7,
+                }),
+            )]),
         },
     )]);
     assert!(build_diff_batches(oversized).is_err());
 
     let too_many_messages = (0..=MAX_MESSAGES_PER_BATCH)
-        .map(|index| (format!("message-{index}"), "m".repeat(64)))
+        .map(|index| {
+            (
+                format!("message-{index}"),
+                MessageVersionState::Live(MessageLiveState {
+                    message_hash: "b".repeat(64),
+                    updated_at: 7,
+                }),
+            )
+        })
         .collect();
     let oversized_topic = HashMap::from([(
-        "topic-too-many".to_string(),
+        TopicKey::new("agent", "agent-a", "topic-too-many"),
         TopicLocalState {
-            owner_type: "agent".to_string(),
-            owner_id: "agent-a".to_string(),
-            topic_hash: "h".repeat(64),
+            content_hash: "a".repeat(64),
             messages: too_many_messages,
         },
     )]);
@@ -451,7 +604,7 @@ async fn cancel_session_waits_for_main_task_exit() {
 }
 
 #[tokio::test]
-async fn final_ack_deadline_retries_only_the_current_pending_attempt() {
+async fn final_ack_deadline_fails_only_the_current_pending_attempt() {
     let expected = FinalAckKey {
         session_id: 3,
         attempt_id: 7,
@@ -464,7 +617,7 @@ async fn final_ack_deadline_retries_only_the_current_pending_attempt() {
     enforce_final_ack_deadline(pending.clone(), expected, tx, Duration::from_millis(1)).await;
 
     match rx.try_recv() {
-        Ok(SyncCommand::RetryAttempt {
+        Ok(SyncCommand::FailAttempt {
             attempt_id,
             code,
             message,
@@ -473,7 +626,7 @@ async fn final_ack_deadline_retries_only_the_current_pending_attempt() {
             assert_eq!(code, "FINAL_ACK_TIMEOUT");
             assert!(message.contains("acknowledgement timed out"));
         }
-        _ => panic!("pending final acknowledgement must request a bounded retry"),
+        _ => panic!("pending final acknowledgement must fail the current attempt"),
     }
     assert!(pending.lock().expect("pending lock").is_none());
 }
@@ -560,6 +713,21 @@ fn final_ack_rejects_unknown_fields_even_when_identity_matches() {
 }
 
 #[test]
+fn finalization_waits_for_the_messages_phase_ack_in_both_event_orders() {
+    let mut command_first = MessagePhaseBarrier::default();
+    assert!(command_first.defer_finalize());
+    assert!(command_first.acknowledge());
+    assert!(!command_first.defer_finalize());
+
+    let mut ack_first = MessagePhaseBarrier::default();
+    assert!(!ack_first.acknowledge());
+    assert!(!ack_first.defer_finalize());
+
+    ack_first.reset();
+    assert!(ack_first.defer_finalize());
+}
+
+#[test]
 fn command_router_tracks_the_current_session_owner() {
     let router = SyncCommandRouter::default();
     assert!(router.send(SyncCommand::Cancel).is_err());
@@ -587,46 +755,22 @@ fn a_new_session_queues_the_initial_owner_manifest_command() {
 }
 
 #[test]
-fn live_entity_update_frames_only_allow_linux_wire_1_2_entity_types() {
-    let frame = build_local_change_frame(
-        "agent-a".to_string(),
-        crate::vcp_modules::sync_types::SyncDataType::Agent,
-        "a".repeat(64),
+fn delete_notifications_require_complete_wire_1_4_identity() {
+    let frame = DeleteNotificationFrame::new(
+        DeleteTarget::Topic(TopicKey::new("agent", "agent-a", "topic-a")),
         7,
-    )
-    .expect("agent update is supported");
+    );
     assert_eq!(
-        frame,
+        serde_json::to_value(frame).expect("serialize delete notification"),
         json!({
-            "type": "SYNC_ENTITY_UPDATE",
-            "id": "agent-a",
-            "dataType": "agent",
-            "hash": "a".repeat(64),
-            "ts": 7,
+            "type": "SYNC_ENTITY_DELETE",
+            "targetType": "topic",
+            "ownerType": "agent",
+            "ownerId": "agent-a",
+            "topicId": "topic-a",
+            "deletedAt": 7,
         })
     );
-    for data_type in [
-        crate::vcp_modules::sync_types::SyncDataType::Avatar,
-        crate::vcp_modules::sync_types::SyncDataType::Message,
-    ] {
-        assert!(
-            build_local_change_frame("unsupported".to_string(), data_type, "b".repeat(64), 8,)
-                .is_err()
-        );
-    }
-    for (id, hash, ts) in [
-        ("agent:unsafe", "c".repeat(64), 9),
-        ("agent-a", "C".repeat(64), 9),
-        ("agent-a", "c".repeat(64), -1),
-    ] {
-        assert!(build_local_change_frame(
-            id.to_string(),
-            crate::vcp_modules::sync_types::SyncDataType::Agent,
-            hash,
-            ts,
-        )
-        .is_err());
-    }
 }
 
 #[test]

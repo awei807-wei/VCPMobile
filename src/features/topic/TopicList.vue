@@ -4,7 +4,6 @@ import { useRouter } from "vue-router";
 import { useVirtualList } from "@vueuse/core";
 import { useTopicStore, type Topic } from "../../core/stores/topicListManager";
 import { useChatSessionStore } from "../../core/stores/chatSessionStore";
-import { useAssistantStore } from "../../core/stores/assistant";
 import { useLayoutStore } from "../../core/stores/layout";
 import { useOverlayStore } from "../../core/stores/overlay";
 import { useNotificationStore } from "../../core/stores/notification";
@@ -16,7 +15,6 @@ const emit = defineEmits<{
 
 const topicListStore = useTopicStore();
 const sessionStore = useChatSessionStore();
-const assistantStore = useAssistantStore();
 const layoutStore = useLayoutStore();
 const overlayStore = useOverlayStore();
 const notificationStore = useNotificationStore();
@@ -53,19 +51,25 @@ watch(
   },
 );
 
-const showTopicContextMenu = (topicId: string) => {
+const sameTopic = (left: TopicViewModel, right: TopicViewModel) =>
+  left.id === right.id &&
+  left.ownerId === right.ownerId &&
+  left.ownerType === right.ownerType;
+
+const isCurrentTopic = (topic: TopicViewModel) =>
+  sessionStore.currentTopicId === topic.id &&
+  sessionStore.currentSelectedItem?.id === topic.ownerId &&
+  sessionStore.currentSelectedItem?.type === topic.ownerType;
+
+const showTopicContextMenu = (identity: TopicViewModel) => {
   // 每次打开菜单时，从 store 中获取最新的 topic 状态，避免闭包捕获旧状态
-  const topic = topicListStore.topics.find((t) => t.id === topicId);
+  const topic = topicListStore.topics.find((item) =>
+    sameTopic(item, identity),
+  );
   if (!topic) return;
 
-  const itemId =
-    topic.ownerId ||
-    topicListStore.currentAgentId ||
-    sessionStore.currentSelectedItem?.id ||
-    "default_agent";
-  const ownerType = assistantStore.agents.some((a) => a.id === itemId)
-    ? "agent"
-    : "group";
+  const itemId = topic.ownerId;
+  const ownerType = topic.ownerType;
 
   const menuItems: any[] = [
     {
@@ -179,32 +183,38 @@ const showTopicContextMenu = (topicId: string) => {
 
 // 兜底同步：当聊天上下文的选中项变化时，自动重新加载对应 Agent/Group 的话题列表
 watch(
-  () => sessionStore.currentSelectedItem?.id,
-  (newId) => {
-    if (newId) {
-      const ownerType = assistantStore.agents.some((a) => a.id === newId)
-        ? "agent"
-        : "group";
-      topicListStore.loadTopicList(newId, ownerType);
+  () => [
+    sessionStore.currentSelectedItem?.type,
+    sessionStore.currentSelectedItem?.id,
+  ] as const,
+  ([ownerType, ownerId]) => {
+    if ((ownerType === "agent" || ownerType === "group") && ownerId) {
+      topicListStore.loadTopicList(ownerId, ownerType);
     }
   },
   { immediate: true },
 );
 
-const selectTopic = async (
-  itemId: string,
-  topicId: string,
-  topicName: string,
-) => {
+const selectTopic = async (identity: TopicViewModel) => {
   if (router.currentRoute.value.path !== "/chat") {
     await router.push("/chat");
   }
 
-  await sessionStore.selectTopicById(itemId, topicId);
+  const topic = topicListStore.topics.find(
+    (candidate) => sameTopic(candidate, identity),
+  );
+  if (!topic) {
+    throw new Error(`Topic ${identity.id} has no complete owner identity`);
+  }
+  await sessionStore.selectTopicById(
+    topic.ownerId,
+    topic.ownerType,
+    topic.id,
+  );
 
   // 顶部栏显示话题标题
   if (sessionStore.currentSelectedItem) {
-    sessionStore.currentSelectedItem.name = topicName;
+    sessionStore.currentSelectedItem.name = topic.name;
   }
 
   // 在移动端，选择话题后自动关闭侧边栏
@@ -242,16 +252,16 @@ onUnmounted(() => {
 
   <div v-else :ref="bindContainerRef" :style="containerProps.style" @scroll="containerProps.onScroll" class="h-full overflow-y-auto vcp-scrollable px-4 py-4 no-rubber-band">
     <div v-bind="wrapperProps" class="flex flex-col">
-      <div v-for="item in list" :key="item.data.id" class="pb-2" @click="
-        selectTopic(
-          item.data.ownerId || sessionStore.currentSelectedItem?.id || 'default_agent',
-          item.data.id,
-          item.data.name,
-        )
-        " v-longpress="() => showTopicContextMenu(item.data.id)">
+      <div
+        v-for="item in list"
+        :key="`${item.data.ownerType}:${item.data.ownerId}:${item.data.id}`"
+        class="pb-2"
+        @click="selectTopic(item.data)"
+        v-longpress="() => showTopicContextMenu(item.data)"
+      >
         <div class="relative p-3 glass-panel rounded-xl flex items-center gap-3 border shadow-sm cursor-pointer transition-[background-color,border-color,transform,box-shadow] duration-300 z-10 w-full active:scale-[0.98] origin-center"
           :class="[
-            sessionStore.currentTopicId === item.data.id
+            isCurrentTopic(item.data)
               ? 'glass-panel-active'
               : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5'
           ]">

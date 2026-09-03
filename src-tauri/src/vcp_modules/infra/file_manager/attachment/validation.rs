@@ -112,6 +112,7 @@ pub(crate) async fn resolve_attachment_cas_file<R: tauri::Runtime>(
         hash,
         size_bytes,
     )?;
+    verify_file_sha256(&path, hash).await?;
 
     Ok(AttachmentCasFile {
         path,
@@ -119,6 +120,31 @@ pub(crate) async fn resolve_attachment_cas_file<R: tauri::Runtime>(
         size_bytes,
         sha256: hash.to_string(),
     })
+}
+
+pub(crate) async fn verify_file_sha256(path: &Path, expected_hash: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| format!("cannot open attachment CAS file: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 65_536];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("cannot hash attachment CAS file: {error}"))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    if !hex::encode(hasher.finalize()).eq_ignore_ascii_case(expected_hash) {
+        return Err("attachment CAS content hash does not match its address".to_string());
+    }
+    Ok(())
 }
 
 pub(crate) fn normalize_attachment_mime(value: &str) -> Result<String, String> {

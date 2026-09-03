@@ -1,4 +1,4 @@
-//! Wire 1.2 mobile sync service façade.
+//! Wire 1.4 mobile sync service façade.
 //!
 //! Runtime state, protocol framing, lifecycle, phase orchestration and log
 //! commands live in focused child modules. This file intentionally contains
@@ -7,8 +7,8 @@
 mod attempt;
 mod batching;
 mod commands;
+mod connection_config;
 mod diagnostics;
-mod entity;
 mod errors;
 mod frames;
 mod lifecycle;
@@ -32,6 +32,7 @@ pub use logs::{
 #[allow(unused_imports)]
 pub use types::{NetworkAwareSemaphore, Phase3Tracker, SyncCommand, SyncCommandRouter, SyncState};
 
+pub(crate) use batching::{Phase3DiffBatch, Phase3MessageSnapshots};
 pub(crate) use logs::emit_sync_log;
 pub(crate) use types::SyncTaskTracker;
 

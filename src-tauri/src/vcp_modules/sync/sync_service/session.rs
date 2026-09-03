@@ -1,26 +1,22 @@
 use super::attempt::{AttemptContext, AttemptContextParams, AttemptOutcome};
-use super::errors::{publish_sync_error, publish_sync_nonterminal_status};
+use super::connection_config::ConnectionSettings;
+use super::errors::publish_sync_nonterminal_status;
+use super::logs::emit_operator_sync_log;
 use super::protocol::{schedule_sync_retry, RetryBudget};
 use super::session_support::{
-    build_http_client, connect_with_cancel, create_session_resources, ensure_owner_hashes,
-    handle_connection_error, handle_handshake_error, load_connection_settings, perform_handshake,
-    shutdown_session, start_owner_phase,
+    build_http_client, connect_with_cancel, create_session_resources, ensure_sync_hashes,
+    handle_connection_error, handle_handshake_error, perform_handshake, shutdown_session,
+    start_owner_phase,
 };
 use super::types::{NetworkAwareSemaphore, SyncCommand, SyncWebSocket};
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_pipeline::pipeline::{PipelineCommand, SyncPipeline};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
-
-pub(crate) struct ConnectionSettings {
-    pub(crate) ws_url: String,
-    pub(crate) http_url: String,
-    pub(crate) token: String,
-    pub(crate) prerender_enabled: bool,
-}
 
 struct SessionRuntime {
     app: AppHandle,
@@ -38,6 +34,7 @@ struct SessionRuntime {
     attempt_id: u64,
     successful: bool,
     fatal: bool,
+    settings: ConnectionSettings,
 }
 
 pub(crate) async fn run_sync_session(
@@ -47,9 +44,19 @@ pub(crate) async fn run_sync_session(
     tx: mpsc::UnboundedSender<SyncCommand>,
     rx: mpsc::UnboundedReceiver<SyncCommand>,
     status: Arc<RwLock<String>>,
+    settings: ConnectionSettings,
 ) -> Result<(), String> {
     let http = build_http_client(&app, session_id, &status).await?;
+    ensure_sync_hashes(&app, session_id, &status)
+        .await
+        .map_err(|()| "Wire 1.4 hash initialization failed".to_string())?;
     let (queue, logger) = create_session_resources(&app, session_id).await?;
+    emit_operator_sync_log(
+        &app,
+        session_id,
+        "info",
+        &format!("同步会话已锁定连接配置档：{}", settings.profile_id),
+    );
     SessionRuntime {
         app,
         session_id,
@@ -66,6 +73,7 @@ pub(crate) async fn run_sync_session(
         attempt_id: 0,
         successful: false,
         fatal: false,
+        settings,
     }
     .run()
     .await
@@ -92,14 +100,14 @@ impl SessionRuntime {
     }
 
     async fn run_cycle(&mut self) {
-        let Some((ws, settings)) = self.connect_and_handshake().await else {
+        let Some(ws) = self.connect_and_handshake().await else {
             return;
         };
-        self.run_attempt(ws, settings).await;
+        self.run_attempt(ws).await;
     }
 
-    async fn connect_and_handshake(&mut self) -> Option<(SyncWebSocket, ConnectionSettings)> {
-        let settings = self.load_settings().await?;
+    async fn connect_and_handshake(&mut self) -> Option<SyncWebSocket> {
+        let settings = self.settings.clone();
         publish_sync_nonterminal_status(
             &self.app,
             self.session_id,
@@ -109,27 +117,7 @@ impl SessionRuntime {
         )
         .await;
         let ws = self.connect_socket(&settings).await?;
-        self.handshake_socket(ws, settings).await
-    }
-
-    async fn load_settings(&mut self) -> Option<ConnectionSettings> {
-        match load_connection_settings(&self.app).await {
-            Ok(value) => value,
-            Err(error) => {
-                publish_sync_error(
-                    &self.app,
-                    self.session_id,
-                    &self.status,
-                    "SYNC_SETTINGS_READ_FAILED",
-                    &error,
-                    Vec::new(),
-                )
-                .await;
-                self.fatal = true;
-                return None;
-            }
-        }
-        .into()
+        self.handshake_socket(ws).await
     }
 
     async fn connect_socket(&mut self, settings: &ConnectionSettings) -> Option<SyncWebSocket> {
@@ -155,13 +143,9 @@ impl SessionRuntime {
         Some(ws)
     }
 
-    async fn handshake_socket(
-        &mut self,
-        ws: SyncWebSocket,
-        settings: ConnectionSettings,
-    ) -> Option<(SyncWebSocket, ConnectionSettings)> {
+    async fn handshake_socket(&mut self, ws: SyncWebSocket) -> Option<SyncWebSocket> {
         match perform_handshake(ws, &self.cancel).await {
-            Ok(value) => Some((value, settings)),
+            Ok(value) => Some(value),
             Err(error) => {
                 if !handle_handshake_error(
                     &self.app,
@@ -180,7 +164,7 @@ impl SessionRuntime {
         }
     }
 
-    async fn run_attempt(&mut self, mut ws: SyncWebSocket, settings: ConnectionSettings) {
+    async fn run_attempt(&mut self, mut ws: SyncWebSocket) {
         if !start_owner_phase(&self.app, self.session_id, &self.status, &mut ws).await {
             if !self
                 .schedule_retry("WS_SEND_FAILED", "Unable to start owner metadata phase")
@@ -190,27 +174,27 @@ impl SessionRuntime {
             }
             return;
         }
-        if ensure_owner_hashes(&self.app, self.session_id, &self.status)
-            .await
-            .is_err()
-        {
-            self.fatal = true;
-            return;
-        }
         self.attempt_id = self.attempt_id.wrapping_add(1);
+        self.publish_attempt_owner().await;
         if !self.first_attempt {
             let _ = self.tx.send(SyncCommand::StartManualSync);
         }
         self.first_attempt = false;
-        let outcome = self.execute_attempt(ws, settings).await;
+        let outcome = self.execute_attempt(ws).await;
         self.finish_attempt(outcome).await;
     }
 
-    async fn execute_attempt(
-        &mut self,
-        ws: SyncWebSocket,
-        settings: ConnectionSettings,
-    ) -> AttemptOutcome {
+    async fn publish_attempt_owner(&self) {
+        let state = self.app.state::<super::types::SyncState>();
+        let _owner = state.owner_commit.lock().await;
+        if state.current_session_id.load(Ordering::SeqCst) == self.session_id {
+            state
+                .current_attempt_id
+                .store(self.attempt_id, Ordering::SeqCst);
+        }
+    }
+
+    async fn execute_attempt(&mut self, ws: SyncWebSocket) -> AttemptOutcome {
         let Some(command_rx) = self.rx.take() else {
             return AttemptOutcome {
                 success: false,
@@ -231,9 +215,9 @@ impl SessionRuntime {
             pipeline_rx,
             ws,
             http: self.http.clone(),
-            http_url: settings.http_url,
-            token: settings.token,
-            prerender_enabled: settings.prerender_enabled,
+            http_url: self.settings.http_url.clone(),
+            token: self.settings.token.clone(),
+            prerender_enabled: self.settings.prerender_enabled,
             write_queue: self.queue.clone(),
             logger: self.logger.clone(),
             semaphore: self.semaphore.clone(),

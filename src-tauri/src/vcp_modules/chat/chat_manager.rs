@@ -1,5 +1,6 @@
 use crate::vcp_modules::content_parser::ContentBlock;
 use crate::vcp_modules::message_service;
+use crate::vcp_modules::topic_types::TopicKey;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -17,6 +18,12 @@ pub struct Attachment {
     pub hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(
+        rename = "attachmentOrder",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attachment_order: Option<i32>,
 
     // 平铺数据库中的核心附件字段
     #[serde(rename = "internalPath", default)]
@@ -45,6 +52,8 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(default)]
     pub timestamp: u64,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "isThinking")]
     #[serde(default)]
@@ -183,27 +192,28 @@ pub async fn patch_single_message(
 #[tauri::command]
 pub async fn delete_messages(
     db_state: tauri::State<'_, crate::vcp_modules::db_manager::DbState>,
+    owner_id: String,
+    owner_type: String,
     topic_id: String,
     msg_ids: Vec<String>,
 ) -> Result<(), String> {
-    message_service::delete_messages(&db_state.pool, &topic_id, msg_ids).await
+    let topic_key = TopicKey::new(owner_type, owner_id, topic_id);
+    message_service::delete_messages_for_topic(&db_state.pool, &topic_key, msg_ids).await
 }
 
 #[tauri::command]
 pub async fn truncate_history_after_timestamp(
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     db_state: tauri::State<'_, crate::vcp_modules::db_manager::DbState>,
     owner_id: String,
     owner_type: String,
     topic_id: String,
     timestamp: i64,
 ) -> Result<(), String> {
-    message_service::truncate_history_after_timestamp(
-        app_handle,
+    let topic_key = TopicKey::new(owner_type, owner_id, topic_id);
+    message_service::truncate_history_after_timestamp_for_topic(
         &db_state.pool,
-        &owner_id,
-        &owner_type,
-        &topic_id,
+        &topic_key,
         timestamp,
     )
     .await

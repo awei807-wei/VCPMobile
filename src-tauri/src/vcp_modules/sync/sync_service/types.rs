@@ -1,6 +1,7 @@
 use crate::vcp_modules::sync_executor::batch_diff_handler::Phase3ProtocolError;
 use crate::vcp_modules::sync_logger::SyncLogger;
-use crate::vcp_modules::sync_types::SyncDataType;
+use crate::vcp_modules::sync_types::{DeleteTarget, MessageDiffTopicState};
+use crate::vcp_modules::topic_types::TopicKey;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::future::Future;
@@ -15,7 +16,34 @@ use tokio_util::sync::CancellationToken;
 pub(crate) type RoutedSyncCommand = (u64, mpsc::UnboundedSender<SyncCommand>);
 pub(crate) type SyncWebSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 pub(crate) type PendingFinalAck = Arc<Mutex<Option<FinalAckKey>>>;
-pub(crate) type PendingDiffBatch = serde_json::Map<String, Value>;
+
+#[derive(Debug, Default)]
+pub(crate) struct MessagePhaseBarrier {
+    acknowledged: bool,
+    finalize_waiting: bool,
+}
+
+impl MessagePhaseBarrier {
+    pub(crate) fn reset(&mut self) {
+        self.acknowledged = false;
+        self.finalize_waiting = false;
+    }
+
+    pub(crate) fn defer_finalize(&mut self) -> bool {
+        if self.acknowledged {
+            false
+        } else {
+            self.finalize_waiting = true;
+            true
+        }
+    }
+
+    pub(crate) fn acknowledge(&mut self) -> bool {
+        self.acknowledged = true;
+        std::mem::take(&mut self.finalize_waiting)
+    }
+}
+pub(crate) type PendingDiffBatch = super::batching::Phase3DiffBatch;
 
 #[derive(Clone, Default)]
 pub struct SyncCommandRouter {
@@ -65,6 +93,7 @@ pub struct SyncState {
     pub(crate) session: AsyncMutex<Option<SyncSessionHandle>>,
     pub(crate) next_session_id: AtomicU64,
     pub(crate) current_session_id: AtomicU64,
+    pub(crate) current_attempt_id: AtomicU64,
 }
 
 pub(crate) struct SyncSessionHandle {
@@ -125,20 +154,20 @@ impl SyncTaskTracker {
 pub struct Phase3Tracker {
     pub session_id: u64,
     pub attempt_id: u64,
-    pub completed: tokio::sync::Mutex<HashSet<String>>,
-    pub modified: tokio::sync::Mutex<HashSet<String>>,
-    pub failed: tokio::sync::Mutex<HashSet<String>>,
+    pub completed: tokio::sync::Mutex<HashSet<TopicKey>>,
+    pub modified: tokio::sync::Mutex<HashSet<TopicKey>>,
+    pub failed: tokio::sync::Mutex<HashSet<TopicKey>>,
     pub legacy_attachment_warnings: std::sync::atomic::AtomicUsize,
     pub total: std::sync::atomic::AtomicUsize,
 }
 
 impl Phase3Tracker {
-    pub async fn mark_modified(&self, topic_id: &str) {
-        self.modified.lock().await.insert(topic_id.to_string());
+    pub async fn mark_modified(&self, topic: &TopicKey) {
+        self.modified.lock().await.insert(topic.clone());
     }
 
-    pub async fn mark_failed(&self, topic_id: &str) {
-        self.failed.lock().await.insert(topic_id.to_string());
+    pub async fn mark_failed(&self, topic: &TopicKey) {
+        self.failed.lock().await.insert(topic.clone());
     }
 
     pub fn add_legacy_attachment_warnings(&self, count: usize) {
@@ -149,7 +178,10 @@ impl Phase3Tracker {
     pub(crate) async fn completion_summary(&self) -> SyncCompletionSummary {
         let successful_topics = self.completed.lock().await.len();
         let failed = self.failed.lock().await;
-        let mut failed_topic_ids = failed.iter().cloned().collect::<Vec<_>>();
+        let mut failed_topic_ids = failed
+            .iter()
+            .map(|topic| topic.topic_id.clone())
+            .collect::<Vec<_>>();
         failed_topic_ids.sort();
         failed_topic_ids.truncate(8);
         SyncCompletionSummary {
@@ -161,29 +193,30 @@ impl Phase3Tracker {
         }
     }
 
-    pub async fn mark_completed(
+    pub async fn mark_completed<R: tauri::Runtime>(
         &self,
-        topic_id: &str,
+        topic: &TopicKey,
         logger: &Arc<Mutex<SyncLogger>>,
         tx: &mpsc::UnboundedSender<SyncCommand>,
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
         quiet: bool,
     ) -> bool {
         let mut completed = self.completed.lock().await;
-        if !completed.insert(topic_id.to_string()) {
+        if !completed.insert(topic.clone()) {
             return false;
         }
         let done = completed.len();
         let total = self.total.load(Ordering::SeqCst);
         if !quiet {
             if let Ok(mut logger) = logger.lock() {
-                logger.log_operation("messages", "topic", topic_id, true, None);
+                logger.log_operation("messages", "topic", &topic.topic_id, true, None);
             }
         }
         let _ = app_handle.emit(
             "vcp-sync-progress",
             serde_json::json!({
                 "sessionId": self.session_id,
+                "attemptId": self.attempt_id,
                 "phase": "messages",
                 "total": total,
                 "completed": done,
@@ -235,12 +268,6 @@ impl NetworkAwareSemaphore {
 }
 
 pub enum SyncCommand {
-    NotifyLocalChange {
-        id: String,
-        data_type: SyncDataType,
-        hash: String,
-        ts: i64,
-    },
     StartAvatarMetadata {
         attempt_id: u64,
     },
@@ -257,19 +284,13 @@ pub enum SyncCommand {
         attempt_id: u64,
     },
     NotifyDelete {
-        data_type: SyncDataType,
-        id: String,
-        deleted_at: i64,
-    },
-    NotifyMessageDelete {
-        topic_id: String,
-        message_id: String,
+        target: DeleteTarget,
         deleted_at: i64,
     },
     StartManualSync,
-    SendWsMessage {
+    SendMessageDiff {
         attempt_id: u64,
-        value: Value,
+        topics: Vec<MessageDiffTopicState>,
     },
     Phase3BatchFinished {
         attempt_id: u64,
@@ -285,11 +306,6 @@ pub enum SyncCommand {
         code: String,
         message: String,
         failed_topic_ids: Vec<String>,
-    },
-    RetryAttempt {
-        attempt_id: u64,
-        code: &'static str,
-        message: String,
     },
     Cancel,
 }
@@ -353,7 +369,7 @@ pub(crate) struct SyncCompletionSummary {
 }
 
 /// Messages sent by the session to the desktop are kept in one place so the
-/// frame dispatch module cannot accidentally introduce a Wire 1.4 message.
+/// frame dispatch module cannot bypass the Wire 1.4 serialization boundary.
 pub(crate) fn text_message(value: Value) -> Message {
     Message::Text(value.to_string().into())
 }

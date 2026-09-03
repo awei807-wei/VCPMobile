@@ -1,8 +1,9 @@
+use super::connection_config::load_connection_settings;
 use super::errors::encode_sync_command_error;
 use super::session::run_sync_session;
 use super::types::{SyncCommand, SyncSessionHandle, SyncState};
-use crate::vcp_modules::vcp_log_service::get_vcp_log_status_internal;
-use tauri::{AppHandle, State};
+use crate::vcp_modules::db_manager::DbState;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -19,14 +20,19 @@ pub fn init_sync_service(_app_handle: AppHandle) -> SyncState {
         session: tokio::sync::Mutex::new(None),
         next_session_id: std::sync::atomic::AtomicU64::new(0),
         current_session_id: std::sync::atomic::AtomicU64::new(0),
+        current_attempt_id: std::sync::atomic::AtomicU64::new(0),
     }
 }
 
 #[tauri::command]
-pub async fn stop_sync(_handle: AppHandle, state: State<'_, SyncState>) -> Result<(), String> {
+pub async fn stop_sync(handle: AppHandle, state: State<'_, SyncState>) -> Result<(), String> {
     let _lifecycle = state.lifecycle.lock().await;
+    let stopped_attempt_id = state
+        .current_attempt_id
+        .load(std::sync::atomic::Ordering::SeqCst);
     invalidate_owner(&state).await;
     let session = state.session.lock().await.take();
+    let stopped_session_id = session.as_ref().map(|session| session.session_id);
     let join_result = match session {
         Some(session) => cancel_and_join_session(session).await,
         None => Ok(()),
@@ -34,6 +40,18 @@ pub async fn stop_sync(_handle: AppHandle, state: State<'_, SyncState>) -> Resul
     *state.connection_status.write().await = "disconnected".to_string();
     clear_runtime_state(&state)?;
     *state.current_log_path.write().await = None;
+    if let Some(session_id) = stopped_session_id {
+        let _ = handle.emit(
+            "vcp-sync-status",
+            serde_json::json!({
+                "status": "stopped",
+                "message": "同步已停止",
+                "source": "Sync",
+                "sessionId": session_id,
+                "attemptId": stopped_attempt_id,
+            }),
+        );
+    }
     join_result.map_err(|detail| encode_sync_command_error("SYNC_STOP_FAILED", &detail))
 }
 
@@ -91,7 +109,16 @@ pub async fn start_manual_sync(
 ) -> Result<u64, String> {
     let _lifecycle = state.lifecycle.lock().await;
     reap_finished_session(&state).await?;
-    ensure_vcp_log_connected().await?;
+    if crate::vcp_modules::settings_manager::is_connection_profile_switching(&handle) {
+        return Err(encode_sync_command_error(
+            "SERVICE_BUSY",
+            "Connection profile switch is in progress",
+        ));
+    }
+    ensure_no_active_generation(&handle).await?;
+    let settings = load_connection_settings(&handle)
+        .await
+        .map_err(|detail| encode_sync_command_error("SYNC_CONFIG_INVALID", &detail))?;
     let (tx, rx) = create_session_command_channel()?;
     let session_id = state
         .next_session_id
@@ -103,7 +130,16 @@ pub async fn start_manual_sync(
     let status = state.connection_status.clone();
     let session_tx = tx.clone();
     let join_handle = tokio::spawn(async move {
-        run_sync_session(handle, session_id, join_cancel, session_tx, rx, status).await
+        run_sync_session(
+            handle,
+            session_id,
+            join_cancel,
+            session_tx,
+            rx,
+            status,
+            settings,
+        )
+        .await
     });
     *state.session.lock().await = Some(SyncSessionHandle {
         session_id,
@@ -112,6 +148,28 @@ pub async fn start_manual_sync(
         join_handle,
     });
     Ok(session_id)
+}
+
+async fn ensure_no_active_generation(handle: &AppHandle) -> Result<(), String> {
+    let db = handle.state::<DbState>();
+    let active =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM active_generations LIMIT 1)")
+            .fetch_one(&db.pool)
+            .await
+            .map_err(|error| {
+                encode_sync_command_error(
+                    "SYNC_ATTEMPT_FAILED",
+                    &format!("Active generation preflight failed: {error}"),
+                )
+            })?;
+    if active != 0 {
+        Err(encode_sync_command_error(
+            "SYNC_ACTIVE_GENERATION",
+            "A message generation is still active",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) fn create_session_command_channel() -> Result<
@@ -153,18 +211,6 @@ async fn reap_finished_session(state: &SyncState) -> Result<(), String> {
     Ok(())
 }
 
-async fn ensure_vcp_log_connected() -> Result<(), String> {
-    let status = get_vcp_log_status_internal().await;
-    if status == "connected" {
-        Ok(())
-    } else {
-        Err(encode_sync_command_error(
-            "VCP_LOG_DISCONNECTED",
-            &format!("VCPLog status is {status}"),
-        ))
-    }
-}
-
 async fn prepare_new_session(
     state: &SyncState,
     session_id: u64,
@@ -174,6 +220,9 @@ async fn prepare_new_session(
     state
         .current_session_id
         .store(session_id, std::sync::atomic::Ordering::SeqCst);
+    state
+        .current_attempt_id
+        .store(0, std::sync::atomic::Ordering::SeqCst);
     state.ws_sender.install(session_id, tx.clone());
     *state.connection_status.write().await = "disconnected".to_string();
     *state.current_log_path.write().await = None;

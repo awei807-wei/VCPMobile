@@ -80,13 +80,17 @@ async fn promote_live_attachment_relations(
          WHERE hash = ? AND status = 'desktop_only' AND deleted_at IS NULL
            AND EXISTS (
              SELECT 1 FROM messages m
-             WHERE m.topic_id = message_attachments.topic_id
+             WHERE m.owner_type = message_attachments.owner_type
+               AND m.owner_id = message_attachments.owner_id
+               AND m.topic_id = message_attachments.topic_id
                AND m.msg_id = message_attachments.msg_id
                AND m.deleted_at IS NULL
            )
            AND EXISTS (
              SELECT 1 FROM topics t
-             WHERE t.topic_id = message_attachments.topic_id
+             WHERE t.owner_type = message_attachments.owner_type
+               AND t.owner_id = message_attachments.owner_id
+               AND t.topic_id = message_attachments.topic_id
                AND t.deleted_at IS NULL
                AND (
                  (t.owner_type = 'agent' AND EXISTS (

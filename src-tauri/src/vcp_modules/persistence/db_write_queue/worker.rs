@@ -1,14 +1,17 @@
 use super::{DbWriteQueue, DbWriteTask};
 
-use rusqlite::Connection;
+use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
+use rusqlite::{Connection, TransactionBehavior};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+#[path = "worker_apply.rs"]
+mod apply;
+
 type ConnectionHolder = Arc<Mutex<Option<Connection>>>;
-type OwnerKey = (String, String);
 
 pub(super) fn spawn(db_path: PathBuf, rx: mpsc::Receiver<DbWriteTask>) -> JoinHandle<()> {
     let holder: ConnectionHolder = Arc::new(Mutex::new(None));
@@ -79,6 +82,7 @@ async fn collect_batch(
 fn topic_message_count(task: &DbWriteTask) -> u32 {
     match task {
         DbWriteTask::TopicMessages { messages, .. } => messages.len() as u32,
+        DbWriteTask::TopicMessagesCanonical { messages, .. } => messages.len() as u32,
         _ => 0,
     }
 }
@@ -105,7 +109,13 @@ fn execute_batch_sync(
         *guard = Some(conn);
     }
     let conn = guard.as_mut().ok_or(rusqlite::Error::InvalidQuery)?;
-    let tx = conn.transaction()?;
+    // Topic/entity upserts validate their parent rows before writing. A deferred
+    // transaction can therefore acquire a read snapshot, lose a race to a
+    // SQLx writer, and fail immediately with SQLITE_BUSY_SNAPSHOT when it is
+    // upgraded to a writer. Reserve the WAL writer slot before any validation
+    // reads so SQLite's busy handler can wait safely instead of failing the
+    // whole sync drain.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (owners, topics) = apply_tasks(&tx, tasks)?;
     bubble_topics(&tx, topics)?;
     bubble_owners(&tx, owners)?;
@@ -114,16 +124,16 @@ fn execute_batch_sync(
 
 fn open_connection(db_path: &PathBuf) -> rusqlite::Result<Connection> {
     let conn = Connection::open(db_path)?;
+    conn.busy_timeout(std::time::Duration::from_millis(30000))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.busy_timeout(std::time::Duration::from_millis(30000))?;
     Ok(conn)
 }
 
 fn apply_tasks(
     tx: &rusqlite::Transaction<'_>,
     tasks: Vec<DbWriteTask>,
-) -> rusqlite::Result<(HashSet<OwnerKey>, HashSet<String>)> {
+) -> rusqlite::Result<(HashSet<OwnerKey>, HashSet<TopicKey>)> {
     let mut owners = HashSet::new();
     let mut topics = HashSet::new();
     for task in tasks {
@@ -136,91 +146,47 @@ fn apply_task(
     tx: &rusqlite::Transaction<'_>,
     task: DbWriteTask,
     owners: &mut HashSet<OwnerKey>,
-    topics: &mut HashSet<String>,
+    topics: &mut HashSet<TopicKey>,
 ) -> rusqlite::Result<()> {
-    match task {
-        DbWriteTask::Agent { id, dto } => {
-            DbWriteQueue::rusqlite_upsert_agent(tx, &id, &dto)?;
-            owners.insert((id, "agent".to_string()));
-        }
-        DbWriteTask::Group { id, dto } => {
-            DbWriteQueue::rusqlite_upsert_group(tx, &id, &dto)?;
-            owners.insert((id, "group".to_string()));
-        }
-        DbWriteTask::Avatar {
-            owner_type,
-            owner_id,
-            bytes,
-        } => DbWriteQueue::rusqlite_upsert_avatar(tx, &owner_type, &owner_id, &bytes)?,
-        DbWriteTask::AgentTopic { topic_id, dto } => {
-            DbWriteQueue::rusqlite_upsert_agent_topic(tx, &topic_id, &dto)?;
-            owners.insert((dto.owner_id, "agent".to_string()));
-        }
-        DbWriteTask::AgentTopicBatch { topics: batch } => {
-            apply_agent_topics(tx, batch, owners)?;
-        }
-        DbWriteTask::GroupTopic { topic_id, dto } => {
-            DbWriteQueue::rusqlite_upsert_group_topic(tx, &topic_id, &dto)?;
-            owners.insert((dto.owner_id, "group".to_string()));
-        }
-        DbWriteTask::GroupTopicBatch { topics: batch } => {
-            apply_group_topics(tx, batch, owners)?;
-        }
-        DbWriteTask::TopicMessages {
-            topic_id,
-            messages,
-            compressed_contents,
-            render_bytes,
-            content_hashes,
-            skip_bubble,
-        } => {
-            if !skip_bubble {
-                topics.insert(topic_id.clone());
-            }
-            DbWriteQueue::rusqlite_upsert_messages_batch(
-                tx,
-                &topic_id,
-                messages,
-                compressed_contents,
-                render_bytes,
-                content_hashes,
-            )?;
-        }
-        DbWriteTask::Flush { .. } => return Err(rusqlite::Error::InvalidQuery),
-    }
-    Ok(())
+    apply::apply_task(tx, task, owners, topics)
 }
 
 fn apply_agent_topics(
     tx: &rusqlite::Transaction<'_>,
-    topics: Vec<(String, crate::vcp_modules::sync_dto::AgentTopicSyncDTO)>,
+    batch: Vec<(String, crate::vcp_modules::sync_dto::AgentTopicSyncDTO)>,
     owners: &mut HashSet<OwnerKey>,
+    topics: &mut HashSet<TopicKey>,
 ) -> rusqlite::Result<()> {
-    for (topic_id, dto) in topics {
-        DbWriteQueue::rusqlite_upsert_agent_topic(tx, &topic_id, &dto)?;
-        owners.insert((dto.owner_id, "agent".to_string()));
+    for (topic_id, dto) in batch {
+        let key = TopicKey::new("agent", dto.owner_id.clone(), topic_id);
+        DbWriteQueue::rusqlite_upsert_agent_topic_for_key(tx, &key, &dto)?;
+        owners.insert(key.owner_key());
+        topics.insert(key);
     }
     Ok(())
 }
 
 fn apply_group_topics(
     tx: &rusqlite::Transaction<'_>,
-    topics: Vec<(String, crate::vcp_modules::sync_dto::GroupTopicSyncDTO)>,
+    batch: Vec<(String, crate::vcp_modules::sync_dto::GroupTopicSyncDTO)>,
     owners: &mut HashSet<OwnerKey>,
+    topics: &mut HashSet<TopicKey>,
 ) -> rusqlite::Result<()> {
-    for (topic_id, dto) in topics {
-        DbWriteQueue::rusqlite_upsert_group_topic(tx, &topic_id, &dto)?;
-        owners.insert((dto.owner_id, "group".to_string()));
+    for (topic_id, dto) in batch {
+        let key = TopicKey::new("group", dto.owner_id.clone(), topic_id);
+        DbWriteQueue::rusqlite_upsert_group_topic_for_key(tx, &key, &dto)?;
+        owners.insert(key.owner_key());
+        topics.insert(key);
     }
     Ok(())
 }
 
 fn bubble_topics(
     tx: &rusqlite::Transaction<'_>,
-    topic_ids: HashSet<String>,
+    topics: HashSet<TopicKey>,
 ) -> rusqlite::Result<()> {
-    for topic_id in topic_ids {
-        DbWriteQueue::rusqlite_bubble_topic_hash(tx, &topic_id)?;
+    for topic in topics {
+        DbWriteQueue::rusqlite_bubble_topic_hash_for_key(tx, &topic)?;
     }
     Ok(())
 }
@@ -239,10 +205,10 @@ fn bubble_owners(
 fn split_owners(owners: HashSet<OwnerKey>) -> (Vec<String>, Vec<String>) {
     let mut agents = Vec::new();
     let mut groups = Vec::new();
-    for (id, owner_type) in owners {
-        match owner_type.as_str() {
-            "agent" => agents.push(id),
-            "group" => groups.push(id),
+    for owner in owners {
+        match owner.owner_type.as_str() {
+            "agent" => agents.push(owner.owner_id),
+            "group" => groups.push(owner.owner_id),
             _ => {}
         }
     }
@@ -305,3 +271,7 @@ fn validate_owner_ids(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "worker_tests.rs"]
+mod tests;

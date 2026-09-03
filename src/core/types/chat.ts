@@ -99,6 +99,7 @@ export interface Attachment {
   resolvedSrc?: string; // Webview 可用的 asset:// 路径 (运行时动态生成，不进行持久化)
   hash?: string;
   status?: string;
+  attachmentOrder?: number;
   internalPath?: string; // 手机本地物理路径，仅供前端通过 convertFileSrc 转换为安全 URL
   extractedText?: string;
   imageFrames?: string[];
@@ -117,6 +118,7 @@ export interface ChatMessage {
   blocks?: ContentBlock[]; // 预编译的 AST 数据块，前端直接渲染
   shell?: MessageShell; // 预计算的外壳属性
   timestamp: number;
+  updatedAt?: number;
 
   isThinking?: boolean;
   agentId?: string;

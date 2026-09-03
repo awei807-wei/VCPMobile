@@ -36,7 +36,7 @@ describe("Android toolchain governance", () => {
     expect(ciWorkflow).toContain('ANDROID_BUILD_TOOLS_VERSION: "36.0.0"');
     expect(releaseWorkflow).toContain('ANDROID_BUILD_TOOLS_VERSION: "37.0.0"');
     expect(releaseWorkflow).toContain(
-      'build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner',
+      "build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner",
     );
   });
 
@@ -57,7 +57,9 @@ describe("Android toolchain governance", () => {
     expect(releaseWorkflow).toContain("max-page-size=16384");
     expect(releaseWorkflow).toContain("scripts/verify_android_apk.py");
     expect(releaseWorkflow).toContain("--expected-abi arm64-v8a");
-    expect(releaseWorkflow).toContain("APK certificate does NOT match keystore");
+    expect(releaseWorkflow).toContain(
+      "APK certificate does NOT match keystore",
+    );
   });
 
   it("generates Tauri Android module settings from locked Cargo metadata", () => {

@@ -1,31 +1,112 @@
 use super::types::MAX_CONTROL_RESPONSE_BYTES;
+use crate::vcp_modules::sync::sync_error::{
+    encode_http_sync_error_body, encode_local_sync_error, SyncErrorStage,
+};
 use crate::vcp_modules::sync::wire_protocol::parse_strict_json;
-use crate::vcp_modules::sync_error::encode_wire_sync_error_value;
 use futures_util::StreamExt;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 pub(super) async fn read_response_limited(
     response: reqwest::Response,
     max_bytes: usize,
     operation: &str,
+    stage: SyncErrorStage,
 ) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
     if response
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(format!("{operation} response exceeds {max_bytes} bytes"));
+        return Err(encode_local_sync_error(
+            "RESPONSE_TOO_LARGE",
+            stage,
+            &format!("{operation} response exceeds {max_bytes} bytes"),
+            Vec::new(),
+        ));
     }
     let status = response.status();
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("{operation} response read failed: {error}"))?;
+        let chunk = chunk.map_err(|error| {
+            encode_local_sync_error(
+                "HTTP_TRANSPORT_FAILED",
+                stage,
+                &format!("{operation} response read failed: {error}"),
+                Vec::new(),
+            )
+        })?;
         if body.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(format!("{operation} response exceeds {max_bytes} bytes"));
+            return Err(encode_local_sync_error(
+                "RESPONSE_TOO_LARGE",
+                stage,
+                &format!("{operation} response exceeds {max_bytes} bytes"),
+                Vec::new(),
+            ));
         }
         body.extend_from_slice(&chunk);
     }
     Ok((status, body))
+}
+
+pub(super) fn protocol_error(stage: SyncErrorStage, message: impl AsRef<str>) -> String {
+    encode_local_sync_error("SYNC_PROTOCOL_INVALID", stage, message.as_ref(), Vec::new())
+}
+
+pub(super) fn http_transport_error(
+    operation: &str,
+    stage: SyncErrorStage,
+    error: &reqwest::Error,
+) -> String {
+    encode_local_sync_error(
+        "HTTP_TRANSPORT_FAILED",
+        stage,
+        &format!("{operation} failed: {error}"),
+        Vec::new(),
+    )
+}
+
+pub(super) async fn parse_json_response<T: DeserializeOwned>(
+    response: reqwest::Response,
+    operation: &str,
+    stage: SyncErrorStage,
+) -> Result<T, String> {
+    let (status, bytes) =
+        read_response_limited(response, MAX_CONTROL_RESPONSE_BYTES, operation, stage).await?;
+    if !status.is_success() {
+        return parse_http_error(&bytes, status, operation, stage);
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        protocol_error(stage, format!("{operation} response is not UTF-8: {error}"))
+    })?;
+    let value = parse_strict_json(text).map_err(|error| {
+        protocol_error(stage, format!("{operation} returned invalid JSON: {error}"))
+    })?;
+    serde_json::from_value(value).map_err(|error| {
+        protocol_error(
+            stage,
+            format!("{operation} returned invalid response: {error}"),
+        )
+    })
+}
+
+fn parse_http_error<T>(
+    bytes: &[u8],
+    status: reqwest::StatusCode,
+    operation: &str,
+    stage: SyncErrorStage,
+) -> Result<T, String> {
+    match encode_http_sync_error_body(bytes) {
+        Ok(Some(error)) => Err(error),
+        Ok(None) => Err(protocol_error(
+            stage,
+            format!("{operation} failed with HTTP {status} without a Wire 1.4 error object"),
+        )),
+        Err(error) => Err(protocol_error(
+            stage,
+            format!("{operation} returned an invalid Wire 1.4 error: {error}"),
+        )),
+    }
 }
 
 pub(super) fn parse_strict_response(bytes: &[u8], operation: &str) -> Result<Value, String> {
@@ -42,60 +123,15 @@ pub(super) fn require_exact_object_keys<'a>(
     let object = value
         .as_object()
         .ok_or_else(|| format!("{operation} response must be an object"))?;
-    let has_exact_keys = object.len() == required.len()
-        && object
+    if object.len() != required.len()
+        || object
             .keys()
-            .all(|key| required.iter().any(|allowed| *allowed == key));
-    if !has_exact_keys {
+            .any(|key| !required.iter().any(|allowed| *allowed == key))
+    {
         return Err(format!(
             "{operation} response fields do not exactly match {:?}",
             required
         ));
     }
     Ok(object)
-}
-
-pub(super) async fn parse_success_response(
-    response: reqwest::Response,
-    operation: &str,
-) -> Result<Value, String> {
-    let (status, bytes) =
-        read_response_limited(response, MAX_CONTROL_RESPONSE_BYTES, operation).await?;
-    if !status.is_success() {
-        let value = parse_strict_response(&bytes, operation)?;
-        let object = require_exact_object_keys(&value, &["error"], operation)?;
-        let error = object
-            .get("error")
-            .ok_or_else(|| format!("{operation} failed with HTTP {status} without an error"))?;
-        return Err(encode_wire_sync_error_value(error).map_err(|error| {
-            format!("{operation} returned an invalid Wire 1.2 error: {error}")
-        })?);
-    }
-
-    let value = parse_strict_response(&bytes, operation)?;
-    let success = value.get("success").and_then(Value::as_bool);
-    if success != Some(true) {
-        let error = value.get("error").or_else(|| {
-            value
-                .get("results")
-                .and_then(Value::as_array)
-                .and_then(|results| {
-                    results.iter().find_map(|result| {
-                        (result.get("success").and_then(Value::as_bool) == Some(false))
-                            .then(|| result.get("error"))
-                            .flatten()
-                    })
-                })
-        });
-        let encoded = error
-            .ok_or_else(|| format!("{operation} returned success=false without error"))
-            .and_then(encode_wire_sync_error_value)?;
-        return Err(encoded);
-    }
-    if value.get("error").is_some() {
-        return Err(format!(
-            "{operation} returned success=true together with error"
-        ));
-    }
-    Ok(value)
 }

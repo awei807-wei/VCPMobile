@@ -1,7 +1,9 @@
-use super::errors::publish_sync_error;
+use super::errors::{publish_sync_error, publish_sync_nonterminal_status};
 use super::logs::{emit_operator_sync_log, emit_sync_log};
 use super::types::{FinalAckKey, PendingFinalAck, SyncCommand, SyncWebSocket};
 use crate::vcp_modules::sync_error::encode_wire_sync_error;
+use crate::vcp_modules::sync_types::ManifestType;
+use crate::vcp_modules::topic_types::TopicKey;
 use crate::vcp_modules::wire_protocol::handshake::{
     EXPECTED_PLUGIN_VERSION, WIRE_PROTOCOL_VERSION,
 };
@@ -156,6 +158,19 @@ pub(crate) async fn schedule_sync_retry<R: Runtime>(
             MAX_SYNC_RETRIES
         ),
     );
+    publish_sync_nonterminal_status(
+        app_handle,
+        session_id,
+        status,
+        "retrying",
+        &format!(
+            "连接中断，{} 毫秒后进行第 {}/{} 次自动重试",
+            backoff.as_millis(),
+            budget.attempts(),
+            MAX_SYNC_RETRIES
+        ),
+    )
+    .await;
     !cancel_token.is_cancelled() && !cancelled_during(cancel_token, backoff).await
 }
 
@@ -193,7 +208,7 @@ pub(crate) async fn enforce_final_ack_deadline(
         })
         .unwrap_or(false);
     if expired {
-        let _ = tx.send(SyncCommand::RetryAttempt {
+        let _ = tx.send(SyncCommand::FailAttempt {
             attempt_id: expected.attempt_id,
             code: "FINAL_ACK_TIMEOUT",
             message: format!(
@@ -205,7 +220,7 @@ pub(crate) async fn enforce_final_ack_deadline(
 }
 
 pub(crate) async fn enforce_manifest_response_deadline(
-    expected_types: Arc<Mutex<HashSet<String>>>,
+    expected_types: Arc<Mutex<HashSet<ManifestType>>>,
     manifest_phase: Arc<AtomicU8>,
     expected_phase: u8,
     tx: mpsc::UnboundedSender<SyncCommand>,
@@ -219,7 +234,7 @@ pub(crate) async fn enforce_manifest_response_deadline(
     let missing = match expected_types.lock() {
         Ok(expected) if expected.is_empty() => return,
         Ok(expected) => {
-            let mut values = expected.iter().cloned().collect::<Vec<_>>();
+            let mut values = expected.iter().map(ToString::to_string).collect::<Vec<_>>();
             values.sort();
             values
         }
@@ -242,7 +257,7 @@ pub(crate) async fn enforce_manifest_response_deadline(
 }
 
 pub(crate) async fn enforce_topic_hash_response_deadline(
-    expected_results: Arc<AsyncMutex<Option<HashSet<String>>>>,
+    expected_results: Arc<AsyncMutex<Option<HashSet<TopicKey>>>>,
     manifest_phase: Arc<AtomicU8>,
     expected_phase: u8,
     tx: mpsc::UnboundedSender<SyncCommand>,

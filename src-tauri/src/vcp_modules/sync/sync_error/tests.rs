@@ -1,13 +1,15 @@
-use super::codec::{decode_wire_sync_error, encode_http_sync_error_body, WIRE_ERROR_MARKER};
+use super::codec::{
+    decode_wire_sync_error, encode_http_sync_error_body, encode_local_sync_error,
+    is_attempt_restart_code, WIRE_ERROR_MARKER,
+};
 use super::payload::{build_local_error_payload, build_wire_error_payload};
-use super::registry::error_definition;
 use super::types::{SyncErrorCategory, SyncErrorOrigin, SyncErrorStage, SyncRetryAction};
 use super::validation::parse_wire_sync_error;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-const FIXTURE_BYTES: &[u8] = include_bytes!("../fixtures/error_contract_1_2_golden.json");
-const FIXTURE_SHA256: &str = "434279b33a86a2206c1e4f47caccb4e72f05b2f9d48e093af95d5ebae6947adb";
+const FIXTURE_BYTES: &[u8] = include_bytes!("../fixtures/wire_error_contract.json");
+const FIXTURE_SHA256: &str = "3a4085b0859c6dbb3b8ebbcff4db3586c890ffe624ea28f8b2d54d362b04dc2c";
 
 fn valid_error() -> Value {
     json!({
@@ -28,34 +30,16 @@ fn golden_fixture_is_byte_exact_and_covers_valid_invalid_errors() {
         FIXTURE_SHA256
     );
     let fixture: Value = serde_json::from_slice(FIXTURE_BYTES).expect("golden fixture JSON");
-    assert_eq!(fixture["wireProtocol"], "1.2");
-    assert_eq!(fixture["pluginVersion"], "1.2.0");
+    assert_eq!(fixture["schema"], "vcp-sync-wire-error-contract");
 
     for entry in fixture["validErrors"].as_array().expect("validErrors") {
-        parse_wire_sync_error(&entry["error"]).expect("valid Wire 1.2 error");
+        parse_wire_sync_error(&entry["error"]).expect("valid Wire 1.4 error");
     }
     for entry in fixture["invalidErrors"].as_array().expect("invalidErrors") {
         assert!(
             parse_wire_sync_error(&entry["error"]).is_err(),
             "{}",
             entry["name"]
-        );
-    }
-    for (code, semantics) in fixture["registeredSemantics"]
-        .as_object()
-        .expect("registeredSemantics")
-    {
-        let semantics = semantics.as_array().expect("semantic tuple");
-        let registered = error_definition(code).expect("registered code");
-        assert_eq!(
-            serde_json::to_value(registered.category).expect("serialize kind"),
-            semantics[0],
-            "kind for {code}"
-        );
-        assert_eq!(
-            serde_json::to_value(registered.retry).expect("serialize retry"),
-            semantics[1],
-            "retry for {code}"
         );
     }
 }
@@ -216,6 +200,7 @@ fn error_codecs_reject_duplicate_keys_and_trailing_json() {
     for body in [
         r#"{"error":{"code":"A","code":"B"}}"#,
         r#"{"error":null} {"trailing":true}"#,
+        r#"{"error":{"code":"A","origin":"desktop_plugin","stage":"startup","kind":"internal","retry":"manual","message":"x","failedTopicIds":[]},"debug":true}"#,
     ] {
         assert!(encode_http_sync_error_body(body.as_bytes()).is_err());
     }
@@ -231,4 +216,48 @@ fn error_codecs_reject_duplicate_keys_and_trailing_json() {
     ] {
         assert!(decode_wire_sync_error(&encoded).is_none());
     }
+}
+
+#[test]
+fn error_envelopes_reject_unknown_fields_and_non_object_values() {
+    let mut frame = json!({
+        "type": "SYNC_ERROR",
+        "error": valid_error(),
+    });
+    frame["debug"] = json!(true);
+    assert!(super::codec::parse_wire_sync_error_frame(&frame).is_err());
+    assert!(super::codec::parse_wire_sync_error_frame(&json!({
+        "type": "SYNC_ERROR",
+        "error": valid_error(),
+        "extra": null,
+    }))
+    .is_err());
+    assert!(super::codec::parse_wire_sync_error_frame(&json!({
+        "type": "SYNC_ERROR",
+        "error": "legacy",
+    }))
+    .is_err());
+}
+
+#[test]
+fn local_error_marker_preserves_stage_and_never_promotes_platform_errno() {
+    let encoded = encode_local_sync_error(
+        "ENOENT",
+        SyncErrorStage::Messages,
+        "attachment was not found",
+        vec!["topic-a".to_owned()],
+    );
+    let decoded = decode_wire_sync_error(&encoded).expect("local marker");
+    assert_eq!(decoded.code, "SYNC_ATTEMPT_FAILED");
+    assert_eq!(decoded.origin, SyncErrorOrigin::MobileSync);
+    assert_eq!(decoded.stage, SyncErrorStage::Messages);
+    assert_eq!(decoded.failed_topic_ids, vec!["topic-a"]);
+}
+
+#[test]
+fn only_snapshot_or_transport_recovery_can_restart_an_attempt() {
+    assert!(is_attempt_restart_code("SYNC_SNAPSHOT_STALE"));
+    assert!(is_attempt_restart_code("HTTP_TRANSPORT_FAILED"));
+    assert!(!is_attempt_restart_code("PROTOCOL_INVALID"));
+    assert!(!is_attempt_restart_code("SYNC_DB_QUERY_FAILED"));
 }

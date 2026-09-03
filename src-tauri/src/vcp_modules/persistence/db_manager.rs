@@ -42,6 +42,8 @@ pub async fn init_db(app_handle: &AppHandle) -> Result<(Pool<Sqlite>, std::path:
 pub struct FtsSearchResult {
     pub msg_id: String,
     pub topic_id: String,
+    pub owner_type: String,
+    pub owner_id: String,
     pub role: String,
     pub content: String,
     pub timestamp: i64,
@@ -80,6 +82,9 @@ pub fn preprocess_fts_text(text: &str) -> String {
 pub struct FtsSearchFilter {
     pub query: String,
     pub topic_id: Option<String>,
+    /// 会话归属过滤；与 topic_id 一起使用时必须成对提供。
+    pub owner_id: Option<String>,
+    pub owner_type: Option<String>,
     pub agent_id: Option<String>,
     pub role: Option<String>,
     pub start_time: Option<i64>,
@@ -92,6 +97,19 @@ pub async fn search_messages_fts(
     db_state: tauri::State<'_, DbState>,
     filter: FtsSearchFilter,
 ) -> Result<Vec<FtsSearchResult>, String> {
+    if filter.owner_id.is_some() != filter.owner_type.is_some() {
+        return Err("search owner filter requires both ownerId and ownerType".to_string());
+    }
+    if filter.topic_id.is_some() && filter.owner_id.is_none() {
+        return Err("topic search requires both ownerId and ownerType".to_string());
+    }
+    if filter
+        .owner_type
+        .as_deref()
+        .is_some_and(|owner_type| !matches!(owner_type, "agent" | "group"))
+    {
+        return Err("search ownerType must be agent or group".to_string());
+    }
     let Some(fts_query) = compile_fts_query(&filter.query) else {
         return Ok(Vec::new());
     };
@@ -117,17 +135,27 @@ fn build_fts_sql(filter: &FtsSearchFilter) -> String {
         "SELECT 
             m.msg_id, 
             m.topic_id, 
+            m.owner_type,
+            m.owner_id,
             m.role, 
             m.content, 
             m.timestamp, 
             t.title AS topic_title
          FROM messages_fts fts
-         INNER JOIN messages m ON fts.msg_id = m.msg_id AND fts.topic_id = m.topic_id
-         INNER JOIN topics t ON m.topic_id = t.topic_id
+         INNER JOIN messages m ON fts.owner_type = m.owner_type
+            AND fts.owner_id = m.owner_id
+            AND fts.topic_id = m.topic_id
+            AND fts.msg_id = m.msg_id
+         INNER JOIN topics t ON m.owner_type = t.owner_type
+            AND m.owner_id = t.owner_id
+            AND m.topic_id = t.topic_id
          WHERE fts.content MATCH ? AND m.deleted_at IS NULL AND t.deleted_at IS NULL",
     );
     if filter.topic_id.is_some() {
         sql.push_str(" AND m.topic_id = ?");
+    }
+    if filter.owner_id.is_some() {
+        sql.push_str(" AND m.owner_id = ? AND m.owner_type = ?");
     }
     if filter.agent_id.is_some() {
         sql.push_str(" AND m.agent_id = ?");
@@ -155,6 +183,12 @@ async fn fetch_fts_rows(
     if let Some(ref topic_id) = filter.topic_id {
         query = query.bind(topic_id);
     }
+    if let Some(ref owner_id) = filter.owner_id {
+        query = query.bind(owner_id);
+    }
+    if let Some(ref owner_type) = filter.owner_type {
+        query = query.bind(owner_type);
+    }
     if let Some(ref agent_id) = filter.agent_id {
         query = query.bind(agent_id);
     }
@@ -179,6 +213,8 @@ fn decode_fts_rows(rows: Vec<SqliteRow>) -> Result<Vec<FtsSearchResult>, String>
     for row in rows {
         let msg_id: String = row.get("msg_id");
         let topic_id: String = row.get("topic_id");
+        let owner_type: String = row.get("owner_type");
+        let owner_id: String = row.get("owner_id");
         let role: String = row.get("role");
         let content = super::message_content_storage::decode_message_content(&row, "content")?;
         let timestamp: i64 = row.get("timestamp");
@@ -187,6 +223,8 @@ fn decode_fts_rows(rows: Vec<SqliteRow>) -> Result<Vec<FtsSearchResult>, String>
         results.push(FtsSearchResult {
             msg_id,
             topic_id,
+            owner_type,
+            owner_id,
             role,
             content,
             timestamp,
@@ -206,5 +244,128 @@ mod tests {
         assert_eq!(preprocess_fts_text("AI智能体"), "AI 智 能 体");
         assert_eq!(preprocess_fts_text("Hello World"), "Hello World");
         assert_eq!(preprocess_fts_text(""), "");
+    }
+
+    #[test]
+    fn composite_fts_join_contains_the_complete_message_identity() {
+        let filter = FtsSearchFilter {
+            query: "needle".to_string(),
+            topic_id: Some("shared-topic".to_string()),
+            owner_id: Some("owner-a".to_string()),
+            owner_type: Some("agent".to_string()),
+            agent_id: None,
+            role: None,
+            start_time: None,
+            end_time: None,
+            limit: Some(10),
+        };
+        let sql = build_fts_sql(&filter);
+        assert!(sql.contains("fts.owner_type = m.owner_type"));
+        assert!(sql.contains("fts.owner_id = m.owner_id"));
+        assert!(sql.contains("m.owner_type = t.owner_type"));
+        assert!(sql.contains("m.owner_id = t.owner_id"));
+        assert!(sql.contains("m.owner_id = ? AND m.owner_type = ?"));
+    }
+
+    #[tokio::test]
+    async fn fts_search_owner_filter_does_not_cross_same_topic_or_message_id() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open FTS test database");
+        sqlx::raw_sql(
+            "CREATE TABLE topics (
+                owner_type TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                topic_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                deleted_at INTEGER,
+                PRIMARY KEY(owner_type, owner_id, topic_id)
+             );
+             CREATE TABLE messages (
+                owner_type TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                topic_id TEXT NOT NULL,
+                msg_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content BLOB NOT NULL,
+                timestamp INTEGER NOT NULL,
+                deleted_at INTEGER,
+                PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
+             );
+             CREATE VIRTUAL TABLE messages_fts USING fts5(
+                msg_id UNINDEXED,
+                topic_id UNINDEXED,
+                content,
+                owner_type UNINDEXED,
+                owner_id UNINDEXED
+             );",
+        )
+        .execute(&pool)
+        .await
+        .expect("create FTS schema");
+
+        for (owner_type, owner_id, title, content) in [
+            ("agent", "owner-a", "Agent topic", "agent needle"),
+            ("group", "owner-g", "Group topic", "group needle"),
+        ] {
+            sqlx::query(
+                "INSERT INTO topics(owner_type, owner_id, topic_id, title)
+                 VALUES (?, ?, 'shared-topic', ?)",
+            )
+            .bind(owner_type)
+            .bind(owner_id)
+            .bind(title)
+            .execute(&pool)
+            .await
+            .expect("insert FTS topic");
+            let compressed = super::super::message_repository::ContentCompressor::compress(content)
+                .expect("compress FTS message");
+            sqlx::query(
+                "INSERT INTO messages(
+                    owner_type, owner_id, topic_id, msg_id, role, content, timestamp
+                 ) VALUES (?, ?, 'shared-topic', 'shared-message', 'user', ?, 100)",
+            )
+            .bind(owner_type)
+            .bind(owner_id)
+            .bind(compressed)
+            .execute(&pool)
+            .await
+            .expect("insert FTS message");
+            sqlx::query(
+                "INSERT INTO messages_fts(msg_id, topic_id, content, owner_type, owner_id)
+                 VALUES ('shared-message', 'shared-topic', ?, ?, ?)",
+            )
+            .bind(content)
+            .bind(owner_type)
+            .bind(owner_id)
+            .execute(&pool)
+            .await
+            .expect("insert FTS index row");
+        }
+
+        let filter = FtsSearchFilter {
+            query: "needle".to_string(),
+            topic_id: Some("shared-topic".to_string()),
+            owner_id: Some("owner-a".to_string()),
+            owner_type: Some("agent".to_string()),
+            agent_id: None,
+            role: None,
+            start_time: None,
+            end_time: None,
+            limit: Some(10),
+        };
+        let fts_query = compile_fts_query(&filter.query).expect("compile FTS query");
+        let rows = fetch_fts_rows(&pool, &build_fts_sql(&filter), &fts_query, &filter)
+            .await
+            .expect("execute owner-scoped FTS query");
+        let results = decode_fts_rows(rows).expect("decode owner-scoped FTS results");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].owner_type, "agent");
+        assert_eq!(results[0].owner_id, "owner-a");
+        assert_eq!(results[0].topic_id, "shared-topic");
+        assert_eq!(results[0].msg_id, "shared-message");
+        assert_eq!(results[0].content, "agent needle");
     }
 }

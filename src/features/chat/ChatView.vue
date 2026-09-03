@@ -83,7 +83,17 @@ watch(
 
     if (newTopicId && newSelectedItem) {
       console.log(`[ChatView] Topic changed to ${newTopicId}, loading history...`);
-      topicStore.markTopicAsRead(newTopicId);
+      if (
+        newSelectedItem.type !== "agent" &&
+        newSelectedItem.type !== "group"
+      ) {
+        throw new Error("Current conversation owner has no valid type");
+      }
+      topicStore.markTopicAsRead({
+        ownerId: newSelectedItem.id,
+        ownerType: newSelectedItem.type,
+        topicId: newTopicId,
+      });
       historyStore.loadHistoryPaginated(
         newSelectedItem.id,
         newSelectedItem.type,

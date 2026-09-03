@@ -54,7 +54,7 @@ pub async fn save_avatar_data<R: Runtime>(
         dominant_color
     );
 
-    // Wire 1.2 不支持头像实时更新；下一次头像 manifest 会声明此哈希，
+    // Wire 1.4 通过下一次 avatar manifest 声明该哈希，
     // 桌面端再通过 HTTP 拉取二进制内容。
     Ok(avatar_hash)
 }

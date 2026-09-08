@@ -24,10 +24,7 @@ pub(super) fn clean_old_cache_files(cache_dir: &std::path::Path) {
             continue;
         };
         if elapsed.as_secs() > 24 * 3600 {
-            log::info!(
-                "[VCPClient] Deleting orphaned cache file older than 24 hours: {:?}",
-                path
-            );
+            log::info!("[VCPClient] 删除超过 24 小时的孤立恢复缓存：result=deleted");
             let _ = std::fs::remove_file(path);
         }
     }

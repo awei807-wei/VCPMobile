@@ -39,8 +39,15 @@ pub(super) async fn handle_non_streaming_request(
         Err(NonStreamFailure::Cancelled(result)) => return Ok((result, true)),
         Err(NonStreamFailure::Error(error)) => return Err(error),
     };
-    active_requests.remove_if_current(&request_key, request_epoch);
-    parse_non_stream_response(response, &message_id, context, &stream_channel).await
+    active_requests.remove_entry_if_current(&request_key, request_epoch);
+    parse_non_stream_response(
+        response,
+        &message_id,
+        request_epoch,
+        context,
+        &stream_channel,
+    )
+    .await
 }
 
 enum NonStreamFailure {
@@ -72,9 +79,9 @@ async fn request_non_stream_response(
         _ = abort_rx => {
             log::warn!("[VCPClient] Non-streaming request aborted before response for message: {message_id}");
             send_stream_event(stream_channel, StreamEvent::error(
-                message_id.to_string(), context.clone(), "请求已中止".to_string(),
+                message_id.to_string(), context.clone(), "请求已中止".to_string(), request_epoch,
             ));
-            active_requests.remove_if_current(request_key, request_epoch);
+            active_requests.remove_entry_if_current(request_key, request_epoch);
             Err(NonStreamFailure::Cancelled(json!({
                 "response": Value::Null,
                 "fullContent": "",
@@ -87,9 +94,9 @@ async fn request_non_stream_response(
             Err(error) => {
                 let error = format!("VCP请求失败: {error}");
                 send_stream_event(stream_channel, StreamEvent::error(
-                    message_id.to_string(), context.clone(), error.clone(),
+                    message_id.to_string(), context.clone(), error.clone(), request_epoch,
                 ));
-                active_requests.remove_if_current(request_key, request_epoch);
+                active_requests.remove_entry_if_current(request_key, request_epoch);
                 Err(NonStreamFailure::Error(error))
             }
         }
@@ -99,30 +106,92 @@ async fn request_non_stream_response(
 async fn parse_non_stream_response(
     response: reqwest::Response,
     message_id: &str,
+    request_epoch: u64,
     context: Option<Value>,
     stream_channel: &Option<Channel<StreamEvent>>,
 ) -> Result<(Value, bool), String> {
     let status = response.status();
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        let error = format!("VCP服务器错误: {status} - {text}");
-        send_stream_event(
+        return Err(emit_non_stream_http_error(
+            response,
+            message_id,
+            request_epoch,
+            &context,
             stream_channel,
-            StreamEvent::error(message_id.to_string(), context.clone(), error.clone()),
-        );
-        return Err(error);
+        )
+        .await);
     }
-    let vcp_response = match response.json::<Value>().await {
-        Ok(value) => value,
+    let vcp_response = decode_non_stream_json(
+        response,
+        message_id,
+        request_epoch,
+        &context,
+        stream_channel,
+    )
+    .await?;
+    Ok(build_non_stream_success(
+        vcp_response,
+        message_id,
+        request_epoch,
+        context,
+        stream_channel,
+    ))
+}
+
+async fn emit_non_stream_http_error(
+    response: reqwest::Response,
+    message_id: &str,
+    request_epoch: u64,
+    context: &Option<Value>,
+    stream_channel: &Option<Channel<StreamEvent>>,
+) -> String {
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    let error = format!("VCP服务器错误: {status} - {text}");
+    send_stream_event(
+        stream_channel,
+        StreamEvent::error(
+            message_id.to_string(),
+            context.clone(),
+            error.clone(),
+            request_epoch,
+        ),
+    );
+    error
+}
+
+async fn decode_non_stream_json(
+    response: reqwest::Response,
+    message_id: &str,
+    request_epoch: u64,
+    context: &Option<Value>,
+    stream_channel: &Option<Channel<StreamEvent>>,
+) -> Result<Value, String> {
+    match response.json::<Value>().await {
+        Ok(value) => Ok(value),
         Err(error) => {
             let error = format!("JSON解析失败: {error}");
             send_stream_event(
                 stream_channel,
-                StreamEvent::error(message_id.to_string(), context.clone(), error.clone()),
+                StreamEvent::error(
+                    message_id.to_string(),
+                    context.clone(),
+                    error.clone(),
+                    request_epoch,
+                ),
             );
-            return Err(error);
+            Err(error)
         }
-    };
+    }
+}
+
+fn build_non_stream_success(
+    vcp_response: Value,
+    message_id: &str,
+    request_epoch: u64,
+    context: Option<Value>,
+    stream_channel: &Option<Channel<StreamEvent>>,
+) -> (Value, bool) {
     let (full_content, finish_reason) = extract_non_stream_content(&vcp_response);
     send_stream_event(
         stream_channel,
@@ -140,9 +209,10 @@ async fn parse_non_stream_response(
                 chunk: None,
             },
             context.clone(),
+            request_epoch,
         ),
     );
-    Ok((
+    (
         json!({
             "response": vcp_response,
             "fullContent": full_content,
@@ -150,7 +220,7 @@ async fn parse_non_stream_response(
             "context": context
         }),
         false,
-    ))
+    )
 }
 
 fn extract_non_stream_content(response: &Value) -> (String, Option<String>) {
@@ -176,5 +246,22 @@ fn extract_non_stream_content(response: &Value) -> (String, Option<String>) {
 fn send_stream_event(channel: &Option<Channel<StreamEvent>>, event: StreamEvent) {
     if let Some(channel) = channel {
         let _ = channel.send(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn 非流式响应只取首项并将stop映射为completed() {
+        let response = serde_json::json!({
+            "choices": [
+                {"message": {"content": "首项"}, "finish_reason": "stop"},
+                {"message": {"content": "后项"}, "finish_reason": "length"}
+            ]
+        });
+        assert_eq!(
+            super::extract_non_stream_content(&response),
+            ("首项".to_string(), Some("completed".to_string()))
+        );
     }
 }

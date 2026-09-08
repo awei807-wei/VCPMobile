@@ -1,33 +1,41 @@
 import type { ChatMessage } from "../types/chat";
 import {
-  appendStreamError,
   applyAuroraUpdate,
   clearStreamMessageRendering,
   clearStreamRendering,
   extractTextChunk,
   firstDefined,
+  nextStreamGeneration,
   parseStreamEvent,
+  type GenerationWatermark,
   type ParsedStreamEvent,
   type StreamProcessorDeps,
   type StreamState,
 } from "./chatStreamProcessorSupport";
+import type { ConversationOwnerType } from "./chatStoreIdentity";
 import {
-  sameConversationIdentity,
-  type ConversationOwnerType,
-} from "./chatStoreIdentity";
+  cancelUnreadReceipt,
+  cancelUnreadReceiptsForTopic,
+  releaseUnreadReceiptTombstonesAfterTerminal,
+} from "./chatStreamUnreadReceiptCleanup";
+import { submitUnreadReceipt } from "./chatStreamUnreadReceiptSubmission";
 
 export interface StreamEventCallbacks {
+  /** Recovery hydration/resume already has a persisted message row. */
+  countMessage?: boolean;
   onMessageCreated?: (
     message: ChatMessage,
     topicId: string,
     ownerId: string,
     ownerType: ConversationOwnerType,
+    generation: number,
   ) => void;
   onStreamFinished?: (
     messageId: string,
     topicId: string,
     ownerId: string,
     ownerType: ConversationOwnerType,
+    generation: number,
   ) => void;
 }
 
@@ -36,36 +44,53 @@ async function finalizeMessage(
   parsed: ParsedStreamEvent,
   message: ChatMessage,
   callbacks?: StreamEventCallbacks,
+  shouldNotifyFinished: () => boolean = () => true,
 ): Promise<void> {
   const event = parsed.event;
-  message.isThinking = false;
-  if (event.timestamp) message.timestamp = event.timestamp;
+  const content = terminalContent(message.content || "", event);
+  const timestamp = event.timestamp || message.timestamp;
+  let compiledBlocks: unknown;
   try {
     if (event.blocks) {
-      message.blocks = event.blocks as any;
+      compiledBlocks = event.blocks;
     } else {
-      const compiledBlocks = await deps.invoke("process_message_content", {
-        content: message.content || "",
+      compiledBlocks = await deps.invoke("process_message_content", {
+        content,
       });
-      message.blocks = compiledBlocks as any;
     }
   } catch (error) {
     console.error("[ChatStreamStore] process_message_content failed:", error);
-  } finally {
-    message.tailContent = "";
-    message.tailBlock = undefined;
-    if (deps.isStreamDebugEnabled()) {
-      console.log(
-        `[VCP Stream Debugger] 流式传输结束！当前录制帧数: ${(window as any).__VCP_STREAM_TRACES__?.length || 0}`,
-      );
-    }
+  }
+  if (!shouldNotifyFinished() ||
+      deps.state.activeStreamMessages.get(parsed.messageKey) !== message) {
+    return;
+  }
+  message.content = content;
+  message.isThinking = false;
+  message.timestamp = timestamp;
+  if (event.finishReason) message.finishReason = event.finishReason;
+  if (event.type === "error") message.finishReason = "error";
+  if (compiledBlocks !== undefined) message.blocks = compiledBlocks as any;
+  message.tailContent = "";
+  message.tailBlock = undefined;
+  if (deps.isStreamDebugEnabled()) {
+    console.log(
+      `[VCP Stream Debugger] 流式传输结束！当前录制帧数: ${(window as any).__VCP_STREAM_TRACES__?.length || 0}`,
+    );
   }
   callbacks?.onStreamFinished?.(
     parsed.messageId,
     parsed.identity.topicId,
     parsed.identity.ownerId,
     parsed.identity.ownerType,
+    parsed.generation,
   );
+}
+
+function terminalContent(content: string, event: any): string {
+  if (event.type !== "error" || !event.error) return content;
+  const errorText = `\n\n> VCP流式错误: ${String(event.error)}`;
+  return content.endsWith(errorText) ? content : content + errorText;
 }
 
 function createSkeleton(
@@ -92,67 +117,38 @@ function createSkeleton(
         : undefined,
     isGroupMessage: parsed.identity.ownerType === "group",
     topicId: parsed.identity.topicId,
+    generation: parsed.generation,
     shell: deps.computeShell({ role: "assistant", agentId, name: agentName }),
   };
-}
-
-function persistSkeleton(
-  deps: StreamProcessorDeps,
-  parsed: ParsedStreamEvent,
-  message: ChatMessage,
-): void {
-  const context = parsed.context;
-  const agentId = firstDefined(context.agentId, context.agent_id);
-  void deps
-    .invoke("append_single_message", {
-      ownerId: parsed.identity.ownerId,
-      ownerType: parsed.identity.ownerType,
-      topicId: parsed.identity.topicId,
-      message: {
-        id: parsed.messageId,
-        role: "assistant",
-        name: message.name || null,
-        content: "",
-        timestamp: message.timestamp,
-        isThinking: message.isThinking,
-        is_thinking: message.isThinking,
-        agentId: agentId || null,
-        groupId:
-          parsed.identity.ownerType === "group"
-            ? parsed.identity.ownerId
-            : null,
-        topicId: parsed.identity.topicId,
-        isGroupMessage: parsed.identity.ownerType === "group",
-      },
-    })
-    .catch((error) => {
-      console.error(
-        "[ChatStreamStore] Failed to persist initial thinking skeleton:",
-        error,
-      );
-    });
 }
 
 function createOrGetMessage(
   deps: StreamProcessorDeps,
   parsed: ParsedStreamEvent,
+  generationDecision: StreamGenerationDecision,
   callbacks?: StreamEventCallbacks,
 ): ChatMessage {
   const existing = deps.state.activeStreamMessages.get(parsed.messageKey);
-  if (existing) return existing;
+  if (existing) {
+    submitUnreadReceipt(deps, parsed);
+    return existing;
+  }
 
   const message = createSkeleton(deps, parsed);
   deps.state.activeStreamMessages.set(parsed.messageKey, message);
-  deps.incrementTopicMsgCount(parsed.identity);
-  if (!sameConversationIdentity(parsed.identity, deps.currentIdentity()))
-    deps.incrementTopicUnreadCount(parsed.identity);
+  if (generationDecision === "new" && callbacks?.countMessage !== false) {
+    deps.incrementTopicMsgCount(parsed.identity);
+  }
+  // The backend receipt is idempotent across replay, resume, hydration and
+  // process recreation. A failed request remains retryable for a later event.
+  submitUnreadReceipt(deps, parsed);
   callbacks?.onMessageCreated?.(
     message,
     parsed.identity.topicId,
     parsed.identity.ownerId,
     parsed.identity.ownerType,
+    parsed.generation,
   );
-  persistSkeleton(deps, parsed, message);
   return message;
 }
 
@@ -238,18 +234,112 @@ async function handleTerminalEvent(
   deps: StreamProcessorDeps,
   parsed: ParsedStreamEvent,
   message: ChatMessage,
-  event: any,
   callbacks?: StreamEventCallbacks,
 ): Promise<void> {
+  closeTerminalGeneration(deps, parsed);
   clearStreamMessageRendering(deps.state, parsed.messageKey, true);
-  if (event.finishReason) message.finishReason = event.finishReason;
-  if (event.type === "error") appendStreamError(message, event.error);
   deps.removeSessionStream(parsed.identity, parsed.messageId);
   if (deps.state.streamingMessageKey.value === parsed.messageKey) {
     deps.state.streamingMessageId.value = null;
     deps.state.streamingMessageKey.value = null;
   }
-  await finalizeMessage(deps, parsed, message, callbacks);
+  try {
+    await finalizeMessage(deps, parsed, message, callbacks, () =>
+      isCurrentTerminalGeneration(deps, parsed),
+    );
+  } finally {
+    releaseUnreadReceiptTombstonesAfterTerminal(deps.state, parsed);
+  }
+}
+
+function rememberGenerationWatermark(
+  deps: StreamProcessorDeps,
+  messageKey: string,
+  generation: number,
+): void {
+  const watermarks = deps.state.generationWatermarks;
+  if (!watermarks) return;
+  const previous = watermarks.get(messageKey);
+  if (!previous || generation > previous.generation)
+    watermarks.set(messageKey, { generation });
+}
+
+function currentGenerationWatermark(
+  deps: StreamProcessorDeps,
+  messageKey: string,
+): GenerationWatermark | undefined {
+  const watermarks = deps.state.generationWatermarks;
+  if (!watermarks) return undefined;
+  return watermarks.get(messageKey);
+}
+
+function closeTerminalGeneration(
+  deps: StreamProcessorDeps,
+  parsed: ParsedStreamEvent,
+): void {
+  rememberGenerationWatermark(deps, parsed.messageKey, parsed.generation);
+  if (deps.state.streamGenerations.get(parsed.messageKey) === parsed.generation)
+    deps.state.streamGenerations.delete(parsed.messageKey);
+}
+
+function isCurrentTerminalGeneration(
+  deps: StreamProcessorDeps,
+  parsed: ParsedStreamEvent,
+): boolean {
+  const watermark = currentGenerationWatermark(deps, parsed.messageKey);
+  const active = deps.state.streamGenerations.get(parsed.messageKey);
+  return (
+    watermark?.generation === parsed.generation &&
+    (active === undefined || active === parsed.generation)
+  );
+}
+
+type StreamGenerationDecision = "new" | "existing" | "replacement" | "recovery";
+
+function acceptStreamGeneration(
+  deps: StreamProcessorDeps,
+  parsed: ParsedStreamEvent,
+): StreamGenerationDecision | null {
+  if (deps.state.wireGenerations) {
+    const wireState = deps.state.wireGenerations?.get(parsed.messageKey);
+    if (wireState && parsed.wireGeneration < wireState.wireGeneration)
+      return null;
+    if (wireState && parsed.wireGeneration === wireState.wireGeneration) {
+      parsed.generation = wireState.streamGeneration;
+    } else {
+      parsed.generation = nextStreamGeneration(
+        deps.state,
+        parsed.messageKey,
+        parsed.wireGeneration,
+      );
+      deps.state.wireGenerations?.set(parsed.messageKey, {
+        wireGeneration: parsed.wireGeneration,
+        streamGeneration: parsed.generation,
+      });
+    }
+  }
+  const generations = deps.state.streamGenerations;
+  const watermark = currentGenerationWatermark(deps, parsed.messageKey);
+  if (watermark && parsed.generation <= watermark.generation) return null;
+  const previous = generations.get(parsed.messageKey);
+  if (previous !== undefined && parsed.generation < previous) return null;
+  if (previous !== undefined && parsed.generation === previous) return "existing";
+  let decision: StreamGenerationDecision = "new";
+  if (
+    previous !== undefined ||
+    (watermark && parsed.generation > watermark.generation)
+  ) {
+    clearStreamMessageRendering(deps.state, parsed.messageKey, false);
+    deps.state.activeStreamMessages.delete(parsed.messageKey);
+    deps.removeSessionStream(parsed.identity, parsed.messageId);
+    if (deps.state.streamingMessageKey.value === parsed.messageKey) {
+      deps.state.streamingMessageId.value = null;
+      deps.state.streamingMessageKey.value = null;
+    }
+    decision = "replacement";
+  }
+  generations.set(parsed.messageKey, parsed.generation);
+  return decision;
 }
 
 async function processStreamEvent(
@@ -261,7 +351,9 @@ async function processStreamEvent(
     return;
   const parsed = parseStreamEvent(event);
   if (!parsed) return;
-  const message = createOrGetMessage(deps, parsed, callbacks);
+  const generationDecision = acceptStreamGeneration(deps, parsed);
+  if (!generationDecision) return;
+  const message = createOrGetMessage(deps, parsed, generationDecision, callbacks);
   switch (event.type) {
     case "thinking":
       handleThinkingEvent(deps, parsed, message);
@@ -274,7 +366,7 @@ async function processStreamEvent(
       break;
     case "end":
     case "error":
-      await handleTerminalEvent(deps, parsed, message, event, callbacks);
+      await handleTerminalEvent(deps, parsed, message, callbacks);
       break;
     default:
       break;
@@ -286,5 +378,10 @@ export function createStreamEventProcessor(deps: StreamProcessorDeps) {
     processStreamEvent(deps, event, callbacks);
 }
 
-export { clearStreamMessageRendering, clearStreamRendering };
+export {
+  cancelUnreadReceipt,
+  cancelUnreadReceiptsForTopic,
+  clearStreamMessageRendering,
+  clearStreamRendering,
+};
 export type { StreamState };

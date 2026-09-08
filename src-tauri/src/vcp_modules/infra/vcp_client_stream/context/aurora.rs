@@ -79,6 +79,7 @@ impl<R: Runtime> StreamSession<R> {
                 chunk,
             },
             self.context.clone(),
+            self.request_epoch,
         );
         event.finish_reason = finish_reason;
         event.error = error;
@@ -120,6 +121,14 @@ impl<R: Runtime> StreamSession<R> {
     }
 
     pub(super) fn cancel_during_stream(&mut self) -> StreamControl {
+        #[cfg(target_os = "android")]
+        if self.is_same_helper_generation_takeover() {
+            log::info!(
+                "[VCPClient] 同 helper generation 通道迁移，旧请求静默退出: messageId={}",
+                self.message_id
+            );
+            return self.cancel_silently();
+        }
         let _ = self.flush_aurora_parse(true);
         self.aurora_buffer.finalize();
         self.send_aurora_update(
@@ -154,6 +163,7 @@ impl<R: Runtime> StreamSession<R> {
             self.message_id.clone(),
             self.context.clone(),
             error.clone(),
+            self.request_epoch,
         ));
         self.remove_active_request();
         StreamControl::Complete(Err(error))

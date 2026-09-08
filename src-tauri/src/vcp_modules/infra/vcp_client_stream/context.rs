@@ -3,6 +3,8 @@ use crate::vcp_modules::aurora_pipeline::AuroraBuffer;
 use crate::vcp_modules::chat::topic_types::MessageKey;
 use reqwest::Client;
 use serde_json::{json, Value};
+#[cfg(target_os = "android")]
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{ipc::Channel, AppHandle, Runtime};
@@ -75,6 +77,10 @@ pub(super) struct StreamSession<R: Runtime> {
     pub(super) last_aurora_parse: Instant,
     pub(super) retry_count: u32,
     pub(super) backoff: Duration,
+    #[cfg(target_os = "android")]
+    pub(super) helper_generation: Option<u64>,
+    #[cfg(target_os = "android")]
+    pub(super) helper_stop_generation: Arc<AtomicU64>,
     pub(super) source: Option<StreamSource>,
     state: State,
 }
@@ -95,6 +101,7 @@ pub(super) struct StreamRequest<R: Runtime> {
     pub(super) is_resume: bool,
     pub(super) last_event_index: Option<i64>,
     pub(super) initial_content: Option<String>,
+    pub(super) helper_generation: Option<u64>,
 }
 
 impl<R: Runtime> StreamSession<R> {
@@ -115,6 +122,7 @@ impl<R: Runtime> StreamSession<R> {
             is_resume,
             last_event_index,
             initial_content,
+            helper_generation: _helper_generation,
         } = request;
         Self {
             app,
@@ -139,6 +147,10 @@ impl<R: Runtime> StreamSession<R> {
             last_aurora_parse: Instant::now() - Duration::from_millis(33),
             retry_count: 0,
             backoff: Duration::from_millis(500),
+            #[cfg(target_os = "android")]
+            helper_generation: _helper_generation,
+            #[cfg(target_os = "android")]
+            helper_stop_generation: Arc::new(AtomicU64::new(0)),
             source: None,
             state: State::Init,
         }
@@ -151,7 +163,7 @@ impl<R: Runtime> StreamSession<R> {
                 State::Connecting => connection::connect(&mut self).await,
                 State::Resuming => connection::resume(&mut self).await,
                 State::Streaming => reader::consume(&mut self).await,
-                State::Aligning => retry::align(&mut self),
+                State::Aligning => retry::align(&mut self).await,
                 State::Retrying => retry::retry(&mut self).await,
             };
             match control {
@@ -171,6 +183,22 @@ impl<R: Runtime> StreamSession<R> {
     }
 
     pub(super) fn send_stream_event(&self, event: StreamEvent) {
+        if self.request_epoch == 0 || event.generation == 0 {
+            log::error!(
+                "[VCPClient] 拒绝发送缺少正整数 generation 的流事件: {}",
+                self.message_id
+            );
+            return;
+        }
+        if event.generation != self.request_epoch {
+            log::error!(
+                "[VCPClient] 拒绝发送不属于当前请求纪元的流事件: messageId={}, expected={}, actual={}",
+                self.message_id,
+                self.request_epoch,
+                event.generation
+            );
+            return;
+        }
         if let Some(channel) = &self.stream_channel {
             let _ = channel.send(event);
         }
@@ -178,7 +206,18 @@ impl<R: Runtime> StreamSession<R> {
 
     pub(super) fn remove_active_request(&self) {
         self.active_requests
-            .remove_if_current(&self.request_key, self.request_epoch);
+            .remove_entry_if_current(&self.request_key, self.request_epoch);
+    }
+
+    #[cfg(target_os = "android")]
+    pub(super) fn is_same_helper_generation_takeover(&self) -> bool {
+        self.helper_generation.is_some_and(|generation| {
+            self.active_requests.is_same_helper_generation_takeover(
+                &self.request_key,
+                self.request_epoch,
+                generation,
+            )
+        })
     }
 
     pub(super) fn partial_result(&self) -> (Value, bool) {
@@ -193,13 +232,28 @@ impl<R: Runtime> StreamSession<R> {
     }
 
     #[cfg(target_os = "android")]
-    pub(super) async fn stop_helper(&self) {
-        let _ = super::super::transport::send_stop_to_helper(
+    pub(super) async fn stop_helper(&mut self) {
+        let Some(generation) = self.helper_generation else {
+            log::error!(
+                "[VCPClient] 缺少 helper generation，拒绝发送无条件 stop: {}",
+                self.message_id
+            );
+            return;
+        };
+        connection::stop_helper_generation(self, generation).await;
+    }
+
+    #[cfg(target_os = "android")]
+    pub(super) async fn prepare_helper_takeover(&self) -> Result<(), String> {
+        let Some(generation) = self.helper_generation else {
+            return Err("缺少 helper generation，无法准备 socket 接管".to_string());
+        };
+        super::super::transport::prepare_resume_with_helper(
             &self.app,
-            &self.message_id,
             &self.request_key,
+            generation,
         )
-        .await;
+        .await
     }
 
     #[cfg(target_os = "android")]
@@ -208,7 +262,7 @@ impl<R: Runtime> StreamSession<R> {
         command: &str,
         params: Option<Value>,
     ) -> Result<tokio::net::TcpStream, String> {
-        super::super::transport::connect_to_helper(&self.app, command, &self.message_id, params)
+        super::super::transport::connect_to_helper(&self.app, command, &self.request_key, params)
             .await
     }
 }

@@ -1,15 +1,8 @@
 import { defineStore } from "pinia";
-import { computed, onScopeDispose, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { useAssistantStore } from "./assistant";
-import { useSettingsStore } from "./settings";
-import { useThemeStore } from "./theme";
-import { useNotificationStore } from "./notification";
-import { useChatSessionStore } from "./chatSessionStore";
-import { useChatHistoryStore } from "./chatHistoryStore";
-import { useTopicStore } from "./topicListManager";
-import { updateDistributedState } from "../../features/distributed/composables/useDistributed";
-import { useAvatarStore } from "./avatar";
+import { readStartupPermissions } from "./appLifecyclePermissions";
+import { createAppLifecycleRuntime } from "./appLifecycleRuntime";
+import { createAppLifecycleState } from "./appLifecycleState";
+import { createAppLifecycleStores } from "./appLifecycleStores";
 
 export type AppState =
   | "PERMISSIONS"
@@ -24,355 +17,55 @@ export interface CoreStatus {
   message: string;
 }
 
-interface PermissionStatus {
+export interface PermissionStatus {
   notification: boolean;
   ring: boolean;
   storage: boolean;
   battery: boolean;
+  // 这些字段描述可选能力或诊断状态，不属于下方的启动硬门禁。
+  backgroundRestricted: boolean;
+  requiresManualPowerManagement: boolean;
+  microphone: boolean;
+  camera: boolean;
+  overlay: boolean;
+  location: boolean;
 }
 
-const CONNECT_TIMEOUT_MS = 15000;
+export function hasRequiredStartupPermissions(
+  permissions:
+    | Pick<PermissionStatus, "notification" | "ring" | "storage" | "battery">
+    | null
+    | undefined,
+  listener: { enabled?: unknown } | null | undefined,
+): boolean {
+  return (
+    permissions?.notification === true &&
+    permissions?.ring === true &&
+    permissions?.storage === true &&
+    permissions?.battery === true &&
+    listener?.enabled === true
+  );
+}
+
+async function checkRequiredPermissions() {
+  const { permissions, listener } = await readStartupPermissions();
+  const granted = hasRequiredStartupPermissions(permissions, listener);
+  if (!granted) {
+    console.log("[Lifecycle] Missing permissions, waiting for user action", {
+      ...permissions,
+      listener: listener?.enabled === true,
+    });
+  }
+  return granted;
+}
 
 export const useAppLifecycleStore = defineStore("appLifecycle", () => {
-  const state = ref<AppState>("BOOTING");
-  const errorMsg = ref<string | null>(null);
-  const isBootstrapping = ref(false);
-  const hasBootstrapped = ref(false);
-  const currentPhaseLabel = ref("准备启动...");
-  const lastTransitionAt = ref<number | null>(null);
-  const isBackground = ref(false);
-
-  const assistantStore = useAssistantStore();
-  const settingsStore = useSettingsStore();
-  const themeStore = useThemeStore();
-  const notificationStore = useNotificationStore();
-  const avatarStore = useAvatarStore();
-  const sessionStore = useChatSessionStore();
-  const topicStore = useTopicStore();
-
-  let bootstrapPromise: Promise<void> | null = null;
-  let coreReadyUnlisten: (() => void) | null = null;
-  let connectTimeoutId: ReturnType<typeof setTimeout> | null = null;
-
-  const statusText = computed(() => {
-    switch (state.value) {
-      case "PERMISSIONS":
-        return "正在检查系统权限...";
-      case "BOOTING":
-        return "正在初始化界面资源...";
-      case "CONNECTING":
-        return "正在连接核心服务...";
-      case "PRELOADING":
-        return currentPhaseLabel.value || "正在预加载核心数据...";
-      case "ERROR":
-        return errorMsg.value || "启动失败";
-      case "READY":
-      default:
-        return "应用已就绪";
-    }
-  });
-
-  const setState = (nextState: AppState, reason: string) => {
-    state.value = nextState;
-    lastTransitionAt.value = Date.now();
-    console.log(`[Lifecycle] -> ${nextState} | ${reason}`);
-  };
-
-  const updatePhaseLabel = (label: string) => {
-    currentPhaseLabel.value = label;
-    console.log(`[Lifecycle] ${label}`);
-  };
-
-  const cleanupConnectionWaiters = () => {
-    if (connectTimeoutId) {
-      clearTimeout(connectTimeoutId);
-      connectTimeoutId = null;
-    }
-
-    if (coreReadyUnlisten) {
-      coreReadyUnlisten();
-      coreReadyUnlisten = null;
-    }
-  };
-
-  const fail = (message: string) => {
-    cleanupConnectionWaiters();
-    errorMsg.value = message;
-    isBootstrapping.value = false;
-    bootstrapPromise = null;
-    setState("ERROR", message);
-    // 统一更新通知系统的核心状态槽
-    notificationStore.updateCoreStatus({
-      status: "error",
-      message,
-      source: "Core",
-    });
-    console.error("[Lifecycle] FATAL:", message);
-  };
-
-  // 全局监听同步状态变化 (移除自动触发神经同步逻辑)
-  const unwatchVcpStatus = watch(
-    () => notificationStore.vcpStatus.status,
-    async (newStatus, oldStatus) => {
-      if (
-        newStatus === "connected" &&
-        oldStatus !== "connected" &&
-        state.value === "READY"
-      ) {
-        // 仅在连接成功时重新拉取数据快照，但不触发耗时的 Manifest 全量同步
-        await assistantStore.fetchAgents();
-        await assistantStore.fetchGroups();
-      }
-    },
+  const lifecycle = createAppLifecycleState();
+  const stores = createAppLifecycleStores();
+  const runtime = createAppLifecycleRuntime(
+    lifecycle,
+    stores,
+    checkRequiredPermissions,
   );
-
-  onScopeDispose(() => {
-    unwatchVcpStatus();
-  });
-
-  const preloadDependencies = async () => {
-    const tasks: Promise<unknown>[] = [
-      settingsStore.fetchSettings(),
-      assistantStore.fetchAgentsAndGroups(),
-      avatarStore.preloadAll(),
-    ];
-    const owner = sessionStore.currentSelectedItem;
-    if (!owner?.id) return Promise.all(tasks);
-    if (owner.type !== "agent" && owner.type !== "group") {
-      sessionStore.currentSelectedItem = null;
-      sessionStore.currentTopicId = null;
-      console.warn(
-        "[Lifecycle] Dropped restored session with incomplete owner identity",
-      );
-      return Promise.all(tasks);
-    }
-    console.log(
-      `[Lifecycle] Restored session detected for ${owner.type} ${owner.id}, preloading topic list...`,
-    );
-    tasks.push(topicStore.loadTopicList(owner.id, owner.type));
-    return Promise.all(tasks);
-  };
-
-  const preloadRestoredHistory = async () => {
-    const owner = sessionStore.currentSelectedItem;
-    const topicId = sessionStore.currentTopicId;
-    if (
-      !owner?.id ||
-      !topicId ||
-      (owner.type !== "agent" && owner.type !== "group")
-    ) {
-      return;
-    }
-    console.log(
-      `[Lifecycle] Preloading chat history for ${owner.type} ${owner.id}, topic: ${topicId}`,
-    );
-    await useChatHistoryStore().preloadHistory(
-      owner.id,
-      owner.type,
-      topicId,
-      5,
-    );
-  };
-
-  const startPreloading = async () => {
-    if (state.value === "PRELOADING" || state.value === "READY") {
-      console.log(`[Lifecycle] Skip preloading in state: ${state.value}`);
-      return;
-    }
-    cleanupConnectionWaiters();
-    setState("PRELOADING", "开始预加载核心业务数据");
-    const startTime = Date.now();
-    try {
-      updatePhaseLabel("正在并发预加载配置与助手数据...");
-      await preloadDependencies();
-      console.log(
-        `[Lifecycle] [Concurrent] DONE Preloading in ${Date.now() - startTime}ms`,
-      );
-      updatePhaseLabel("核心数据预加载完成");
-      await preloadRestoredHistory();
-      hasBootstrapped.value = true;
-      isBootstrapping.value = false;
-      bootstrapPromise = null;
-      setState("READY", "应用就绪");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      fail(`预加载失败: ${message}`);
-      throw error;
-    }
-  };
-
-  const waitForCoreStatusChange = () =>
-    new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let timeoutId: ReturnType<typeof setTimeout>;
-      let stopWatch: (() => void) | null = null;
-      let cleanupPending = false;
-
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        if (stopWatch) {
-          stopWatch();
-        } else {
-          cleanupPending = true;
-        }
-      };
-
-      timeoutId = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          cleanup();
-          reject(new Error(`等待核心引擎就绪超时（${CONNECT_TIMEOUT_MS}ms）`));
-        }
-      }, CONNECT_TIMEOUT_MS);
-
-      stopWatch = watch(
-        () => notificationStore.vcpCoreStatus.status,
-        (newStatus) => {
-          if (settled) return;
-          if (newStatus === "ready") {
-            settled = true;
-            cleanup();
-            resolve();
-          } else if (newStatus === "error") {
-            settled = true;
-            cleanup();
-            reject(
-              new Error(
-                notificationStore.vcpCoreStatus.message || "核心引擎启动失败",
-              ),
-            );
-          }
-        },
-        { immediate: true },
-      );
-      if (cleanupPending) stopWatch();
-    });
-
-  const waitForCoreReady = async () => {
-    updatePhaseLabel("检查核心服务状态...");
-    const currentStatus = notificationStore.vcpCoreStatus.status;
-    console.log(
-      `[Lifecycle] Checked core status from snapshot -> ${currentStatus}`,
-    );
-    if (currentStatus === "ready") return;
-    if (currentStatus === "error") {
-      const lastError = await invoke<string | null>("get_last_error");
-      const message = lastError || "核心服务在初始化阶段发生崩溃";
-      notificationStore.updateCoreStatus({
-        status: "error",
-        message,
-        source: "Core",
-      });
-      throw new Error(message);
-    }
-    updatePhaseLabel("等待核心就绪...");
-    await waitForCoreStatusChange();
-  };
-
-  const checkRequiredPermissions = async () => {
-    const permissions = await invoke<PermissionStatus>(
-      "plugin:vcp-mobile|check_all_permissions",
-    );
-    const listener = await invoke<{ enabled: boolean }>(
-      "plugin:vcp-mobile|check_notification_listener_permission",
-    );
-    const granted =
-      Object.values(permissions).every(Boolean) && listener.enabled;
-    if (!granted) {
-      console.log("[Lifecycle] Missing permissions, waiting for user action", {
-        ...permissions,
-        listener: listener.enabled,
-      });
-    }
-    return granted;
-  };
-
-  const runBootstrap = async () => {
-    try {
-      isBootstrapping.value = true;
-      errorMsg.value = null;
-      hasBootstrapped.value = false;
-      setState("PERMISSIONS", "检查系统权限完整性");
-      if (!(await checkRequiredPermissions())) {
-        bootstrapPromise = null;
-        isBootstrapping.value = false;
-        return;
-      }
-      setState("BOOTING", "开始前端主线程启动编排");
-      await hydrateSystemStatus();
-      setState("CONNECTING", "等待后端核心服务就绪");
-      await Promise.all([themeStore.initTheme(), waitForCoreReady()]);
-      console.log("[Lifecycle] Theme init + core ready complete");
-      await startPreloading();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      fail(message);
-      throw error;
-    }
-  };
-
-  const hydrateSystemStatus = async () => {
-    try {
-      console.log("[Lifecycle] Fetching system status snapshot...");
-      const snapshot = await invoke<{
-        core: string;
-        log: string;
-        sync: string;
-        distributed: string;
-      }>("get_system_snapshot");
-
-      // 同步到 Notification Store (唯一真相源)
-      notificationStore.updateCoreStatus({
-        status: snapshot.core as any,
-        message:
-          snapshot.core === "ready" ? "核心引擎已就绪" : "核心引擎初始化中...",
-        source: "Core",
-      });
-
-      notificationStore.updateStatus({
-        status: snapshot.log as any,
-        message: snapshot.log === "connected" ? "已连接" : "正在连接...",
-        source: "VCPLog",
-      });
-
-      // 同步分布式连接状态到专有的 Distributed Composable
-      updateDistributedState(snapshot.distributed as any);
-
-      console.log("[Lifecycle] Snapshot hydrated:", JSON.stringify(snapshot));
-    } catch (e) {
-      console.error("[Lifecycle] Failed to hydrate status snapshot:", e);
-    }
-  };
-
-  const bootstrap = async (force = false) => {
-    if (isBootstrapping.value && force) {
-      console.log(
-        "[Lifecycle] Reusing existing bootstrap promise (force-in-progress ignored)",
-      );
-      return bootstrapPromise;
-    }
-
-    if (bootstrapPromise && !force) {
-      console.log("[Lifecycle] Reusing existing bootstrap promise");
-      return bootstrapPromise;
-    }
-
-    bootstrapPromise = runBootstrap();
-
-    return bootstrapPromise;
-  };
-
-  return {
-    state,
-    errorMsg,
-    statusText,
-    currentPhaseLabel,
-    isBootstrapping,
-    hasBootstrapped,
-    lastTransitionAt,
-    isBackground,
-    coreStatus: computed(() => notificationStore.vcpCoreStatus),
-    bootstrap,
-    hydrateSystemStatus,
-  };
+  return { ...lifecycle, ...runtime };
 });

@@ -16,11 +16,33 @@ export function clearKeepScreenOn(): Promise<void> {
 // Stream Service
 // ==================================================================
 
-export function startStreamService(agentName: string): Promise<void> {
-  return invoke("plugin:vcp-mobile|start_streaming_service", { agentName });
+export interface StreamIdentity {
+  ownerType: string;
+  ownerId: string;
+  topicId: string;
+  messageId: string;
 }
-export function stopStreamService(): Promise<void> {
-  return invoke("plugin:vcp-mobile|stop_streaming_service");
+
+export function startStreamService(
+  agentName: string,
+  identity?: StreamIdentity
+): Promise<number | null> {
+  return invoke<number | null>("plugin:vcp-mobile|start_streaming_service", {
+    agentName,
+    identity,
+  });
+}
+
+export function stopStreamService(
+  agentName: string,
+  identity?: StreamIdentity,
+  expectedGeneration?: number
+): Promise<void> {
+  return invoke("plugin:vcp-mobile|stop_streaming_service", {
+    agentName,
+    identity,
+    expectedGeneration,
+  });
 }
 
 // ==================================================================

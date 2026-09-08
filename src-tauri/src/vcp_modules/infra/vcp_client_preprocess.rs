@@ -1,7 +1,7 @@
 use super::{
     handle_non_streaming_request, handle_streaming_request, load_app_settings,
-    message_key_from_context, ActiveRequestGuard, ActiveRequestRegistry, StreamEvent,
-    VcpRequestPayload,
+    message_key_from_context, ActiveRequestGuard, ActiveRequestRegistry, CompletionLease,
+    StreamEvent, VcpRequestPayload,
 };
 use crate::vcp_modules::infra::utils::normalize_vcp_url;
 use reqwest::Client;
@@ -17,50 +17,106 @@ use url::Url;
 mod messages;
 pub(super) use messages::preprocess_multimodal_messages;
 
-fn extract_text_for_hash(content: &Value) -> String {
-    if let Some(s) = content.as_str() {
-        return s.to_string();
-    }
-    if let Some(arr) = content.as_array() {
-        let text_parts: Vec<String> = arr
-            .iter()
-            .filter(|part| part["type"].as_str() == Some("text"))
-            .filter_map(|part| part["text"].as_str())
-            .map(|s| s.to_string())
-            .collect();
-        return text_parts.join("\n");
-    }
-    if let Some(obj) = content.as_object() {
-        if let Some(s) = obj.get("text").and_then(|t| t.as_str()) {
-            return s.to_string();
+#[path = "vcp_client_preprocess_timestamp.rs"]
+mod timestamp;
+use timestamp::extract_timestamp_bindings;
+
+/// 请求执行结果。网络层完成后仍持有消息身份租约，交由调用方在持久化后释放。
+pub struct VcpRequestOutcome {
+    pub response: Value,
+    pub is_aborted: bool,
+    pub completion_lease: CompletionLease,
+    /// The request guard must outlive the network dispatch and the caller's
+    /// guarded finalizer.  Dropping it inside `dispatch_vcp_request` removes
+    /// the current epoch before persistence can run.
+    pub(crate) request_guard: ActiveRequestGuard,
+}
+
+/// 请求失败时保留租约，调用方可以用同一身份安全清理错误状态。
+pub struct VcpRequestError {
+    pub message: String,
+    pub completion_lease: Option<CompletionLease>,
+    pub stale: bool,
+    /// Kept until the caller has finished success/error/cancel finalization.
+    pub(crate) request_guard: Option<ActiveRequestGuard>,
+}
+
+impl VcpRequestError {
+    fn without_lease(message: String) -> Self {
+        Self {
+            message,
+            completion_lease: None,
+            stale: false,
+            request_guard: None,
         }
     }
-    String::new()
+
+    fn with_lease(
+        message: String,
+        completion_lease: CompletionLease,
+        request_guard: ActiveRequestGuard,
+    ) -> Self {
+        Self {
+            message,
+            completion_lease: Some(completion_lease),
+            stale: false,
+            request_guard: Some(request_guard),
+        }
+    }
+
+    fn skipped() -> Self {
+        Self {
+            message: "请求已被新请求替换".to_string(),
+            completion_lease: None,
+            stale: true,
+            request_guard: None,
+        }
+    }
 }
 
-fn get_or_calculate_message_hash(content: &Value) -> String {
-    use crate::vcp_modules::infra::utils::calculate_sha256;
-
-    let text = extract_text_for_hash(content);
-    let hash = calculate_sha256(text.as_bytes());
-    format!("sha256:{}", hash)
+enum PrepareError {
+    Failed(String),
+    Skipped,
 }
 
-/// 核心请求实现函数，可供 Tauri Command 或 内部 Rust 模块(如 GroupOrchestrator) 调用
-/// 返回 Result<(全量内容/响应体, 是否被中止), 错误信息>
+impl From<String> for PrepareError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+/// 核心请求实现函数，可供 Tauri Command 或内部 Rust 模块调用。
 pub async fn perform_vcp_request<R: Runtime>(
     app: &AppHandle<R>,
     active_requests: Arc<ActiveRequestRegistry>,
     payload: VcpRequestPayload,
     stream_channel: Option<Channel<StreamEvent>>,
-) -> Result<(Value, bool), String> {
+) -> Result<VcpRequestOutcome, VcpRequestError> {
     log::info!(
         "[VCPClient] perform_vcp_request called for messageId: {}, context: {:?}",
         payload.message_id,
         payload.context
     );
-    let prepared = prepare_vcp_request(app, active_requests, payload).await?;
-    dispatch_vcp_request(prepared, stream_channel).await
+    let prepared =
+        match prepare_vcp_request(app, active_requests, payload, stream_channel.as_ref()).await {
+            Ok(prepared) => prepared,
+            Err(PrepareError::Skipped) => return Err(VcpRequestError::skipped()),
+            Err(PrepareError::Failed(error)) => return Err(VcpRequestError::without_lease(error)),
+        };
+    let completion_lease = prepared.completion_lease.clone();
+    match dispatch_vcp_request(prepared, stream_channel).await {
+        Ok(((response, is_aborted), request_guard)) => Ok(VcpRequestOutcome {
+            response,
+            is_aborted,
+            completion_lease,
+            request_guard,
+        }),
+        Err((error, request_guard)) => Err(VcpRequestError::with_lease(
+            error,
+            completion_lease,
+            request_guard,
+        )),
+    }
 }
 
 struct PreparedRequest<R: Runtime> {
@@ -76,6 +132,7 @@ struct PreparedRequest<R: Runtime> {
     abort_rx: oneshot::Receiver<()>,
     active_requests: Arc<ActiveRequestRegistry>,
     _guard: ActiveRequestGuard,
+    completion_lease: CompletionLease,
     is_stream: bool,
 }
 
@@ -83,7 +140,8 @@ async fn prepare_vcp_request<R: Runtime>(
     app: &AppHandle<R>,
     active_requests: Arc<ActiveRequestRegistry>,
     payload: VcpRequestPayload,
-) -> Result<PreparedRequest<R>, String> {
+    stream_channel: Option<&Channel<StreamEvent>>,
+) -> Result<PreparedRequest<R>, PrepareError> {
     let message_id = payload.message_id.clone();
     let context = payload.context.clone();
     let request_key = message_key_from_context(context.as_ref(), &message_id)?;
@@ -104,13 +162,21 @@ async fn prepare_vcp_request<R: Runtime>(
         .tcp_keepalive(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
-    let (abort_rx, request_epoch, previous_sender) =
-        register_request(&active_requests, request_key.clone());
-    if let Some(previous_sender) = previous_sender {
-        let _ = previous_sender.send(());
-    }
+    let (abort_rx, request_epoch, completion_lease) =
+        register_request(&active_requests, request_key.clone()).await;
     let guard =
         ActiveRequestGuard::new(active_requests.clone(), request_key.clone(), request_epoch);
+    if is_stream {
+        prepare_stream_request(
+            app,
+            context.as_ref(),
+            &completion_lease,
+            stream_channel,
+            &message_id,
+            request_epoch,
+        )
+        .await?;
+    }
     Ok(PreparedRequest {
         app: app.clone(),
         client,
@@ -124,8 +190,63 @@ async fn prepare_vcp_request<R: Runtime>(
         abort_rx,
         active_requests,
         _guard: guard,
+        completion_lease,
         is_stream,
     })
+}
+
+async fn prepare_stream_request<R: Runtime>(
+    app: &AppHandle<R>,
+    context: Option<&Value>,
+    completion_lease: &CompletionLease,
+    stream_channel: Option<&Channel<StreamEvent>>,
+    message_id: &str,
+    request_epoch: u64,
+) -> Result<(), PrepareError> {
+    let pool = super::db_pool_if_ready(app)?;
+    let agent_id = context
+        .and_then(|value| {
+            value["agentId"]
+                .as_str()
+                .or_else(|| value["speakerAgentId"].as_str())
+        })
+        .map(str::to_string);
+    let name = context
+        .and_then(|value| value["agentName"].as_str())
+        .map(str::to_string);
+    let status = crate::vcp_modules::chat::message_service::persist_stream_skeleton_guarded(
+        app.clone(),
+        &pool,
+        completion_lease,
+        agent_id,
+        name,
+    )
+    .await?;
+    if matches!(
+        status,
+        crate::vcp_modules::chat::message_service::StreamFinalizationStatus::Skipped
+    ) {
+        return Err(PrepareError::Skipped);
+    }
+    send_thinking_event(stream_channel, message_id, context, request_epoch)
+}
+
+fn send_thinking_event(
+    stream_channel: Option<&Channel<StreamEvent>>,
+    message_id: &str,
+    context: Option<&Value>,
+    generation: u64,
+) -> Result<(), PrepareError> {
+    let Some(channel) = stream_channel else {
+        return Ok(());
+    };
+    channel
+        .send(StreamEvent::thinking(
+            message_id.to_string(),
+            context.cloned(),
+            generation,
+        ))
+        .map_err(|error| PrepareError::Failed(format!("发送流式 thinking 事件失败: {error}")))
 }
 
 async fn resolve_request_url<R: Runtime>(app: &AppHandle<R>, raw_url: &str) -> String {
@@ -181,19 +302,34 @@ fn build_request_body(
     request_body
 }
 
-fn register_request(
+async fn register_request(
     active_requests: &ActiveRequestRegistry,
     request_key: crate::vcp_modules::chat::topic_types::MessageKey,
-) -> (oneshot::Receiver<()>, u64, Option<oneshot::Sender<()>>) {
+) -> (oneshot::Receiver<()>, u64, CompletionLease) {
     let (abort_tx, abort_rx) = oneshot::channel();
-    let (request_epoch, previous_sender) = active_requests.register(request_key, abort_tx);
-    (abort_rx, request_epoch, previous_sender)
+    let (request_epoch, previous_sender, completion_lease) =
+        active_requests.register(request_key, abort_tx).await;
+    if let Some(previous_sender) = previous_sender {
+        let _ = previous_sender.send(());
+    }
+    (abort_rx, request_epoch, completion_lease)
 }
 
 async fn dispatch_vcp_request<R: Runtime>(
     prepared: PreparedRequest<R>,
     stream_channel: Option<Channel<StreamEvent>>,
-) -> Result<(Value, bool), String> {
+) -> Result<((Value, bool), ActiveRequestGuard), (String, ActiveRequestGuard)> {
+    let (result, request_guard) = dispatch_request_payload(prepared, stream_channel).await;
+    match result {
+        Ok(value) => Ok((value, request_guard)),
+        Err(error) => Err((error, request_guard)),
+    }
+}
+
+async fn dispatch_request_payload<R: Runtime>(
+    prepared: PreparedRequest<R>,
+    stream_channel: Option<Channel<StreamEvent>>,
+) -> (Result<(Value, bool), String>, ActiveRequestGuard) {
     let PreparedRequest {
         app,
         client,
@@ -206,12 +342,13 @@ async fn dispatch_vcp_request<R: Runtime>(
         context,
         abort_rx,
         active_requests,
-        _guard,
+        _guard: request_guard,
+        completion_lease: _,
         is_stream,
     } = prepared;
 
     // === 7. 分发至专职处理器执行请求 ===
-    if is_stream {
+    let result = if is_stream {
         handle_streaming_request(
             &app,
             client,
@@ -226,6 +363,7 @@ async fn dispatch_vcp_request<R: Runtime>(
             active_requests,
             stream_channel,
             false,
+            None,
             None,
             None,
         )
@@ -245,47 +383,6 @@ async fn dispatch_vcp_request<R: Runtime>(
             stream_channel,
         )
         .await
-    }
-}
-
-/// 2. 抽离时间戳与哈希绑定生成逻辑
-pub(super) fn extract_timestamp_bindings(messages: &mut [Value]) -> Vec<Value> {
-    let mut message_timestamp_bindings = Vec::new();
-    for (index, msg) in messages.iter_mut().enumerate() {
-        let mut timestamp_meta = None;
-        if let Some(obj) = msg.as_object_mut() {
-            if let Some(meta) = obj.remove("__vcpchatTimestampMeta") {
-                timestamp_meta = Some(meta);
-            }
-        }
-        if let Some(meta) = timestamp_meta {
-            if let (Some(message_id), Some(role), Some(timestamp)) = (
-                meta.get("messageId").and_then(|id| id.as_str()),
-                meta.get("role").and_then(|r| r.as_str()),
-                meta.get("timestamp").and_then(|t| t.as_u64()),
-            ) {
-                use chrono::TimeZone;
-                let timestamp_iso =
-                    if let Some(dt) = chrono::Utc.timestamp_millis_opt(timestamp as i64).single() {
-                        dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-                    } else {
-                        "".to_string()
-                    };
-
-                let final_content_val = msg.get("content").unwrap_or(&Value::Null);
-                let sent_message_hash = get_or_calculate_message_hash(final_content_val);
-
-                message_timestamp_bindings.push(json!({
-                    "messageId": message_id,
-                    "role": role,
-                    "timestamp": timestamp,
-                    "timestampIso": timestamp_iso,
-                    "source": "client_history",
-                    "sentMessageHash": sent_message_hash,
-                    "sentMessageIndex": index
-                }));
-            }
-        }
-    }
-    message_timestamp_bindings
+    };
+    (result, request_guard)
 }

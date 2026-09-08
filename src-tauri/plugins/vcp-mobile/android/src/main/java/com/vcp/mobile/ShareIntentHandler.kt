@@ -9,7 +9,7 @@ import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import java.io.File
 
-class ShareIntentHandler(private val plugin: VcpMobilePlugin) {
+class ShareIntentHandler(private val plugin: VcpMobilePluginCore) {
 
     companion object {
         private const val TAG = "ShareIntentHandler"

@@ -7,6 +7,7 @@ mod support;
 #[path = "vcp_client_recovery_flow.rs"]
 mod flow;
 
+pub(crate) use flow::cleanup_recovery_cleanup_debt_on_startup;
 pub use flow::recover_active_generation;
 
 pub(super) async fn resolve_legacy_generation_key(

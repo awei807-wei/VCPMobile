@@ -1,597 +1,315 @@
-use log::info;
-use serde::Serialize;
-use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager};
 
-use crate::vcp_modules::db_manager::{init_db, DbState};
-use crate::vcp_modules::emoticon_manager::{
-    internal_load_library, refresh_emoticon_library_internal, EmoticonManagerState,
-};
-use crate::vcp_modules::infra::lifecycle_state::{CoreStatus, LifecycleState};
+use crate::distributed::client::DistributedClient;
+use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::infra::lifecycle_state::LifecycleState;
 use crate::vcp_modules::infra::local_server;
-use crate::vcp_modules::model_manager::{init_model_manager, ModelManagerState};
-use crate::vcp_modules::settings_manager::{read_settings, SettingsState};
-use crate::vcp_modules::sync_service::init_sync_service;
-use crate::vcp_modules::vcp_log_service::init_vcp_log_connection_internal;
+use crate::vcp_modules::settings_manager::{read_settings, Settings, SettingsState};
+use std::sync::Arc;
 
-/// 检查应用当前是否在前台。
-pub fn is_app_in_foreground<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    match app.try_state::<LifecycleState>() {
-        Some(lifecycle) => lifecycle
-            .is_foreground
-            .load(std::sync::atomic::Ordering::Relaxed),
-        None => true,
-    }
+#[path = "lifecycle_bootstrap.rs"]
+mod bootstrap;
+#[path = "lifecycle_commands.rs"]
+mod commands;
+
+pub use bootstrap::bootstrap;
+pub use commands::{
+    get_core_status, get_last_error, get_system_snapshot, reconcile_distributed_node_cmd,
+    reconcile_local_server_cmd,
+};
+
+struct DistributedConnectionConfig {
+    ws_url: String,
+    vcp_key: String,
+    device_name: String,
 }
 
-/// 根据设置决定启动或停止划词助手本地服务器
+pub fn is_app_in_foreground<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+    app.try_state::<LifecycleState>()
+        .map(|state| {
+            state
+                .is_foreground
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
+        .unwrap_or(true)
+}
+
 pub async fn reconcile_local_server(
     app_handle: &AppHandle,
     lifecycle: &LifecycleState,
     enable_assistant: bool,
 ) {
     let mut handle_lock = lifecycle.local_server_handle.lock().await;
-    let has_server = handle_lock.is_some();
-
-    match (enable_assistant, has_server) {
+    match (enable_assistant, handle_lock.is_some()) {
         (true, false) => {
-            log::info!("[Lifecycle] enableAssistant=true, starting local server...");
+            log::info!("[Lifecycle] 启用划词助手，启动本地服务。");
             *handle_lock = Some(local_server::start_server(app_handle.clone()));
         }
         (false, true) => {
-            log::info!("[Lifecycle] enableAssistant=false, stopping local server...");
-            if let Some(h) = handle_lock.take() {
-                h.shutdown().await;
+            log::info!("[Lifecycle] 停用划词助手，停止本地服务。");
+            if let Some(handle) = handle_lock.take() {
+                handle.shutdown().await;
             }
-        }
-        _ => {
-            // 无需变更
-        }
-    }
-}
-
-/// 根据设置决定启动或停止分布式节点连接
-pub async fn reconcile_distributed_node(
-    app_handle: &AppHandle,
-    distributed_enabled: bool,
-    force_reconnect: bool,
-) {
-    let distributed_state = match app_handle.try_state::<crate::distributed::DistributedState>() {
-        Some(s) => s,
-        None => {
-            log::warn!("[Lifecycle] DistributedState not registered, skipping reconciliation");
-            return;
-        }
-    };
-    let client = distributed_state.client.read().await;
-
-    // 读取全局 settings，获取连接参数
-    let settings_state = app_handle.state::<SettingsState>();
-    let settings = match read_settings(app_handle.clone(), settings_state).await {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!(
-                "[Lifecycle] Failed to read settings for distributed reconnect: {}",
-                e
-            );
-            return;
-        }
-    };
-
-    let ws_url = settings.distributed_ws_url.clone();
-    let vcp_key = settings.distributed_vcp_key.clone();
-    let device_name = if settings.distributed_device_name.is_empty() {
-        "VCPMobile".to_string()
-    } else {
-        settings.distributed_device_name.clone()
-    };
-
-    let mut is_running = client.is_running().await;
-    if force_reconnect && is_running {
-        log::info!("[Lifecycle] Connection settings changed, stopping existing connection for reconnect...");
-        client.stop(app_handle).await;
-        is_running = false;
-    }
-
-    match (distributed_enabled, is_running) {
-        (true, false) => {
-            if ws_url.is_empty() || vcp_key.is_empty() {
-                log::warn!("[Lifecycle] distributedEnabled=true but ws_url/vcp_key is empty, skipping auto-connect");
-                return;
-            }
-            log::info!(
-                "[Lifecycle] distributedEnabled=true, starting distributed node connection..."
-            );
-            distributed_state.registry.load_disabled_config(app_handle);
-            if let Err(e) = client
-                .start(
-                    app_handle.clone(),
-                    ws_url,
-                    vcp_key,
-                    device_name,
-                    distributed_state.registry.clone(),
-                )
-                .await
-            {
-                log::error!("[Lifecycle] Auto-start distributed node failed: {}", e);
-            }
-        }
-        (false, true) => {
-            log::info!(
-                "[Lifecycle] distributedEnabled=false, stopping distributed node connection..."
-            );
-            client.stop(app_handle).await;
         }
         _ => {}
     }
 }
 
-/// 网络恢复后的分布式节点自恢复入口。
-///
-/// 与普通 reconnect 信号不同：如果连接 loop 已经完全退出，本函数会根据 settings
-/// 中的 distributedEnabled 重新执行完整 reconcile，避免 reconnect 信号发送到空 session。
-pub async fn recover_distributed_node_after_network_restore(app_handle: &AppHandle) {
-    if app_handle.try_state::<DbState>().is_none() {
-        log::info!("[Lifecycle] Network restored before DbState registration; recovery deferred.");
+pub async fn reconcile_distributed_node(
+    app_handle: &AppHandle,
+    distributed_enabled: bool,
+    force_reconnect: bool,
+) {
+    let Some(distributed_state) = app_handle.try_state::<crate::distributed::DistributedState>()
+    else {
+        log::warn!("[Lifecycle] DistributedState 未注册，跳过调和。");
+        return;
+    };
+    let client = distributed_state.client.read().await;
+    if !distributed_enabled {
+        stop_distributed_client(&client, app_handle, None).await;
+        if let Err(error) =
+            tauri_plugin_vcp_mobile::stream::release_distributed_keepalive_inner(app_handle)
+        {
+            log::warn!("[Lifecycle] 清理原生分布式恢复状态失败：{}", error);
+        }
         return;
     }
 
+    reconcile_enabled_distributed(
+        app_handle,
+        &client,
+        distributed_state.registry.clone(),
+        force_reconnect,
+        false,
+        "自动连接",
+    )
+    .await;
+}
+
+async fn reconcile_enabled_distributed(
+    app_handle: &AppHandle,
+    client: &DistributedClient,
+    registry: Arc<crate::distributed::tool_registry::ToolRegistry>,
+    force_reconnect: bool,
+    trigger_reconnect: bool,
+    source: &str,
+) {
+    let request_id = client.reserve_start_request();
+    let Some(config) = load_enabled_connection_config(app_handle, client, source).await else {
+        return;
+    };
+    log::info!("[Lifecycle] 分布式已启用，开始调和节点连接。");
+    if let Err(error) = client
+        .reconcile_with_request(
+            request_id,
+            app_handle,
+            true,
+            force_reconnect,
+            trigger_reconnect,
+            config.ws_url,
+            config.vcp_key,
+            config.device_name,
+            registry,
+        )
+        .await
+    {
+        log::error!("[Lifecycle] {}调和分布式节点失败：{}", source, error);
+    }
+}
+
+async fn load_enabled_connection_config(
+    app_handle: &AppHandle,
+    client: &DistributedClient,
+    source: &str,
+) -> Option<DistributedConnectionConfig> {
     let settings_state = match app_handle.try_state::<SettingsState>() {
         Some(state) => state,
         None => {
-            log::warn!("[Lifecycle] SettingsState not registered, skipping distributed recovery");
-            return;
+            stop_distributed_client(
+                client,
+                app_handle,
+                Some(format!("分布式{}时 SettingsState 未注册", source)),
+            )
+            .await;
+            return None;
         }
     };
-
     let settings = match read_settings(app_handle.clone(), settings_state).await {
         Ok(settings) => settings,
-        Err(e) => {
+        Err(error) => {
             log::error!(
-                "[Lifecycle] Failed to read settings for distributed recovery: {}",
-                e
+                "[Lifecycle] 读取分布式{}连接设置失败：{}，停止现有连接。",
+                source,
+                error
             );
-            return;
+            stop_distributed_client(client, app_handle, Some(error.to_string())).await;
+            return None;
         }
     };
-
     if !settings.distributed_enabled {
-        log::info!(
-            "[Distributed] Network restored, but distributedEnabled=false; recovery skipped."
-        );
+        log::info!("[Lifecycle] 权威设置已禁用分布式，取消本次启动并确保节点停止。");
+        stop_distributed_client(client, app_handle, None).await;
+        return None;
+    }
+    match build_connection_config(&settings, source) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            log::error!("[Lifecycle] {}，停止现有连接。", error);
+            stop_distributed_client(client, app_handle, Some(error)).await;
+            None
+        }
+    }
+}
+
+async fn stop_distributed_client(
+    client: &DistributedClient,
+    app_handle: &AppHandle,
+    reason: Option<String>,
+) {
+    let stop_request = client.reserve_stop_request();
+    client
+        .stop_with_request_reason(stop_request, app_handle, reason)
+        .await;
+}
+
+/// 供前后台 transition 在配置缺失或失效时执行 fail-closed 停止。
+pub async fn stop_distributed_with_reason(app_handle: &AppHandle, reason: impl Into<String>) {
+    let Some(distributed_state) = app_handle.try_state::<crate::distributed::DistributedState>()
+    else {
+        log::warn!("[Lifecycle] DistributedState 未注册，无法执行 fail-closed 停止。");
+        return;
+    };
+    let client = distributed_state.client.read().await;
+    stop_distributed_client(&client, app_handle, Some(reason.into())).await;
+}
+
+pub async fn recover_distributed_node_after_network_restore(app_handle: &AppHandle) {
+    let Some(distributed_state) = app_handle.try_state::<crate::distributed::DistributedState>()
+    else {
+        log::warn!("[Lifecycle] DistributedState 未注册，跳过网络恢复。");
+        return;
+    };
+    let client = distributed_state.client.read().await;
+    if app_handle.try_state::<DbState>().is_none() {
+        log::info!("[Lifecycle] 数据库尚未注册，停止现有连接并延后网络恢复。");
+        stop_distributed_client(
+            &client,
+            app_handle,
+            Some("网络恢复时数据库尚未注册，停止现有分布式连接".to_string()),
+        )
+        .await;
         return;
     }
-
-    let distributed_state = match app_handle.try_state::<crate::distributed::DistributedState>() {
-        Some(state) => state,
-        None => {
-            log::warn!(
-                "[Lifecycle] DistributedState not registered, skipping distributed recovery"
-            );
-            return;
-        }
-    };
-
-    let is_running = {
-        let client = distributed_state.client.read().await;
-        client.is_running().await
-    };
-
-    if is_running {
-        let client = distributed_state.client.read().await;
-        log::info!("[Distributed] Network restored; triggering active session reconnect.");
-        client.trigger_reconnect().await;
-    } else {
-        log::info!(
-            "[Distributed] Network restored; distributedEnabled=true but client is stopped, reconciling full node lifecycle."
-        );
-        reconcile_distributed_node(app_handle, true, false).await;
-    }
+    log::info!("[Distributed] 网络恢复，调和并唤醒分布式连接。");
+    reconcile_enabled_distributed(
+        app_handle,
+        &client,
+        distributed_state.registry.clone(),
+        false,
+        true,
+        "网络恢复",
+    )
+    .await;
 }
 
-/// 核心启动逻辑：线性化管理所有服务的初始化顺序
-pub async fn bootstrap(app: &AppHandle) -> Result<(), String> {
-    let lifecycle = app.state::<LifecycleState>();
-    let handle = app.clone();
-
-    info!("[Lifecycle] Starting bootstrap sequence...");
-
-    // 发射初始状态
-    let _ = handle.emit(
-        "vcp-system-event",
-        serde_json::json!({
-            "type": "vcp-core-status",
-            "status": "initializing",
-            "message": "核心引擎初始化中...",
-            "source": "Core"
-        }),
-    );
-
-    // 1. 数据库初始化 (P0 - 绝对基础)
-    let _pool = match init_db(&handle).await {
-        Ok((p, path)) => {
-            handle.manage(DbState {
-                pool: p.clone(),
-                path,
-            });
-            p
-        }
-        Err(e) => {
-            let err_msg = format!("数据库初始化失败: {}", e);
-            *lifecycle.last_error.write().await = Some(err_msg.clone());
-            *lifecycle.status.write().await = CoreStatus::Error;
-
-            // 发射致命错误
-            let _ = handle.emit(
-                "vcp-system-event",
-                serde_json::json!({
-                    "type": "vcp-core-status",
-                    "status": "error",
-                    "message": &err_msg,
-                    "source": "Core"
-                }),
-            );
-            return Err(err_msg);
-        }
-    };
-
-    // 2. 基础状态管理注册已在 lib.rs 中的 setup 阶段提前同步完成，此处无需重复注册以避免覆盖已有缓存。
-
-    // 3. 配置预加载 (P1 - 前端强依赖)
-    // 将配置读取前置，确保前端 Ready 后 fetchSettings 必然成功
-    let settings_state = handle.state::<SettingsState>();
-    let settings = match read_settings(handle.clone(), settings_state).await {
-        Ok(s) => s,
-        Err(e) => {
-            let err_msg = format!("基础配置读取失败: {}", e);
-            let _ = handle.emit(
-                "vcp-system-event",
-                serde_json::json!({
-                    "type": "vcp-core-status",
-                    "status": "error",
-                    "message": &err_msg,
-                    "source": "Core"
-                }),
-            );
-            return Err(err_msg);
-        }
-    };
-
-    // 3.5 根据设置决定是否启动划词助手本地服务器 (Beta)
-    {
-        let enable = settings.enable_assistant;
-        log::info!(
-            "[Lifecycle] enableAssistant={}, reconciling local server...",
-            enable
-        );
-        reconcile_local_server(&handle, &lifecycle, enable).await;
+fn build_connection_config(
+    settings: &Settings,
+    source: &str,
+) -> Result<DistributedConnectionConfig, String> {
+    let ws_url = settings.distributed_ws_url.trim();
+    let vcp_key = settings.distributed_vcp_key.trim();
+    if ws_url.is_empty() || vcp_key.is_empty() {
+        return Err(format!(
+            "分布式{}时连接地址或密钥为空，拒绝继续保持连接",
+            source
+        ));
     }
-
-    // 3.6 根据设置决定是否启动分布式节点 (自动重连)
-    {
-        let enable_dist = settings.distributed_enabled;
-        log::info!(
-            "[Lifecycle] distributedEnabled={}, reconciling distributed node...",
-            enable_dist
-        );
-        reconcile_distributed_node(&handle, enable_dist, false).await;
+    let parsed_url = url::Url::parse(ws_url.trim_end_matches('/'))
+        .map_err(|error| format!("分布式{}时连接地址无效：{}", source, error))?;
+    if !matches!(parsed_url.scheme(), "ws" | "wss" | "http" | "https") {
+        return Err(format!(
+            "分布式{}时连接地址协议无效：{}",
+            source,
+            parsed_url.scheme()
+        ));
     }
-
-    // 初始化同步服务
-    let sync_state = init_sync_service(handle.clone());
-    handle.manage(sync_state);
-
-    // 4. 服务级后台初始化 (P2 - 非阻塞)
+    if parsed_url
+        .host_str()
+        .is_none_or(|host| host.trim().is_empty())
     {
-        let h = handle.clone();
-        let s_url = settings.vcp_log_url.clone();
-        let s_key = settings.vcp_log_key.clone();
-
-        tokio::spawn(async move {
-            let emoticon_state = h.state::<EmoticonManagerState>();
-            if let Ok(lib) = internal_load_library(&h).await {
-                *emoticon_state.library.lock().await = lib;
-                info!("[Lifecycle] Emoticon library loaded from DB.");
-            }
-
-            // Best-effort refresh from server (does not block startup)
-            match refresh_emoticon_library_internal(&h, false).await {
-                Ok(count) => info!(
-                    "[Lifecycle] Emoticon library auto-refreshed: {} items",
-                    count
-                ),
-                Err(e) => info!("[Lifecycle] Emoticon auto-refresh skipped: {}", e),
-            }
-
-            // 自动连接 VCP Log
-            if !s_url.is_empty() && !s_key.is_empty() {
-                info!("[Lifecycle] Auto-connecting VCP Log...");
-                let _ =
-                    init_vcp_log_connection_internal(h.clone(), s_url.clone(), s_key.clone()).await;
-                info!("[Lifecycle] Auto-connecting VCP Info...");
-                let _ = super::vcp_info_service::init_vcp_info_connection(h.clone(), s_url, s_key)
-                    .await;
-            }
-        });
+        return Err(format!("分布式{}时连接地址缺少主机名", source));
     }
-
-    {
-        let h = handle.clone();
-        tokio::spawn(async move {
-            let model_state = h.state::<ModelManagerState>();
-            init_model_manager(&h, &model_state).await;
-            info!("[Lifecycle] Model manager initialized in background.");
-        });
-    }
-
-    // DeleteExecutor 定时清理（原在 sync_service.rs 常驻循环中，现移至此处）
-    {
-        let h = handle.clone();
-        tokio::spawn(async move {
-            // 启动延时 10 秒后执行首航清理，完美避开冷启动黄金 IO 密集期
-            tokio::time::sleep(Duration::from_secs(10)).await;
-
-            let db_state = h.state::<DbState>();
-            let pool = &db_state.pool;
-
-            let mut should_cleanup = true;
-            {
-                use sqlx::Row;
-                if let Ok(Some(row)) = sqlx::query(
-                    "SELECT value FROM settings WHERE key = 'delete_executor_last_cleanup'",
-                )
-                .fetch_optional(pool)
-                .await
-                {
-                    let last_cleanup_str: String = row.get("value");
-                    if let Ok(last_cleanup) = last_cleanup_str.parse::<i64>() {
-                        let now = crate::vcp_modules::infra::utils::now_millis();
-                        // 24h = 86_400_000 ms
-                        if now - last_cleanup < 86_400_000 {
-                            log::info!("[Lifecycle] DeleteExecutor last cleanup ran at {} (less than 24h ago). Skipping startup cleanup.", last_cleanup);
-                            should_cleanup = false;
-                        }
-                    }
-                }
-            }
-
-            if should_cleanup {
-                use crate::vcp_modules::sync_executor::delete_executor::DeleteExecutor;
-                if DeleteExecutor::cleanup_old_deleted_records(&h, 30)
-                    .await
-                    .is_ok()
-                {
-                    let now = crate::vcp_modules::infra::utils::now_millis();
-                    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('delete_executor_last_cleanup', ?, ?)")
-                        .bind(now.to_string())
-                        .bind(now)
-                        .execute(pool)
-                        .await;
-                }
-            }
-
-            loop {
-                tokio::time::sleep(Duration::from_secs(86400)).await;
-                use crate::vcp_modules::sync_executor::delete_executor::DeleteExecutor;
-                if DeleteExecutor::cleanup_old_deleted_records(&h, 30)
-                    .await
-                    .is_ok()
-                {
-                    let now = crate::vcp_modules::infra::utils::now_millis();
-                    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('delete_executor_last_cleanup', ?, ?)")
-                        .bind(now.to_string())
-                        .bind(now)
-                        .execute(pool)
-                        .await;
-                }
-            }
-        });
-    }
-
-    // 5. 标记为就绪
-    *lifecycle.status.write().await = CoreStatus::Ready;
-
-    // 发射 Ready 信号
-    let _ = handle.emit(
-        "vcp-system-event",
-        serde_json::json!({
-            "type": "vcp-core-status",
-            "status": "ready",
-            "message": "核心引擎已就绪",
-            "source": "Core"
-        }),
-    );
-
-    info!("[Lifecycle] Bootstrap complete. Core is READY.");
-
-    // 6. 核心就绪后，安全地激活安卓原生网络监听，彻底规避冷启动 JNI WebView 未就绪的死锁与崩塌
-    let handle_net = handle.clone();
-    tauri::async_runtime::spawn(async move {
-        log::info!("[Lifecycle] Activating Android native network status monitoring...");
-        if let Err(e) = tauri_plugin_vcp_mobile::system::start_network_monitoring(handle_net) {
-            log::error!(
-                "[Lifecycle] Failed to start native network status monitoring: {}",
-                e
-            );
-        }
-    });
-
-    // 6. 后台静默检查前端热更新（完全非阻塞）
-    {
-        let h = handle.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-
-            let db_state = h.state::<DbState>();
-            let pool = &db_state.pool;
-
-            let mut skip_check = false;
-            {
-                use sqlx::Row;
-                if let Ok(Some(row)) = sqlx::query(
-                    "SELECT value FROM settings WHERE key = 'frontend_update_last_check'",
-                )
-                .fetch_optional(pool)
-                .await
-                {
-                    let last_check_str: String = row.get("value");
-                    if let Ok(last_check) = last_check_str.parse::<i64>() {
-                        let now = crate::vcp_modules::infra::utils::now_millis();
-                        // 24h = 86_400_000 ms
-                        if now - last_check < 86_400_000 {
-                            log::info!("[FrontendUpdate] Last check ran at {} (less than 24h ago). Skipping startup check.", last_check);
-                            skip_check = true;
-                        }
-                    }
-                }
-            }
-
-            if !skip_check {
-                info!("[FrontendUpdate] Starting background check...");
-                match crate::vcp_modules::frontend_update_manager::check_for_frontend_update(
-                    h.clone(),
-                )
-                .await
-                {
-                    Ok(info) => {
-                        // 更新最后检查时间戳
-                        let now = crate::vcp_modules::infra::utils::now_millis();
-                        let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('frontend_update_last_check', ?, ?)")
-                            .bind(now.to_string())
-                            .bind(now)
-                            .execute(pool)
-                            .await;
-
-                        if info.has_update {
-                            if let Some(url) = info.download_url {
-                                info!(
-                                    "[FrontendUpdate] New version available: {}, downloading...",
-                                    info.remote_version
-                                );
-                                match crate::vcp_modules::frontend_update_manager::download_frontend_update_inner(
-                                    &h,
-                                    &url,
-                                    None,
-                                )
-                                .await
-                                {
-                                    Ok(zip_path) => {
-                                        if let Err(e) = crate::vcp_modules::frontend_update_manager::apply_frontend_update(
-                                            h.clone(),
-                                            zip_path,
-                                            info.remote_version.clone(),
-                                        )
-                                        .await
-                                        {
-                                            log::error!("[FrontendUpdate] Apply failed: {}", e);
-                                        } else {
-                                            info!(
-                                                "[FrontendUpdate] Version {} downloaded and applied. Will take effect on next cold start.",
-                                                info.remote_version
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log::error!("[FrontendUpdate] Download failed: {}", e);
-                                    }
-                                }
-                            }
-                        } else {
-                            info!("[FrontendUpdate] No frontend update available.");
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("[FrontendUpdate] Check failed: {}", e);
-                    }
-                }
-            }
-        });
-    }
-
-    Ok(())
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct SystemSnapshot {
-    pub core: CoreStatus,
-    pub log: String,
-    pub sync: String,
-    pub distributed: String,
-}
-
-#[tauri::command]
-pub async fn get_system_snapshot(
-    state: State<'_, LifecycleState>,
-    app: AppHandle,
-) -> Result<SystemSnapshot, String> {
-    let core = *state.status.read().await;
-
-    // 获取 VCPLog 状态
-    let log = crate::vcp_modules::vcp_log_service::get_vcp_log_status_internal().await;
-
-    // 获取 Sync 状态
-    let sync = match app.try_state::<crate::vcp_modules::sync_service::SyncState>() {
-        Some(s) => s.connection_status.read().await.clone(),
-        None => "closed".to_string(),
-    };
-
-    // 获取分布式连接状态
-    let distributed = match app.try_state::<crate::distributed::DistributedState>() {
-        Some(s) => {
-            let client = s.client.read().await;
-            let status = client.get_status().await;
-            serde_json::to_value(status.state)
-                .unwrap_or_else(|_| serde_json::json!("disconnected"))
-                .as_str()
-                .unwrap_or("disconnected")
-                .to_string()
-        }
-        None => "disconnected".to_string(),
-    };
-
-    Ok(SystemSnapshot {
-        core,
-        log,
-        sync,
-        distributed,
+    Ok(DistributedConnectionConfig {
+        ws_url: ws_url.to_string(),
+        vcp_key: vcp_key.to_string(),
+        device_name: if settings.distributed_device_name.trim().is_empty() {
+            "VCPMobile".to_string()
+        } else {
+            settings.distributed_device_name.trim().to_string()
+        },
     })
 }
 
-/// 前端保存设置后调用，即时生效启用/停用划词助手本地服务器
-#[tauri::command]
-pub async fn reconcile_local_server_cmd(
-    app_handle: AppHandle,
-    state: State<'_, LifecycleState>,
-    enable: bool,
-) -> Result<bool, String> {
-    log::info!(
-        "[Lifecycle] reconcile_local_server_cmd called: enable={}",
-        enable
-    );
-    let lifecycle = &*state;
-    reconcile_local_server(&app_handle, lifecycle, enable).await;
-    Ok(enable)
+pub(crate) fn validate_distributed_connection_config(
+    settings: &Settings,
+    source: &str,
+) -> Result<(), String> {
+    build_connection_config(settings, source).map(|_| ())
 }
 
-#[tauri::command]
-pub async fn reconcile_distributed_node_cmd(
-    app_handle: AppHandle,
-    enable: bool,
-) -> Result<bool, String> {
-    log::info!(
-        "[Lifecycle] reconcile_distributed_node_cmd called: enable={}",
-        enable
-    );
-    reconcile_distributed_node(&app_handle, enable, false).await;
-    Ok(enable)
-}
+#[cfg(test)]
+mod tests {
+    use super::{build_connection_config, Settings};
 
-#[tauri::command]
-pub async fn get_core_status(state: State<'_, LifecycleState>) -> Result<CoreStatus, String> {
-    Ok(*state.status.read().await)
-}
+    #[test]
+    fn 空地址或密钥拒绝连接配置() {
+        let mut settings = Settings::default();
+        settings.distributed_ws_url = "ws://127.0.0.1:5800".to_string();
+        assert!(build_connection_config(&settings, "测试").is_err());
+        settings.distributed_vcp_key = "密钥".to_string();
+        settings.distributed_ws_url.clear();
+        assert!(build_connection_config(&settings, "测试").is_err());
+    }
 
-#[tauri::command]
-pub async fn get_last_error(state: State<'_, LifecycleState>) -> Result<Option<String>, String> {
-    Ok(state.last_error.read().await.clone())
+    #[test]
+    fn 无效地址协议拒绝连接配置() {
+        let settings = Settings {
+            distributed_enabled: true,
+            distributed_ws_url: "ftp://127.0.0.1:5800".to_string(),
+            distributed_vcp_key: "密钥".to_string(),
+            ..Settings::default()
+        };
+        assert!(build_connection_config(&settings, "测试").is_err());
+    }
+
+    #[test]
+    fn 缺少主机名拒绝连接配置() {
+        let settings = Settings {
+            distributed_enabled: true,
+            distributed_ws_url: "ws://:5800".to_string(),
+            distributed_vcp_key: "密钥".to_string(),
+            ..Settings::default()
+        };
+        assert!(build_connection_config(&settings, "测试").is_err());
+    }
+
+    #[test]
+    fn 空白地址或密钥拒绝连接配置() {
+        let settings = Settings {
+            distributed_enabled: true,
+            distributed_ws_url: "  ws://127.0.0.1:5800  ".to_string(),
+            distributed_vcp_key: "   ".to_string(),
+            ..Settings::default()
+        };
+        assert!(build_connection_config(&settings, "测试").is_err());
+
+        let settings = Settings {
+            distributed_enabled: true,
+            distributed_ws_url: "   ".to_string(),
+            distributed_vcp_key: "密钥".to_string(),
+            ..Settings::default()
+        };
+        assert!(build_connection_config(&settings, "测试").is_err());
+    }
 }

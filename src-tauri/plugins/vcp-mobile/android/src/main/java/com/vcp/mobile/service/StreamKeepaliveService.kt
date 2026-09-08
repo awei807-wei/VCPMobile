@@ -48,9 +48,7 @@ class StreamKeepaliveService : Service() {
         @Volatile
         var isServiceRunning = false
 
-        /**
-         * Check if distributed keepalive was requested before boot/reboot.
-         */
+        /** 检查设备启动或重启前是否请求了分布式保活。 */
         fun isDistributedKeepalivePersisted(context: Context): Boolean {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             if (prefs.contains(PREF_DISTRIBUTED_KEEPALIVE)) {
@@ -62,9 +60,7 @@ class StreamKeepaliveService : Service() {
                 .getBoolean(COMPAT_PREF_DISTRIBUTED_KEEPALIVE, false)
         }
 
-        /**
-         * Set/clear the distributed keepalive persisted flag.
-         */
+        /** 设置或清除分布式保活持久化标记。 */
         fun setDistributedKeepalivePersisted(context: Context, enabled: Boolean) {
             context
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -80,9 +76,7 @@ class StreamKeepaliveService : Service() {
                 .apply()
         }
 
-        /**
-         * Create an Intent for best-effort recovery after boot.
-         */
+        /** 创建设备启动后的尽力恢复 Intent。 */
         fun createRecoveryIntent(context: Context): Intent {
             return Intent(context, StreamKeepaliveService::class.java).apply {
                 action = ACTION_RECOVER_KEEPALIVE
@@ -107,8 +101,8 @@ class StreamKeepaliveService : Service() {
         // 最早可用阶段先发布最小通知，业务文案和音频初始化留到 onStartCommand 处理。
         foregroundPromoted = promoteToForeground(buildBootstrapNotification())
         if (!foregroundPromoted) {
-            Log.e(TAG, "Bootstrap foreground promotion failed; stopping service immediately.")
-            ForegroundGuardian.onServicePromotionFailed()
+            Log.e(TAG, "前台服务引导提升失败，立即停止服务")
+            ForegroundGuardian.onServicePromotionFailed(this)
             stopSelf()
             return
         }
@@ -121,8 +115,8 @@ class StreamKeepaliveService : Service() {
         if (!foregroundPromoted) {
             foregroundPromoted = promoteToForeground(buildBootstrapNotification())
             if (!foregroundPromoted) {
-                Log.e(TAG, "Foreground promotion unavailable in onStartCommand; stopping service.")
-                ForegroundGuardian.onServicePromotionFailed()
+                Log.e(TAG, "onStartCommand 中无法完成前台提升，停止服务")
+                ForegroundGuardian.onServicePromotionFailed(this)
                 stopSelf(startId)
                 return START_NOT_STICKY
             }
@@ -137,7 +131,7 @@ class StreamKeepaliveService : Service() {
         // 停止也通过 Service 主线程串行化处理：若停止请求后紧接着有新消费者进入，
         // 最新 startId 会阻止旧停止请求误杀刚恢复的前台服务。
         if (!ForegroundGuardian.isActive) {
-            Log.i(TAG, "No foreground consumers remain; stopping after fulfilling foreground contract.")
+            Log.i(TAG, "没有前台消费者，完成前台服务契约后停止")
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -147,7 +141,7 @@ class StreamKeepaliveService : Service() {
 
         // 此时最小通知已经完成前台提升；这里仅刷新业务文案。
         if (!promoteToForeground(notification)) {
-            Log.w(TAG, "Notification refresh failed; keeping bootstrap foreground notification.")
+            Log.w(TAG, "刷新通知失败，继续使用引导前台通知")
         }
 
         // 启动静音音频循环播放保活
@@ -173,7 +167,7 @@ class StreamKeepaliveService : Service() {
             }
             true
         } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed", e)
+            Log.e(TAG, "startForeground 失败", e)
             false
         }
     }
@@ -186,7 +180,7 @@ class StreamKeepaliveService : Service() {
 
         // stopWithTask=false 时服务仍在运行，不再递归调用 startForegroundService，
         // 只重申现有前台通知，避免制造新的五秒提升契约与重复启动竞态。
-        Log.i(TAG, "Task removed while distributed keepalive is active; retaining current foreground service.")
+        Log.i(TAG, "分布式保活仍在运行但任务已移除，保留当前前台服务")
         promoteToForeground(buildNotification(ForegroundGuardian.getNotificationLabel()))
     }
 
@@ -199,10 +193,10 @@ class StreamKeepaliveService : Service() {
                 stopForeground(true)
             }
         }
-        
+
         // 停止静音音频播放
         stopSilentPlayback()
-        
+
         foregroundPromoted = false
         isServiceRunning = false
         // 服务销毁（包括系统回收）时释放进程级物理锁，但保留已持久化的分布式用户意图。
@@ -213,7 +207,7 @@ class StreamKeepaliveService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // ==================================================================
-    // Silent Audio Keep-Alive
+    // 静音音频保活
     // ==================================================================
 
     private fun ensureSilentAudioFile(): java.io.File {
@@ -223,12 +217,12 @@ class StreamKeepaliveService : Service() {
         }
         try {
             file.outputStream().use { out ->
-                // RIFF Header
+                // RIFF 文件头
                 out.write(byteArrayOf(0x52, 0x49, 0x46, 0x46)) // "RIFF"
                 out.write(byteArrayOf(0x64, 0x06, 0x00, 0x00)) // Size: 1636
                 out.write(byteArrayOf(0x57, 0x41, 0x56, 0x45)) // "WAVE"
-                
-                // fmt Chunk
+
+                // fmt 数据块
                 out.write(byteArrayOf(0x66, 0x6d, 0x74, 0x20)) // "fmt "
                 out.write(byteArrayOf(0x10, 0x00, 0x00, 0x00)) // Chunk size: 16
                 out.write(byteArrayOf(0x01, 0x00))             // Format: 1 (PCM)
@@ -237,18 +231,18 @@ class StreamKeepaliveService : Service() {
                 out.write(byteArrayOf(0x40, 0x1F, 0x00, 0x00)) // Byte rate: 8000
                 out.write(byteArrayOf(0x01, 0x00))             // Block align: 1
                 out.write(byteArrayOf(0x08, 0x00))             // Bits per sample: 8
-                
-                // data Chunk
+
+                // data 数据块
                 out.write(byteArrayOf(0x64, 0x61, 0x74, 0x61)) // "data"
                 out.write(byteArrayOf(0x40, 0x06, 0x00, 0x00)) // Data size: 1600
-                
-                // 1600 bytes of silence (0x80 for 8-bit PCM)
+
+                // 写入 1600 字节静音数据，8 位 PCM 的静音值为 0x80。
                 val silence = ByteArray(1600) { 0x80.toByte() }
                 out.write(silence)
             }
-            Log.i(TAG, "Created silent.wav in cache directory.")
+            Log.i(TAG, "已在缓存目录创建 silent.wav")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to create silent.wav", e)
+            Log.e(TAG, "创建 silent.wav 失败", e)
         }
         return file
     }
@@ -260,7 +254,7 @@ class StreamKeepaliveService : Service() {
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(silentFile.absolutePath)
                 isLooping = true
-                
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     setAudioAttributes(
                         AudioAttributes.Builder()
@@ -269,13 +263,13 @@ class StreamKeepaliveService : Service() {
                             .build()
                     )
                 }
-                
+
                 prepare()
                 start()
             }
-            Log.i(TAG, "Silent playback started.")
+            Log.i(TAG, "静音播放已启动")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start silent playback", e)
+            Log.e(TAG, "启动静音播放失败", e)
         }
     }
 
@@ -286,10 +280,12 @@ class StreamKeepaliveService : Service() {
                     it.stop()
                 }
                 it.release()
-            } catch (ignored: Exception) {}
+            } catch (error: Exception) {
+                Log.w(TAG, "停止静音播放时发生异常", error)
+            }
         }
         mediaPlayer = null
-        Log.i(TAG, "Silent playback stopped.")
+        Log.i(TAG, "静音播放已停止")
     }
 
     private fun createNotificationChannel() {

@@ -1,12 +1,5 @@
 import type { ChatMessage, TailFrame } from "../types/chat";
-import {
-  makeConversationIdentity,
-  makeMessageIdentity,
-  messageIdentityKey,
-  topicIdentityKey,
-  type ConversationIdentity,
-  type ConversationOwnerType,
-} from "./chatStoreIdentity";
+import type { ConversationIdentity } from "./chatStoreIdentity";
 
 export type ReactiveMessageMap = Map<string, ChatMessage>;
 
@@ -27,6 +20,81 @@ export interface StreamState {
   cleanupTimers: Set<ReturnType<typeof setTimeout>>;
   streamingMessageId: { value: string | null };
   streamingMessageKey: { value: string | null };
+  streamGenerations: Map<string, number>;
+  generationWatermarks?: Map<string, GenerationWatermark>;
+  generationClocks?: Map<string, number>;
+  wireGenerations?: Map<string, WireGenerationState>;
+  /** Message identities whose unread receipt has been submitted in this runtime. */
+  unreadMessageKeys?: Set<string>;
+  /** Message identities with an unread receipt submission currently in flight. */
+  unreadMessageInFlightKeys?: Set<string>;
+  /** Delayed reconciliation attempts for failed unread receipt submissions. */
+  unreadMessageRetryTimers?: Map<string, ReturnType<typeof setTimeout>>;
+  /** Retry metadata for unread receipt submissions. */
+  unreadMessageRetryStates?: Map<string, UnreadMessageRetryState>;
+  /** Complete identities tracked by the unread receipt ledger. */
+  unreadMessageReceiptRecords?: Map<string, UnreadMessageReceiptRecord>;
+  /** Receipt keys that reached a terminal failure in this runtime. */
+  unreadMessageFailedKeys?: Set<string>;
+  /** Deleted message identities whose active stream may still emit frames. */
+  unreadMessageReceiptTombstones?: Set<string>;
+  /** Deleted topic identities whose active streams may still emit frames. */
+  unreadTopicReceiptTombstones?: Set<string>;
+  /** Monotonic token source used to invalidate stale promise callbacks. */
+  unreadMessageReceiptSequence?: number;
+}
+
+export interface UnreadMessageReceiptRecord {
+  identity: ConversationIdentity;
+  messageId: string;
+}
+
+export interface UnreadMessageRetryState extends UnreadMessageReceiptRecord {
+  attempt: number;
+  startedAt: number;
+  token: number;
+}
+
+export interface UnreadReceiptSubmissionResult {
+  success: boolean;
+  permanent?: boolean;
+  cancelled?: boolean;
+}
+
+export type UnreadReceiptSubmission =
+  | void
+  | boolean
+  | UnreadReceiptSubmissionResult
+  | Promise<void | boolean | UnreadReceiptSubmissionResult>;
+
+export type UnreadReceiptActiveGuard = () => boolean;
+
+export interface GenerationWatermark {
+  generation: number;
+}
+
+export interface WireGenerationState {
+  wireGeneration: number;
+  streamGeneration: number;
+}
+
+export function createGenerationWatermarks(): Map<string, GenerationWatermark> {
+  return new Map<string, GenerationWatermark>();
+}
+
+export function nextStreamGeneration(
+  state: StreamState,
+  messageKey: string,
+  minimum = 0,
+): number {
+  const previous = Math.max(
+    state.generationClocks?.get(messageKey) || 0,
+    state.generationWatermarks?.get(messageKey)?.generation || 0,
+    state.streamGenerations.get(messageKey) || 0,
+  );
+  const generation = Math.max(previous + 1, minimum);
+  state.generationClocks?.set(messageKey, generation);
+  return generation;
 }
 
 export interface StreamProcessorDeps {
@@ -42,7 +110,15 @@ export interface StreamProcessorDeps {
     messageId: string,
   ) => void;
   incrementTopicMsgCount: (identity: ConversationIdentity) => void;
-  incrementTopicUnreadCount: (identity: ConversationIdentity) => void;
+  incrementTopicUnreadCount: (
+    identity: ConversationIdentity,
+    messageId: string,
+  ) => UnreadReceiptSubmission;
+  incrementTopicUnreadCountWithGuard?: (
+    identity: ConversationIdentity,
+    messageId: string,
+    isActive: UnreadReceiptActiveGuard,
+  ) => UnreadReceiptSubmission;
   currentIdentity: () => ConversationIdentity | null;
   invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
   isStreamDebugEnabled: () => boolean;
@@ -57,214 +133,8 @@ export interface ParsedStreamEvent {
   messageKey: string;
   topicKey: string;
   context: Record<string, any>;
-}
-
-export function firstDefined(...values: unknown[]): unknown {
-  return values.find((value) => value !== undefined && value !== null);
-}
-
-function sameOptionalField(left: unknown, right: unknown): boolean {
-  return (
-    left === undefined ||
-    left === null ||
-    right === undefined ||
-    right === null ||
-    left === right
-  );
-}
-
-interface StreamEventFields {
-  context: Record<string, any>;
-  messageId: string;
-  topicId: string;
-}
-
-function readStreamEventFields(event: any): StreamEventFields | null {
-  if (!event || typeof event !== "object") return null;
-  const context =
-    event.context && typeof event.context === "object"
-      ? (event.context as Record<string, any>)
-      : {};
-  const messageId = firstDefined(event.messageId, event.message_id);
-  const topicId = firstDefined(
-    context.topicId,
-    context.topic_id,
-    event.topicId,
-    event.topic_id,
-  );
-  if (
-    typeof messageId !== "string" ||
-    !messageId ||
-    typeof topicId !== "string" ||
-    !topicId
-  )
-    return null;
-  if (
-    !sameOptionalField(event.messageId, event.message_id) ||
-    !sameOptionalField(context.topicId, context.topic_id) ||
-    !sameOptionalField(event.topicId, event.topic_id)
-  )
-    return null;
-  return { context, messageId, topicId };
-}
-
-interface StreamOwnerFields {
-  explicitOwnerType: unknown;
-  groupId: unknown;
-  agentId: unknown;
-  ownerId: unknown;
-  groupFlag: boolean;
-  explicitIsAgent: boolean;
-}
-
-function readStreamOwnerFields(
-  event: any,
-  context: Record<string, any>,
-): StreamOwnerFields | null {
-  if (
-    !sameOptionalField(context.ownerType, context.owner_type) ||
-    !sameOptionalField(event.ownerType, event.owner_type) ||
-    !sameOptionalField(context.ownerType, event.ownerType)
-  )
-    return null;
-  return {
-    explicitOwnerType: firstDefined(
-      context.ownerType,
-      context.owner_type,
-      event.ownerType,
-      event.owner_type,
-    ),
-    groupId: firstDefined(context.groupId, context.group_id),
-    agentId: firstDefined(context.agentId, context.agent_id),
-    ownerId: firstDefined(
-      context.ownerId,
-      context.owner_id,
-      event.ownerId,
-      event.owner_id,
-    ),
-    groupFlag:
-      context.isGroupMessage === true || context.is_group_message === true,
-    explicitIsAgent:
-      context.isGroupMessage === false || context.is_group_message === false,
-  };
-}
-
-interface ResolvedStreamOwner {
-  ownerType: ConversationOwnerType;
-  ownerId: string;
-}
-
-function resolveStreamOwner(
-  fields: StreamOwnerFields,
-): ResolvedStreamOwner | null {
-  const {
-    explicitOwnerType,
-    groupId,
-    agentId,
-    ownerId,
-    groupFlag,
-    explicitIsAgent,
-  } = fields;
-  if (
-    explicitOwnerType !== undefined &&
-    explicitOwnerType !== "agent" &&
-    explicitOwnerType !== "group"
-  )
-    return null;
-  if (explicitIsAgent && groupId !== undefined) return null;
-
-  let ownerType: ConversationOwnerType;
-  if (explicitOwnerType === "group" || groupFlag || groupId !== undefined)
-    ownerType = "group";
-  else if (explicitOwnerType === "agent" || agentId !== undefined)
-    ownerType = "agent";
-  else return null;
-  if (explicitOwnerType && explicitOwnerType !== ownerType) return null;
-
-  const resolvedOwnerId =
-    ownerType === "group"
-      ? firstDefined(groupId, ownerId)
-      : firstDefined(agentId, ownerId);
-  if (typeof resolvedOwnerId !== "string" || !resolvedOwnerId) return null;
-  if (!sameOptionalField(ownerId, resolvedOwnerId)) return null;
-  return { ownerType, ownerId: resolvedOwnerId };
-}
-
-function buildParsedStreamEvent(
-  event: any,
-  fields: StreamEventFields,
-  owner: ResolvedStreamOwner,
-): ParsedStreamEvent | null {
-  const identity = makeConversationIdentity(
-    owner.ownerId,
-    owner.ownerType,
-    fields.topicId,
-  );
-  const messageIdentity = makeMessageIdentity(
-    owner.ownerId,
-    owner.ownerType,
-    fields.topicId,
-    fields.messageId,
-  );
-  if (!identity || !messageIdentity) return null;
-  return {
-    event,
-    messageId: fields.messageId,
-    identity,
-    messageKey: messageIdentityKey(messageIdentity),
-    topicKey: topicIdentityKey(identity),
-    context: fields.context,
-  };
-}
-
-/**
- * Resolve the owner namespace carried by legacy and Wire 1.4 stream events.
- * Incomplete or contradictory events are intentionally dropped: choosing an
- * Agent namespace here would let a Group response contaminate an Agent topic.
- */
-export function parseStreamEvent(event: any): ParsedStreamEvent | null {
-  const fields = readStreamEventFields(event);
-  if (!fields) return null;
-  const ownerFields = readStreamOwnerFields(event, fields.context);
-  if (!ownerFields) return null;
-  const owner = resolveStreamOwner(ownerFields);
-  return owner ? buildParsedStreamEvent(event, fields, owner) : null;
-}
-
-function mergeTailFrame(
-  existing: TailFrame | null,
-  incoming: TailFrame,
-): TailFrame {
-  const incomingMutations = incoming.mutations || [];
-  if (!existing || incoming.reset || incoming.epoch !== existing.epoch) {
-    return {
-      ...incoming,
-      mutations: incoming.reset ? [] : [...incomingMutations],
-      snapshot: incoming.snapshot ? [...incoming.snapshot] : undefined,
-    };
-  }
-  return {
-    ...incoming,
-    reset: existing.reset || incoming.reset,
-    snapshot: incoming.snapshot || existing.snapshot,
-    mutations: [
-      ...(existing.reset ? [] : existing.mutations || []),
-      ...incomingMutations,
-    ],
-  };
-}
-
-function emptyRafUpdate(): RafUpdate {
-  return {
-    content: null,
-    blocks: null,
-    tailContent: null,
-    tailBlock: null,
-    tailFrame: null,
-    tailSnapshot: null,
-    animationFrameId: null,
-    lastRenderTime: 0,
-  };
+  generation: number;
+  wireGeneration: number;
 }
 
 export function clearStreamMessageRendering(
@@ -293,80 +163,11 @@ export function clearStreamMessageRendering(
   state.rAFPendingUpdates.delete(messageKey);
 }
 
-function scheduleAuroraRender(
-  deps: StreamProcessorDeps,
-  parsed: ParsedStreamEvent,
-  aurora: any,
-): void {
-  const { state } = deps;
-  let update = state.rAFPendingUpdates.get(parsed.messageKey);
-  if (!update) {
-    update = emptyRafUpdate();
-    state.rAFPendingUpdates.set(parsed.messageKey, update);
-  }
-  if (typeof aurora.content === "string") update.content = aurora.content;
-  if (aurora.stableChanged && aurora.stableBlocks)
-    update.blocks = aurora.stableBlocks;
-  if (aurora.tailFrame) {
-    deps.streamDebugLog(
-      `[chatStreamStore] Received tailFrame seq=${aurora.tailFrame.frameSeq} mutations=${aurora.tailFrame.mutations?.length || 0} for ${parsed.messageKey}`,
-    );
-    update.tailFrame = mergeTailFrame(update.tailFrame, aurora.tailFrame);
-    if (aurora.tailFrame.snapshot)
-      update.tailSnapshot = aurora.tailFrame.snapshot as any[];
-  }
-  if (aurora.tailSnapshot) update.tailSnapshot = aurora.tailSnapshot as any[];
-  if (aurora.tailChanged) {
-    update.tailContent = aurora.tail || "";
-    update.tailBlock = aurora.tailBlock || null;
-  }
-  if (update.animationFrameId === null) {
-    update.animationFrameId = requestAnimationFrame(() =>
-      renderAuroraFrame(deps, parsed.messageKey),
-    );
-  }
-}
-
-function renderAuroraFrame(
-  deps: StreamProcessorDeps,
-  messageKey: string,
-): void {
-  const update = deps.state.rAFPendingUpdates.get(messageKey);
-  if (!update) return;
-  const now = performance.now();
-  if (now - update.lastRenderTime < 33.3) {
-    update.animationFrameId = requestAnimationFrame(() =>
-      renderAuroraFrame(deps, messageKey),
-    );
-    return;
-  }
-  const message = deps.state.activeStreamMessages.get(messageKey);
-  if (message) {
-    if (update.content !== null) message.content = update.content;
-    if (update.blocks !== null) message.blocks = update.blocks;
-    if (update.tailSnapshot !== null)
-      message.tailSnapshot = update.tailSnapshot as any;
-    if (update.tailFrame !== null) message.tailFrame = update.tailFrame;
-    if (update.tailContent !== null) message.tailContent = update.tailContent;
-    if (update.tailBlock !== undefined) message.tailBlock = update.tailBlock;
-  }
-  update.lastRenderTime = now;
-  update.content = null;
-  update.blocks = null;
-  update.tailContent = null;
-  update.tailBlock = null;
-  update.tailFrame = null;
-  update.tailSnapshot = null;
-  update.animationFrameId = null;
-}
-
-export function applyAuroraUpdate(
-  deps: StreamProcessorDeps,
-  parsed: ParsedStreamEvent,
-  aurora: any,
-): void {
-  scheduleAuroraRender(deps, parsed, aurora);
-}
+export { applyAuroraUpdate } from "./chatStreamProcessorRendering";
+export {
+  firstDefined,
+  parseStreamEvent,
+} from "./chatStreamProcessorParsing";
 
 export function extractTextChunk(chunk: any): string {
   if (typeof chunk === "string") return chunk;
@@ -393,4 +194,17 @@ export function clearStreamRendering(state: StreamState): void {
   state.rAFPendingUpdates.clear();
   state.cleanupTimers.forEach(clearTimeout);
   state.cleanupTimers.clear();
+  state.streamGenerations.clear();
+  state.generationWatermarks?.clear();
+  state.generationClocks?.clear();
+  state.wireGenerations?.clear();
+  state.unreadMessageKeys?.clear();
+  state.unreadMessageInFlightKeys?.clear();
+  state.unreadMessageRetryTimers?.forEach(clearTimeout);
+  state.unreadMessageRetryTimers?.clear();
+  state.unreadMessageRetryStates?.clear();
+  state.unreadMessageReceiptRecords?.clear();
+  state.unreadMessageFailedKeys?.clear();
+  state.unreadMessageReceiptTombstones?.clear();
+  state.unreadTopicReceiptTombstones?.clear();
 }

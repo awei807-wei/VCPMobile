@@ -1,11 +1,16 @@
-use super::active::mark_message_as_error;
 use super::{
-    db_pool_if_ready, handle_streaming_request, ActiveRequestGuard, ActiveRequests, StreamEvent,
+    db_pool_if_ready, handle_streaming_request, mark_message_as_error_guarded_with_channel,
+    ActiveRequestGuard, ActiveRequests, CompletionLease, GuardedTransition, StreamEvent,
 };
-use crate::vcp_modules::persistence::message_repository::ContentCompressor;
 use serde_json::{json, Value};
 use tauri::{ipc::Channel, AppHandle, Runtime};
 use tokio::sync::oneshot;
+
+#[path = "vcp_client_resume_preparation.rs"]
+mod preparation;
+#[cfg(target_os = "android")]
+use preparation::cancel_prepared_resume;
+use preparation::prepare_resume_request;
 
 #[tauri::command]
 #[allow(non_snake_case)]
@@ -20,7 +25,9 @@ pub async fn resume_stream<R: Runtime>(
     stream_channel: Channel<StreamEvent>,
     initial_content: Option<String>,
     last_event_index: Option<i64>,
+    expected_generation: Option<u64>,
 ) -> Result<Value, String> {
+    let expected_generation = require_expected_generation(expected_generation)?;
     let request_key =
         super::registry::message_key_from_parts(&owner_id, &owner_type, &topic_id, &msg_id)?;
     log::info!(
@@ -30,42 +37,105 @@ pub async fn resume_stream<R: Runtime>(
         last_event_index
     );
 
-    // 与 get/recover 保持相同的冷启动边界：核心未就绪时只返回可重试错误。
-    let pool = db_pool_if_ready(&app)?;
-    persist_initial_content(&pool, &request_key, &msg_id, initial_content.as_deref()).await?;
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| e.to_string())?;
-    let (abort_rx, request_epoch, _guard) = register_resume_request(&state, &request_key);
-    let context = build_resume_context(&owner_id, &owner_type, &topic_id);
-    let (res, is_aborted) = execute_resume_request(
+    let Some(prepared) = prepare_resume_request(
         &app,
-        &pool,
-        client,
+        &state,
+        &request_key,
+        &msg_id,
+        &owner_id,
+        &owner_type,
+        &topic_id,
+        initial_content.as_deref(),
+        &stream_channel,
+        expected_generation,
+    )
+    .await?
+    else {
+        return Ok(json!({"status": "skipped", "finalization": "skipped"}));
+    };
+    let result = run_prepared_resume_request(
+        &app,
+        &state,
+        prepared,
         msg_id.clone(),
         request_key.clone(),
+        stream_channel.clone(),
+        last_event_index,
+        initial_content.clone(),
+        expected_generation,
+    )
+    .await;
+    #[cfg(target_os = "android")]
+    if let Err(error) = &result {
+        cancel_prepared_resume(&app, &request_key, expected_generation, error).await;
+    }
+    result
+}
+
+pub(super) struct PreparedResumeRequest {
+    pub(super) pool: sqlx::Pool<sqlx::Sqlite>,
+    pub(super) abort_rx: oneshot::Receiver<()>,
+    pub(super) request_epoch: u64,
+    pub(super) _guard: ActiveRequestGuard,
+    pub(super) completion_lease: CompletionLease,
+    pub(super) client: reqwest::Client,
+    pub(super) context: Value,
+}
+
+async fn run_prepared_resume_request<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &tauri::State<'_, ActiveRequests>,
+    prepared: PreparedResumeRequest,
+    msg_id: String,
+    request_key: crate::vcp_modules::chat::topic_types::MessageKey,
+    stream_channel: Channel<StreamEvent>,
+    last_event_index: Option<i64>,
+    initial_content: Option<String>,
+    expected_generation: u64,
+) -> Result<Value, String> {
+    let PreparedResumeRequest {
+        pool,
+        abort_rx,
         request_epoch,
-        context.clone(),
+        _guard,
+        completion_lease,
+        client,
+        context,
+    } = prepared;
+    let (mut response, is_aborted) = execute_resume_request(
+        app,
+        &pool,
+        client,
+        msg_id,
+        request_key,
+        request_epoch,
+        context,
         abort_rx,
         state.0.clone(),
         stream_channel.clone(),
         last_event_index,
-        initial_content.clone(),
+        initial_content,
+        completion_lease.clone(),
+        expected_generation,
     )
     .await?;
-    finalize_resumed_message(
-        &app,
+    let finalization = finalize_resumed_message(
+        app,
         &pool,
-        &owner_id,
-        &owner_type,
-        &topic_id,
-        &msg_id,
-        &res,
+        &response,
         is_aborted,
         stream_channel,
+        &completion_lease,
     )
     .await?;
-    Ok(res)
+    if matches!(
+        finalization,
+        crate::vcp_modules::chat::message_service::StreamFinalizationStatus::Skipped
+    ) {
+        response["finalization"] = json!("skipped");
+    }
+    drop(completion_lease);
+    Ok(response)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -82,7 +152,10 @@ async fn execute_resume_request<R: Runtime>(
     stream_channel: Channel<StreamEvent>,
     last_event_index: Option<i64>,
     initial_content: Option<String>,
+    completion_lease: CompletionLease,
+    expected_generation: u64,
 ) -> Result<(Value, bool), String> {
+    let stream_channel_for_error = stream_channel.clone();
     match run_resume_request(
         app,
         client,
@@ -95,6 +168,7 @@ async fn execute_resume_request<R: Runtime>(
         stream_channel,
         last_event_index,
         initial_content,
+        expected_generation,
     )
     .await
     {
@@ -104,62 +178,67 @@ async fn execute_resume_request<R: Runtime>(
                 "[VCPClient] resume_stream failed during handle_streaming_request: {}",
                 error
             );
-            let _ = mark_message_as_error(
+            let mark_result = mark_message_as_error_guarded_with_channel(
                 app,
                 pool,
-                &request_key,
+                &completion_lease,
                 Some(format!("接续失败: {}", error)),
+                Some(stream_channel_for_error),
             )
             .await;
+            match mark_result {
+                Ok(GuardedTransition::Applied(())) => {}
+                Ok(GuardedTransition::Skipped) => {
+                    log::warn!("[VCPClient] 接续失败终结已跳过旧请求");
+                }
+                Err(mark_error) => {
+                    return Err(format!("{error}; 错误消息持久化失败: {mark_error}"));
+                }
+            }
             Err(error)
         }
     }
 }
 
-async fn persist_initial_content(
+async fn persist_initial_content<R: Runtime>(
+    app_handle: &tauri::AppHandle<R>,
     pool: &sqlx::Pool<sqlx::Sqlite>,
-    key: &crate::vcp_modules::chat::topic_types::MessageKey,
-    msg_id: &str,
     content: Option<&str>,
-) -> Result<(), String> {
-    let Some(content) = content else {
-        return Ok(());
-    };
-    sqlx::query(
-        "UPDATE messages SET content = ?
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?",
-    )
-    .bind(ContentCompressor::compress(content)?)
-    .bind(&key.topic.owner_type)
-    .bind(&key.topic.owner_id)
-    .bind(&key.topic.topic_id)
-    .bind(msg_id)
-    .execute(pool)
-    .await
-    .map(|_| ())
-    .map_err(|error| format!("恢复流式消息正文失败: {error}"))
-}
-
-fn register_resume_request(
-    state: &tauri::State<'_, ActiveRequests>,
-    key: &crate::vcp_modules::chat::topic_types::MessageKey,
-) -> (oneshot::Receiver<()>, u64, ActiveRequestGuard) {
-    let (abort_tx, abort_rx) = oneshot::channel();
-    let (request_epoch, previous_sender) = state.0.register(key.clone(), abort_tx);
-    if let Some(previous_sender) = previous_sender {
-        let _ = previous_sender.send(());
-    }
-    let guard = ActiveRequestGuard::new(state.0.clone(), key.clone(), request_epoch);
-    (abort_rx, request_epoch, guard)
-}
-
-fn build_resume_context(owner_id: &str, owner_type: &str, topic_id: &str) -> Value {
-    json!({
-        "topicId": topic_id,
-        "ownerType": owner_type,
-        "groupId": if owner_type == "group" { Some(owner_id) } else { None::<&str> },
-        "agentId": if owner_type == "agent" { Some(owner_id) } else { None::<&str> },
+    lease: &CompletionLease,
+) -> Result<crate::vcp_modules::chat::message_service::StreamFinalizationStatus, String> {
+    let pool = pool.clone();
+    let content = content.map(str::to_string);
+    let transition = lease
+        .with_current_transition(|key| async move {
+            let Some(content) = content else {
+                return Ok(());
+            };
+            crate::vcp_modules::chat::message_service::update_existing_message_content(
+                app_handle.clone(),
+                &pool,
+                &key,
+                content,
+                None,
+                true,
+            )
+            .await
+            .map(|_| ())
+        })
+        .await?;
+    Ok(match transition {
+        GuardedTransition::Applied(()) => {
+            crate::vcp_modules::chat::message_service::StreamFinalizationStatus::Applied
+        }
+        GuardedTransition::Skipped => {
+            crate::vcp_modules::chat::message_service::StreamFinalizationStatus::Skipped
+        }
     })
+}
+
+fn require_expected_generation(expected_generation: Option<u64>) -> Result<u64, String> {
+    expected_generation
+        .filter(|generation| *generation > 0)
+        .ok_or_else(|| "resume_stream 缺少有效的正整数 helper generation".to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -175,6 +254,7 @@ async fn run_resume_request<R: Runtime>(
     stream_channel: Channel<StreamEvent>,
     last_event_index: Option<i64>,
     initial_content: Option<String>,
+    expected_generation: u64,
 ) -> Result<(Value, bool), String> {
     handle_streaming_request(
         app,
@@ -192,6 +272,7 @@ async fn run_resume_request<R: Runtime>(
         true,
         last_event_index,
         initial_content,
+        Some(expected_generation),
     )
     .await
 }
@@ -200,32 +281,47 @@ async fn run_resume_request<R: Runtime>(
 async fn finalize_resumed_message<R: Runtime>(
     app: &AppHandle<R>,
     pool: &sqlx::Pool<sqlx::Sqlite>,
-    owner_id: &str,
-    owner_type: &str,
-    topic_id: &str,
-    msg_id: &str,
     response: &Value,
     is_aborted: bool,
     stream_channel: Channel<StreamEvent>,
-) -> Result<(), String> {
+    completion_lease: &CompletionLease,
+) -> Result<crate::vcp_modules::chat::message_service::StreamFinalizationStatus, String> {
     let finish_reason = if is_aborted {
         Some("cancelled_by_user".to_string())
     } else {
         response["finishReason"].as_str().map(str::to_string)
     };
     log::info!("[VCPClient] resume_stream completed. Finalizing message.");
-    crate::vcp_modules::chat::message_service::finalize_stream_message(
+    let Some(full_content) = response["fullContent"].as_str() else {
+        let mark_result = mark_message_as_error_guarded_with_channel(
+            app,
+            pool,
+            completion_lease,
+            Some("接续响应缺少 fullContent".to_string()),
+            Some(stream_channel),
+        )
+        .await?;
+        return match mark_result {
+            GuardedTransition::Applied(()) => Err("接续响应缺少 fullContent".to_string()),
+            GuardedTransition::Skipped => {
+                Ok(crate::vcp_modules::chat::message_service::StreamFinalizationStatus::Skipped)
+            }
+        };
+    };
+    crate::vcp_modules::chat::message_service::finalize_stream_message_guarded(
         app.clone(),
         pool,
-        owner_id,
-        owner_type,
-        topic_id.to_string(),
-        msg_id.to_string(),
-        response["fullContent"].as_str().unwrap_or("").to_string(),
+        completion_lease,
+        full_content.to_string(),
         is_aborted,
         finish_reason,
         Some(stream_channel),
-        (owner_type == "agent").then(|| owner_id.to_string()),
+        (completion_lease.key().topic.owner_type == "agent")
+            .then(|| completion_lease.key().topic.owner_id.clone()),
     )
     .await
 }
+
+#[cfg(test)]
+#[path = "vcp_client_resume_tests.rs"]
+mod tests;

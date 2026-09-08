@@ -1,16 +1,21 @@
 use super::{db_pool_if_ready, registry, ActiveRequests};
 use crate::vcp_modules::chat::topic_types::MessageKey;
-use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
-use crate::vcp_modules::persistence::message_repository::ContentCompressor;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Runtime};
+
+#[path = "vcp_client_active_error.rs"]
+mod error;
+#[allow(unused_imports)]
+pub(crate) use error::{
+    mark_message_as_error, mark_message_as_error_guarded,
+    mark_message_as_error_guarded_with_channel, mark_message_as_error_guarded_with_generation,
+};
 
 /// 中止请求 Command: interruptRequest
 /// 通过 messageId 立即触发对应的 oneshot 信号
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn interruptRequest(
+pub async fn interruptRequest(
     state: tauri::State<'_, ActiveRequests>,
     message_id: String,
     owner_id: Option<String>,
@@ -25,8 +30,8 @@ pub fn interruptRequest(
         state.0.len()
     );
     let removed = match explicit_key {
-        Some(key) => state.0.remove_key(&key),
-        None => state.0.remove(&message_id),
+        Some(key) => state.0.remove_key_guarded(&key).await,
+        None => state.0.remove_guarded(&message_id).await,
     };
     if let Some((removed_key, sender)) = removed {
         log::info!(
@@ -63,18 +68,29 @@ pub struct ActiveGeneration {
     pub owner_id: String,
     pub owner_type: String,
     pub created_at: i64,
+    pub helper_generation: Option<u64>,
 }
 
 #[tauri::command]
 pub async fn get_active_generations(
     app: tauri::AppHandle,
-    active_requests: tauri::State<'_, ActiveRequests>,
+    _active_requests: tauri::State<'_, ActiveRequests>,
 ) -> Result<Vec<ActiveGeneration>, String> {
     let pool = db_pool_if_ready(&app)?;
+    load_active_generations(&pool).await
+}
+
+/// Load every persisted active generation.  The frontend uses this list after
+/// a WebView reload, including rows whose Rust request registry is still alive:
+/// those rows are precisely the ones that need helper query/resume takeover.
+async fn load_active_generations(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> Result<Vec<ActiveGeneration>, String> {
     let rows = sqlx::query(
-        "SELECT msg_id, topic_id, owner_id, owner_type, created_at FROM active_generations ORDER BY created_at ASC"
+        "SELECT msg_id, topic_id, owner_id, owner_type, created_at, helper_generation
+         FROM active_generations ORDER BY created_at ASC",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -85,20 +101,24 @@ pub async fn get_active_generations(
         let topic_id: String = row.get("topic_id");
         let owner_id: String = row.get("owner_id");
         let owner_type: String = row.get("owner_type");
-        let key = registry::message_key_from_parts(&owner_id, &owner_type, &topic_id, &msg_id)?;
-        // 过滤掉当前正在活跃运行的后台流式任务，它们由 sse helper 代理，并不是“被异常打断”的
-        if active_requests.0.contains_key(&key) {
-            continue;
-        }
         list.push(ActiveGeneration {
             msg_id,
             topic_id,
             owner_id,
             owner_type,
             created_at: row.get("created_at"),
+            helper_generation: parse_helper_generation(&row)?,
         });
     }
     Ok(list)
+}
+
+fn parse_helper_generation(row: &sqlx::sqlite::SqliteRow) -> Result<Option<u64>, String> {
+    use sqlx::Row;
+    row.try_get::<Option<i64>, _>("helper_generation")
+        .map_err(|error| format!("读取 helper generation 失败: {error}"))?
+        .map(|value| u64::try_from(value).map_err(|_| "helper generation 不是正整数".to_string()))
+        .transpose()
 }
 
 /// Delete exactly one active generation. Every production caller must provide
@@ -122,127 +142,46 @@ pub(super) async fn delete_active_generation_for_key(
     .map_err(|error| error.to_string())
 }
 
-pub(crate) async fn mark_message_as_error<R: Runtime>(
-    app_handle: &AppHandle<R>,
-    pool: &sqlx::Pool<sqlx::Sqlite>,
-    key: &MessageKey,
-    custom_error: Option<String>,
-) -> Result<(), String> {
-    let existing_content = load_existing_message_content(pool, key).await?;
-    if has_active_generation(pool, key).await? {
-        finalize_active_error(app_handle, pool, key, existing_content, custom_error).await?;
-    } else {
-        persist_inactive_error(pool, key, existing_content, custom_error).await?;
-    }
-    Ok(())
-}
+#[cfg(test)]
+mod tests {
+    use super::load_active_generations;
 
-async fn load_existing_message_content(
-    pool: &sqlx::Pool<sqlx::Sqlite>,
-    key: &MessageKey,
-) -> Result<String, String> {
-    let row = sqlx::query(
-        "SELECT content FROM messages
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?",
-    )
-    .bind(&key.topic.owner_type)
-    .bind(&key.topic.owner_id)
-    .bind(&key.topic.topic_id)
-    .bind(&key.msg_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| error.to_string())?;
-    row.map(|row| decode_message_content(&row, "content"))
-        .transpose()
-        .map(|content| content.unwrap_or_default())
-}
+    #[tokio::test]
+    async fn reload_discovery_includes_generation_even_when_request_is_still_active() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("创建内存数据库");
+        sqlx::query(
+            "CREATE TABLE active_generations (
+                owner_type TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                topic_id TEXT NOT NULL,
+                msg_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                helper_generation INTEGER,
+                PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("创建活动生成表");
+        sqlx::query(
+            "INSERT INTO active_generations
+             (owner_type, owner_id, topic_id, msg_id, created_at, helper_generation)
+             VALUES ('agent', 'owner-reload', 'topic-reload', 'message-reload', 7, 41)",
+        )
+        .execute(&pool)
+        .await
+        .expect("写入活动 generation");
 
-async fn has_active_generation(
-    pool: &sqlx::Pool<sqlx::Sqlite>,
-    key: &MessageKey,
-) -> Result<bool, String> {
-    sqlx::query(
-        "SELECT 1 FROM active_generations
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?",
-    )
-    .bind(&key.topic.owner_type)
-    .bind(&key.topic.owner_id)
-    .bind(&key.topic.topic_id)
-    .bind(&key.msg_id)
-    .fetch_optional(pool)
-    .await
-    .map(|row| row.is_some())
-    .map_err(|error| error.to_string())
-}
-
-async fn finalize_active_error<R: Runtime>(
-    app_handle: &AppHandle<R>,
-    pool: &sqlx::Pool<sqlx::Sqlite>,
-    key: &MessageKey,
-    existing_content: String,
-    custom_error: Option<String>,
-) -> Result<(), String> {
-    use sqlx::Row;
-
-    let agent_id = sqlx::query(
-        "SELECT agent_id FROM messages
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?",
-    )
-    .bind(&key.topic.owner_type)
-    .bind(&key.topic.owner_id)
-    .bind(&key.topic.topic_id)
-    .bind(&key.msg_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| error.to_string())?
-    .and_then(|row| row.get::<Option<String>, _>("agent_id"));
-    let final_content = append_error_suffix(existing_content, custom_error.as_deref());
-    crate::vcp_modules::chat::message_service::finalize_stream_message(
-        app_handle.clone(),
-        pool,
-        &key.topic.owner_id,
-        &key.topic.owner_type,
-        key.topic.topic_id.clone(),
-        key.msg_id.clone(),
-        final_content,
-        false,
-        Some("error".to_string()),
-        None,
-        agent_id,
-    )
-    .await
-}
-
-async fn persist_inactive_error(
-    pool: &sqlx::Pool<sqlx::Sqlite>,
-    key: &MessageKey,
-    existing_content: String,
-    custom_error: Option<String>,
-) -> Result<(), String> {
-    let final_content = append_error_suffix(existing_content, custom_error.as_deref());
-    sqlx::query(
-        "UPDATE messages
-         SET content = ?, finish_reason = 'error', is_thinking = 0
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?",
-    )
-    .bind(ContentCompressor::compress(&final_content)?)
-    .bind(&key.topic.owner_type)
-    .bind(&key.topic.owner_id)
-    .bind(&key.topic.topic_id)
-    .bind(&key.msg_id)
-    .execute(pool)
-    .await
-    .map_err(|error| error.to_string())?;
-    delete_active_generation_for_key(pool, key).await
-}
-
-fn append_error_suffix(existing_content: String, custom_error: Option<&str>) -> String {
-    let suffix = custom_error
-        .map(|error| format!("\n\n> VCP流式错误: {error}"))
-        .unwrap_or_else(|| "\n\n> VCP流式错误: 生成意外中断".to_string());
-    if existing_content.is_empty() {
-        suffix
-    } else {
-        format!("{existing_content}{suffix}")
+        let rows = load_active_generations(&pool)
+            .await
+            .expect("WebView reload 应发现活动 generation");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].owner_type, "agent");
+        assert_eq!(rows[0].owner_id, "owner-reload");
+        assert_eq!(rows[0].topic_id, "topic-reload");
+        assert_eq!(rows[0].msg_id, "message-reload");
+        assert_eq!(rows[0].helper_generation, Some(41));
     }
 }

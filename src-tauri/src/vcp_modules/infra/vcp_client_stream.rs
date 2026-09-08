@@ -25,6 +25,7 @@ pub(super) async fn handle_streaming_request<R: Runtime>(
     is_resume: bool,
     last_event_index: Option<i64>,
     initial_content: Option<String>,
+    helper_generation: Option<u64>,
 ) -> Result<(Value, bool), String> {
     context::run_streaming_request(context::StreamRequest {
         app: app.clone(),
@@ -42,6 +43,7 @@ pub(super) async fn handle_streaming_request<R: Runtime>(
         is_resume,
         last_event_index,
         initial_content,
+        helper_generation,
     })
     .await
 }

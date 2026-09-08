@@ -46,29 +46,50 @@ pub async fn get_distributed_status(
     Ok(client.get_status().await)
 }
 
-/// Get all registered tools metadata for frontend display.
+/// 获取已注册工具 metadata，并先加载安全 allowlist。
 #[tauri::command]
 pub async fn get_registered_tools_metadata(
-    state: State<'_, DistributedState>,
-) -> Result<Vec<serde_json::Value>, String> {
-    Ok(state.registry.get_tools_metadata())
-}
-
-/// Update disabled tools list and re-register if connected.
-#[tauri::command]
-pub async fn update_disabled_tools(
     app: tauri::AppHandle,
     state: State<'_, DistributedState>,
-    disabled_names: Vec<String>,
-) -> Result<(), String> {
-    let changed = state.registry.update_disabled(disabled_names);
+) -> Result<Vec<serde_json::Value>, String> {
+    state.registry.get_tools_metadata(&app).await
+}
 
-    if changed {
-        let _ = state.registry.save_disabled_config(&app);
+/// 更新显式 enabled allowlist，并在成功落盘后通知远端重注册。
+#[tauri::command]
+pub async fn update_enabled_tools(
+    app: tauri::AppHandle,
+    state: State<'_, DistributedState>,
+    enabled_names: Vec<String>,
+) -> Result<(), String> {
+    if state.registry.update_enabled(&app, enabled_names).await? {
         let client = state.client.read().await;
         if client.is_connected().await {
             client.re_register_tools().await;
         }
+    }
+    Ok(())
+}
+
+/// 获取 allowlist 加载状态和最近错误。
+#[tauri::command]
+pub async fn get_distributed_tool_config_status(
+    app: tauri::AppHandle,
+    state: State<'_, DistributedState>,
+) -> Result<tool_registry::ToolConfigStatus, String> {
+    Ok(state.registry.config_status(&app).await)
+}
+
+/// 安全清空旧 disabled 配置，并重置为空 enabled allowlist。
+#[tauri::command]
+pub async fn reset_distributed_tools_disabled(
+    app: tauri::AppHandle,
+    state: State<'_, DistributedState>,
+) -> Result<(), String> {
+    state.registry.reset_enabled(&app).await?;
+    let client = state.client.read().await;
+    if client.is_connected().await {
+        client.re_register_tools().await;
     }
     Ok(())
 }

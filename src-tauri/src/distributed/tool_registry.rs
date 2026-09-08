@@ -1,88 +1,44 @@
-// distributed/tool_registry.rs
-// Three-mode tool trait system + registry.
-// Mirrors VCPChat/VCPDistributedServer/Plugin.js (class PluginManager)
-// Self-contained — does NOT import anything from vcp_modules/.
-
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::{Read, Write};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+use tokio::sync::Mutex;
 
 use super::types::ToolManifest;
 
-const DISABLED_CONFIG_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_DISABLED_ON_LEGACY_CONFIG: &[&str] =
-    &["TopicMemo", "TopicSponsor", "MobileTopicSponsor"];
-const DISABLED_TOOL_RENAME_ALIASES: &[(&str, &str)] = &[("TopicSponsor", "MobileTopicSponsor")];
 const EXECUTION_TOOL_RENAME_ALIASES: &[(&str, &str)] = &[("TopicSponsor", "MobileTopicSponsor")];
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DisabledToolsConfigRead {
-    schema_version: u32,
-    #[serde(default)]
-    disabled_names: Vec<String>,
-}
+#[path = "tool_registry_config.rs"]
+mod config;
+pub use config::ToolConfigStatus;
+use config::{ConfigSource, ConfigState};
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DisabledToolsConfigWrite {
-    schema_version: u32,
-    disabled_names: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct LoadedDisabledToolsConfig {
-    disabled_names: Vec<String>,
-    migrated_from_legacy_array: bool,
-}
-
-// ============================================================
-// Tool traits — three execution modes
-// ============================================================
-
-/// OneShot: call and return immediately, no frontend UI interaction needed.
-/// Mirrors VCPChat's stdio plugins (child_process.spawn → stdout → result).
+/// 一次性工具：执行后立即返回结果。
 #[async_trait]
 pub trait OneShotTool: Send + Sync {
     fn manifest(&self) -> ToolManifest;
     async fn execute(&self, args: Value, app: &AppHandle) -> Result<Value, String>;
 }
 
-/// Interactive: requires frontend UI participation (camera, biometric, etc.).
-/// Mirrors VCPChat's handler-injection pattern (handleMusicControl, handleDesktopRemoteControl).
-/// Execution triggers a Tauri event → Vue shows UI → user completes action → result returns.
+/// 交互工具：通过前端往返完成需要用户参与的动作。
 #[allow(dead_code)]
 #[async_trait]
 pub trait InteractiveTool: Send + Sync {
     fn manifest(&self) -> ToolManifest;
-    /// Execute with frontend round-trip. Implementors use app.emit() + oneshot channel.
     async fn execute(&self, args: Value, app: &AppHandle) -> Result<Value, String>;
-    /// Android/iOS permissions required by this tool.
     fn required_permissions(&self) -> Vec<&'static str>;
 }
 
-/// Streaming: continuously produces data, pushed via update_static_placeholders.
-/// Mirrors VCPChat's static plugins + 30s cron push.
+/// 流式工具：提供静态占位符的当前快照。
 pub trait StreamingTool: Send + Sync {
     fn manifest(&self) -> ToolManifest;
-    /// Placeholder key, e.g. "{{MobileSensorGyro}}"
     fn placeholder_key(&self) -> &str;
-    /// Polling interval in seconds (metadata — not yet used by client.rs push loop, see C2)
     #[allow(dead_code)]
     fn poll_interval_secs(&self) -> u64;
-    /// Read current snapshot value (must be fast/non-blocking)
     fn read_current(&self, app: &AppHandle) -> Result<String, String>;
 }
-
-// ============================================================
-// Unified tool wrapper — so the registry can store all types
-// ============================================================
 
 #[allow(dead_code)]
 pub enum ToolEntry {
@@ -94,111 +50,167 @@ pub enum ToolEntry {
 impl ToolEntry {
     pub fn manifest(&self) -> ToolManifest {
         match self {
-            ToolEntry::OneShot(t) => t.manifest(),
-            ToolEntry::Interactive(t) => t.manifest(),
-            ToolEntry::Streaming(t) => t.manifest(),
+            Self::OneShot(tool) => tool.manifest(),
+            Self::Interactive(tool) => tool.manifest(),
+            Self::Streaming(tool) => tool.manifest(),
         }
     }
 }
 
-fn parse_disabled_config(content: &str) -> Result<LoadedDisabledToolsConfig, String> {
-    let value: Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
-    if value.is_array() {
-        let disabled_names =
-            serde_json::from_value::<Vec<String>>(value).map_err(|e| e.to_string())?;
-        return Ok(LoadedDisabledToolsConfig {
-            disabled_names,
-            migrated_from_legacy_array: true,
-        });
-    }
-
-    let config =
-        serde_json::from_value::<DisabledToolsConfigRead>(value).map_err(|e| e.to_string())?;
-    if config.schema_version != DISABLED_CONFIG_SCHEMA_VERSION {
-        return Err(format!(
-            "Unsupported disabled tools schemaVersion: {}",
-            config.schema_version
-        ));
-    }
-    Ok(LoadedDisabledToolsConfig {
-        disabled_names: config.disabled_names,
-        migrated_from_legacy_array: false,
-    })
+enum ExecutableTool {
+    OneShot(Arc<dyn OneShotTool>),
+    Interactive(Arc<dyn InteractiveTool>),
+    Streaming(Arc<dyn StreamingTool>),
 }
 
-fn migrate_legacy_disabled_names(
-    disabled_names: Vec<String>,
-    registered_names: &[&str],
-) -> HashSet<String> {
-    let mut disabled_set: HashSet<String> = disabled_names.into_iter().collect();
-    for name in DEFAULT_DISABLED_ON_LEGACY_CONFIG {
-        if registered_names.contains(name) {
-            disabled_set.insert((*name).to_string());
-        }
-    }
-    disabled_set
-}
-
-fn migrate_disabled_name_aliases(
-    disabled_set: &mut HashSet<String>,
-    registered_names: &[&str],
-) -> bool {
-    let mut changed = false;
-    for &(old_name, new_name) in DISABLED_TOOL_RENAME_ALIASES {
-        if disabled_set.contains(old_name)
-            && registered_names.contains(&new_name)
-            && disabled_set.insert(new_name.to_string())
-        {
-            changed = true;
-        }
-    }
-    changed
-}
-
-// ============================================================
-// ToolRegistry — the central tool manager
-// Mirrors Plugin.js: loadPlugins(), getAllPluginManifests(), processToolCall()
-// ============================================================
-
+/// 分布式工具注册表，策略采用显式 enabled allowlist。
 pub struct ToolRegistry {
     tools: HashMap<String, ToolEntry>,
-    disabled_names: RwLock<HashSet<String>>,
+    enabled_config: Mutex<ConfigState>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
-            disabled_names: RwLock::new(HashSet::new()),
+            enabled_config: Mutex::new(ConfigState::default()),
         }
     }
 
-    /// Sync disabled tools list from frontend. Returns true if the set changed.
-    pub fn update_disabled(&self, names: Vec<String>) -> bool {
-        if let Ok(mut guard) = self.disabled_names.write() {
-            let new_set: HashSet<String> = names
-                .into_iter()
-                .map(|name| self.resolve_tool_name(&name).unwrap_or(&name).to_string())
-                .collect();
-            if *guard != new_set {
-                *guard = new_set;
-                true
-            } else {
-                false
+    /// 在唯一配置锁下加载并校验 allowlist，未成功前保持拒绝策略。
+    pub async fn ensure_enabled_config_loaded(&self, app: &AppHandle) -> Result<(), String> {
+        let mut state = self.enabled_config.lock().await;
+        self.ensure_enabled_config_loaded_locked(app, &mut state)
+            .await
+    }
+
+    async fn ensure_enabled_config_loaded_locked(
+        &self,
+        app: &AppHandle,
+        state: &mut ConfigState,
+    ) -> Result<(), String> {
+        if state.loaded {
+            return Ok(());
+        }
+        let path = match config::config_path(app) {
+            Ok(path) => path,
+            Err(error) => return self.remember_load_error(state, error),
+        };
+        let content = match config::read_config(&path) {
+            Ok(content) => content,
+            Err(error) => return self.remember_load_error(state, error),
+        };
+        let (raw_names, source, needs_persist) = match content {
+            None => (Vec::new(), ConfigSource::Default, true),
+            Some(content) => match config::parse_config(&content) {
+                Ok(config::ParsedConfig::Enabled(names)) => (names, ConfigSource::Explicit, false),
+                Ok(config::ParsedConfig::LegacyDisabled) => {
+                    log::warn!("[Distributed] 检测到旧版 disabled 配置，迁移为空 allowlist。");
+                    (Vec::new(), ConfigSource::LegacyMigration, true)
+                }
+                Err(error) => return self.remember_load_error(state, error),
+            },
+        };
+        let enabled_names = match self.validate_enabled_names(raw_names) {
+            Ok(names) => names,
+            Err(error) => return self.remember_load_error(state, error),
+        };
+        if needs_persist {
+            if let Err(error) = config::persist_config(&path, &enabled_names) {
+                return self.remember_load_error(state, error);
             }
-        } else {
-            false
         }
+        state.enabled_names = enabled_names;
+        state.source = source;
+        state.loaded = true;
+        state.last_error = None;
+        log::info!(
+            "[Distributed] 已加载工具 allowlist，启用 {} 个工具。",
+            state.enabled_names.len()
+        );
+        Ok(())
     }
 
-    /// Check if a tool is enabled.
+    fn remember_load_error<T>(&self, state: &mut ConfigState, error: String) -> Result<T, String> {
+        state.last_error = Some(error.clone());
+        log::error!("[Distributed] 工具 allowlist 加载失败，保持全部拒绝: {error}");
+        Err(error)
+    }
+
+    fn validate_enabled_names(&self, names: Vec<String>) -> Result<HashSet<String>, String> {
+        let mut enabled = HashSet::new();
+        for name in names {
+            let resolved = self
+                .resolve_tool_name(&name)
+                .ok_or_else(|| format!("工具 allowlist 包含未知工具，已拒绝: {name}"))?;
+            if !enabled.insert(resolved.to_string()) {
+                return Err(format!("工具 allowlist 包含重复工具: {name}"));
+            }
+        }
+        Ok(enabled)
+    }
+
+    /// 更新 allowlist；只有原子落盘成功后才发布新的内存策略。
+    pub async fn update_enabled(
+        &self,
+        app: &AppHandle,
+        names: Vec<String>,
+    ) -> Result<bool, String> {
+        let mut state = self.enabled_config.lock().await;
+        self.ensure_enabled_config_loaded_locked(app, &mut state)
+            .await?;
+        let new_names = self.validate_enabled_names(names)?;
+        if new_names == state.enabled_names {
+            return Ok(false);
+        }
+        let path = match config::config_path(app) {
+            Ok(path) => path,
+            Err(error) => return self.remember_persist_error(&mut state, error),
+        };
+        if let Err(error) = config::persist_config(&path, &new_names) {
+            return self.remember_persist_error(&mut state, error);
+        }
+        state.enabled_names = new_names;
+        state.source = ConfigSource::Explicit;
+        state.last_error = None;
+        Ok(true)
+    }
+
+    /// 安全重置为全拒绝 allowlist，供用户清除旧版 disabled 配置。
+    pub async fn reset_enabled(&self, app: &AppHandle) -> Result<(), String> {
+        let mut state = self.enabled_config.lock().await;
+        self.ensure_enabled_config_loaded_locked(app, &mut state)
+            .await?;
+        if state.enabled_names.is_empty() {
+            return Ok(());
+        }
+        let path = match config::config_path(app) {
+            Ok(path) => path,
+            Err(error) => return self.remember_persist_error(&mut state, error),
+        };
+        let empty = HashSet::new();
+        if let Err(error) = config::persist_config(&path, &empty) {
+            return self.remember_persist_error(&mut state, error);
+        }
+        state.enabled_names = empty;
+        state.source = ConfigSource::Explicit;
+        state.last_error = None;
+        Ok(())
+    }
+
+    /// 返回 allowlist 状态；加载失败也通过 lastError 对外可见。
+    pub async fn config_status(&self, app: &AppHandle) -> ToolConfigStatus {
+        let _ = self.ensure_enabled_config_loaded(app).await;
+        self.enabled_config.lock().await.status()
+    }
+
+    /// 同步兼容查询只读已成功加载的 allowlist，未加载时一律拒绝。
     pub fn is_enabled(&self, name: &str) -> bool {
         let resolved_name = self.resolve_tool_name(name).unwrap_or(name);
-        if let Ok(guard) = self.disabled_names.read() {
-            !guard.contains(resolved_name)
-        } else {
-            true
-        }
+        self.enabled_config
+            .try_lock()
+            .map(|state| state.loaded && state.enabled_names.contains(resolved_name))
+            .unwrap_or(false)
     }
 
     fn resolve_tool_name<'a>(&'a self, name: &'a str) -> Option<&'a str> {
@@ -208,21 +220,15 @@ impl ToolRegistry {
         EXECUTION_TOOL_RENAME_ALIASES
             .iter()
             .find_map(|&(old_name, new_name)| {
-                if name == old_name && self.tools.contains_key(new_name) {
-                    Some(new_name)
-                } else {
-                    None
-                }
+                (name == old_name && self.tools.contains_key(new_name)).then_some(new_name)
             })
     }
 
-    /// Register a OneShot tool.
     pub fn register_oneshot<T: OneShotTool + 'static>(&mut self, tool: T) {
         let name = tool.manifest().name.clone();
         self.tools.insert(name, ToolEntry::OneShot(Arc::new(tool)));
     }
 
-    /// Register an Interactive tool.
     #[allow(dead_code)]
     pub fn register_interactive<T: InteractiveTool + 'static>(&mut self, tool: T) {
         let name = tool.manifest().name.clone();
@@ -230,319 +236,161 @@ impl ToolRegistry {
             .insert(name, ToolEntry::Interactive(Arc::new(tool)));
     }
 
-    /// Register a Streaming tool.
     pub fn register_streaming<T: StreamingTool + 'static>(&mut self, tool: T) {
         let name = tool.manifest().name.clone();
         self.tools
             .insert(name, ToolEntry::Streaming(Arc::new(tool)));
     }
 
-    /// Get all tool manifests for register_tools message.
-    /// Mirrors Plugin.js getAllPluginManifests()
-    /// 上报全部已注册工具（OneShot/Interactive/Streaming），
-    /// 服务端通过 pluginType 字段区分可执行与静态占位符类型。
-    pub fn get_all_manifests(&self) -> Vec<ToolManifest> {
-        self.tools
+    /// 获取远端注册用的启用工具集合。
+    pub async fn get_all_manifests(&self, app: &AppHandle) -> Result<Vec<ToolManifest>, String> {
+        let state = self.loaded_config(app).await?;
+        Ok(self
+            .tools
             .iter()
-            .filter(|(name, _)| self.is_enabled(name))
-            .map(|(_, e)| e.manifest())
-            .collect()
+            .filter(|(name, _)| state.enabled_names.contains(*name))
+            .map(|(_, entry)| entry.manifest())
+            .collect())
     }
 
-    /// Get one enabled tool manifest by name.
-    pub fn get_manifest(&self, name: &str) -> Option<ToolManifest> {
-        if !self.is_enabled(name) {
-            return None;
-        }
-        let resolved_name = self.resolve_tool_name(name)?;
-        self.tools.get(resolved_name).map(ToolEntry::manifest)
+    /// 获取单个启用工具的 manifest。
+    #[allow(dead_code)]
+    pub async fn get_manifest(
+        &self,
+        app: &AppHandle,
+        name: &str,
+    ) -> Result<Option<ToolManifest>, String> {
+        let state = self.loaded_config(app).await?;
+        let Some(resolved_name) = self.resolve_tool_name(name) else {
+            return Ok(None);
+        };
+        Ok(state
+            .enabled_names
+            .contains(resolved_name)
+            .then(|| self.tools.get(resolved_name).map(ToolEntry::manifest))
+            .flatten())
     }
 
-    /// Get all tool metadata with categories and placeholders for the frontend config.
-    pub fn get_tools_metadata(&self) -> Vec<serde_json::Value> {
+    /// 获取前端配置页需要的工具 metadata。
+    pub async fn get_tools_metadata(
+        &self,
+        app: &AppHandle,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let state = self.loaded_config(app).await?;
+        Ok(self.build_tools_metadata(&state.enabled_names))
+    }
+
+    fn build_tools_metadata(&self, enabled_names: &HashSet<String>) -> Vec<serde_json::Value> {
         self.tools
             .iter()
             .map(|(name, entry)| {
                 let manifest = entry.manifest();
-                let mut val = serde_json::to_value(&manifest).unwrap_or(serde_json::Value::Null);
-                if let Some(obj) = val.as_object_mut() {
+                let mut value = serde_json::to_value(&manifest).unwrap_or(serde_json::Value::Null);
+                if let Some(object) = value.as_object_mut() {
                     let category = match entry {
                         ToolEntry::OneShot(_) => "oneshot",
                         ToolEntry::Interactive(_) => "interactive",
                         ToolEntry::Streaming(_) => "streaming",
                     };
-                    obj.insert("category".to_string(), serde_json::json!(category));
-                    obj.insert(
+                    object.insert("category".to_string(), serde_json::json!(category));
+                    object.insert(
                         "enabled".to_string(),
-                        serde_json::json!(self.is_enabled(name)),
+                        serde_json::json!(enabled_names.contains(name)),
                     );
-                    if let Some(ref p) = manifest.placeholder {
-                        obj.insert("placeholder".to_string(), serde_json::json!(p));
+                    if let Some(placeholder) = &manifest.placeholder {
+                        object.insert("placeholder".to_string(), serde_json::json!(placeholder));
                     }
-                    obj.insert(
+                    object.insert(
                         "display_name".to_string(),
                         serde_json::json!(manifest.display_name),
                     );
                 }
-                val
+                value
             })
             .collect()
     }
 
-    /// Get all streaming placeholder values for update_static_placeholders.
-    /// Mirrors Plugin.js getAllPlaceholderValues()
-    pub fn get_all_placeholder_values(&self, app: &AppHandle) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-        for (name, entry) in self.tools.iter() {
-            if self.is_enabled(name) {
+    fn remember_persist_error<T>(
+        &self,
+        state: &mut ConfigState,
+        error: String,
+    ) -> Result<T, String> {
+        state.last_error = Some(error.clone());
+        log::error!("[Distributed] 工具 allowlist 持久化失败，未发布新状态: {error}");
+        Err(error)
+    }
+
+    /// 获取已启用流式工具的当前占位符值。
+    pub async fn get_all_placeholder_values(
+        &self,
+        app: &AppHandle,
+    ) -> Result<HashMap<String, String>, String> {
+        let state = self.loaded_config(app).await?;
+        let mut values = HashMap::new();
+        for (name, entry) in &self.tools {
+            if state.enabled_names.contains(name) {
                 if let ToolEntry::Streaming(tool) = entry {
                     if let Ok(value) = tool.read_current(app) {
-                        map.insert(tool.placeholder_key().to_string(), value);
+                        values.insert(tool.placeholder_key().to_string(), value);
                     }
                 }
             }
         }
-        map
+        Ok(values)
     }
 
-    /// Execute a tool by name. Routes to the correct handler.
-    /// Mirrors Plugin.js processToolCall()
+    /// 执行已启用工具，并在执行前确保 allowlist 已成功加载。
     pub async fn execute(
         &self,
         tool_name: &str,
         args: Value,
         app: &AppHandle,
     ) -> Result<Value, String> {
-        if !self.is_enabled(tool_name) {
-            return Err(format!(
-                "Tool '{}' is currently disabled on this mobile node.",
-                tool_name
-            ));
-        }
-        let resolved_name = self.resolve_tool_name(tool_name).unwrap_or(tool_name);
-
-        let entry = self
-            .tools
-            .get(resolved_name)
-            .ok_or_else(|| format!("Tool '{}' not found in registry.", tool_name))?;
-
-        match entry {
-            ToolEntry::OneShot(tool) => tool.execute(args, app).await,
-            ToolEntry::Interactive(tool) => tool.execute(args, app).await,
-            ToolEntry::Streaming(tool) => {
-                // For streaming tools, execute_tool returns a current snapshot.
-                tool.read_current(app).map(serde_json::Value::String)
-            }
+        let state = self.loaded_config(app).await?;
+        let executable = self.select_executable(&state.enabled_names, tool_name)?;
+        drop(state);
+        match executable {
+            ExecutableTool::OneShot(tool) => tool.execute(args, app).await,
+            ExecutableTool::Interactive(tool) => tool.execute(args, app).await,
+            ExecutableTool::Streaming(tool) => tool.read_current(app).map(Value::String),
         }
     }
 
-    /// Number of registered tools.
+    fn select_executable(
+        &self,
+        enabled_names: &HashSet<String>,
+        tool_name: &str,
+    ) -> Result<ExecutableTool, String> {
+        let resolved_name = self
+            .resolve_tool_name(tool_name)
+            .ok_or_else(|| format!("工具未注册: {tool_name}"))?;
+        if !enabled_names.contains(resolved_name) {
+            return Err(format!("工具未在 allowlist 中启用: {tool_name}"));
+        }
+        let entry = self
+            .tools
+            .get(resolved_name)
+            .ok_or_else(|| format!("工具未注册: {tool_name}"))?;
+        Ok(match entry {
+            ToolEntry::OneShot(tool) => ExecutableTool::OneShot(tool.clone()),
+            ToolEntry::Interactive(tool) => ExecutableTool::Interactive(tool.clone()),
+            ToolEntry::Streaming(tool) => ExecutableTool::Streaming(tool.clone()),
+        })
+    }
+
     pub fn tool_count(&self) -> usize {
         self.tools.len()
     }
 
-    /// Load disabled tools list from local JSON config file and populate memory state.
-    pub fn load_disabled_config(&self, app: &AppHandle) {
-        if let Ok(config_dir) = app.path().app_config_dir() {
-            let config_path = config_dir.join("distributed_tools.json");
-            if config_path.exists() {
-                if let Ok(mut file) = File::open(&config_path) {
-                    let mut content = String::new();
-                    if file.read_to_string(&mut content).is_ok() {
-                        match parse_disabled_config(&content) {
-                            Ok(config) => {
-                                let registered_names: Vec<&str> =
-                                    self.tools.keys().map(String::as_str).collect();
-                                let migrated_from_legacy = config.migrated_from_legacy_array;
-                                let mut disabled_names = if migrated_from_legacy {
-                                    migrate_legacy_disabled_names(
-                                        config.disabled_names,
-                                        &registered_names,
-                                    )
-                                } else {
-                                    config.disabled_names.into_iter().collect()
-                                };
-                                let migrated_renamed_aliases = migrate_disabled_name_aliases(
-                                    &mut disabled_names,
-                                    &registered_names,
-                                );
-                                if let Ok(mut guard) = self.disabled_names.write() {
-                                    *guard = disabled_names;
-                                    log::info!(
-                                        "[Distributed] Loaded disabled tools config: {:?}",
-                                        guard
-                                    );
-                                }
-                                if migrated_from_legacy || migrated_renamed_aliases {
-                                    if let Err(err) = self.save_disabled_config(app) {
-                                        log::warn!(
-                                            "[Distributed] Failed to migrate disabled tools config: {}",
-                                            err
-                                        );
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                log::warn!(
-                                    "[Distributed] Failed to parse disabled tools config; disabling all tools: {}",
-                                    err
-                                );
-                                self.disable_all_tools();
-                            }
-                        }
-                    } else {
-                        log::warn!(
-                            "[Distributed] Failed to read disabled tools config; disabling all tools"
-                        );
-                        self.disable_all_tools();
-                    }
-                } else {
-                    log::warn!(
-                        "[Distributed] Failed to open disabled tools config; disabling all tools"
-                    );
-                    self.disable_all_tools();
-                }
-            } else {
-                // 如果配置文件不存在（通常是首次运行），默认将所有已注册的工具标记为禁用（关闭），符合默认禁用插件的要求
-                self.disable_all_tools();
-                let _ = self.save_disabled_config(app);
-            }
-        }
-    }
-
-    fn disable_all_tools(&self) {
-        if let Ok(mut guard) = self.disabled_names.write() {
-            *guard = self.tools.keys().cloned().collect();
-            log::info!(
-                "[Distributed] Defaulting all tools to disabled: {:?}",
-                guard
-            );
-        }
-    }
-
-    /// Save current disabled tools list to local JSON config file.
-    pub fn save_disabled_config(&self, app: &AppHandle) -> Result<(), String> {
-        if let Ok(config_dir) = app.path().app_config_dir() {
-            // Ensure directory exists
-            let _ = std::fs::create_dir_all(&config_dir);
-            let config_path = config_dir.join("distributed_tools.json");
-            let names: Vec<String> = if let Ok(guard) = self.disabled_names.read() {
-                let mut names: Vec<String> = guard.iter().cloned().collect();
-                names.sort();
-                names
-            } else {
-                Vec::new()
-            };
-            let content = serde_json::to_string_pretty(&DisabledToolsConfigWrite {
-                schema_version: DISABLED_CONFIG_SCHEMA_VERSION,
-                disabled_names: names.clone(),
-            })
-            .map_err(|e| e.to_string())?;
-            let mut file = File::create(&config_path).map_err(|e| e.to_string())?;
-            file.write_all(content.as_bytes())
-                .map_err(|e| e.to_string())?;
-            log::info!("[Distributed] Saved disabled tools config: {:?}", names);
-        }
-        Ok(())
+    async fn loaded_config(
+        &self,
+        app: &AppHandle,
+    ) -> Result<tokio::sync::MutexGuard<'_, ConfigState>, String> {
+        self.ensure_enabled_config_loaded(app).await?;
+        Ok(self.enabled_config.lock().await)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn legacy_disabled_config_disables_new_topic_tools() {
-        let loaded = parse_disabled_config(r#"["MobileDeviceInfo"]"#).unwrap();
-        assert!(loaded.migrated_from_legacy_array);
-
-        let disabled = migrate_legacy_disabled_names(
-            loaded.disabled_names,
-            &["MobileDeviceInfo", "TopicMemo", "MobileTopicSponsor"],
-        );
-
-        assert!(disabled.contains("MobileDeviceInfo"));
-        assert!(disabled.contains("TopicMemo"));
-        assert!(disabled.contains("MobileTopicSponsor"));
-    }
-
-    #[test]
-    fn disabled_config_migrates_old_topic_sponsor_name_to_mobile_name() {
-        let mut disabled: HashSet<String> = ["TopicSponsor".to_string()].into_iter().collect();
-        let changed =
-            migrate_disabled_name_aliases(&mut disabled, &["TopicMemo", "MobileTopicSponsor"]);
-
-        assert!(changed);
-        assert!(disabled.contains("TopicSponsor"));
-        assert!(disabled.contains("MobileTopicSponsor"));
-    }
-
-    #[test]
-    fn old_topic_sponsor_name_resolves_to_mobile_execution_alias() {
-        let mut registry = ToolRegistry::new();
-        registry.register_oneshot(NoopTool("MobileTopicSponsor"));
-
-        assert_eq!(
-            registry.resolve_tool_name("TopicSponsor"),
-            Some("MobileTopicSponsor")
-        );
-        assert!(registry.get_manifest("TopicSponsor").is_some());
-        assert_eq!(registry.get_all_manifests().len(), 1);
-        assert_eq!(registry.get_all_manifests()[0].name, "MobileTopicSponsor");
-    }
-
-    #[test]
-    fn update_disabled_normalizes_old_topic_sponsor_name() {
-        let mut registry = ToolRegistry::new();
-        registry.register_oneshot(NoopTool("MobileTopicSponsor"));
-
-        assert!(registry.update_disabled(vec!["TopicSponsor".to_string()]));
-        assert!(!registry.is_enabled("TopicSponsor"));
-        assert!(!registry.is_enabled("MobileTopicSponsor"));
-        assert!(registry.get_manifest("TopicSponsor").is_none());
-        assert!(registry.get_all_manifests().is_empty());
-        assert!(!registry.update_disabled(vec!["MobileTopicSponsor".to_string()]));
-    }
-
-    #[test]
-    fn schema_disabled_config_preserves_explicit_topic_enablement() {
-        let loaded =
-            parse_disabled_config(r#"{"schemaVersion":1,"disabledNames":["MobileDeviceInfo"]}"#)
-                .unwrap();
-
-        assert!(!loaded.migrated_from_legacy_array);
-        assert_eq!(loaded.disabled_names, vec!["MobileDeviceInfo"]);
-    }
-
-    #[test]
-    fn schema_disabled_config_rejects_unsupported_version() {
-        let err = parse_disabled_config(r#"{"schemaVersion":2,"disabledNames":[]}"#).unwrap_err();
-
-        assert!(err.contains("Unsupported disabled tools schemaVersion"));
-    }
-
-    #[test]
-    fn schema_disabled_config_rejects_missing_version() {
-        assert!(parse_disabled_config(r#"{"disabledNames":[]}"#).is_err());
-    }
-
-    struct NoopTool(&'static str);
-
-    #[async_trait]
-    impl OneShotTool for NoopTool {
-        fn manifest(&self) -> ToolManifest {
-            ToolManifest {
-                name: self.0.to_string(),
-                display_name: self.0.to_string(),
-                description: String::new(),
-                placeholder: None,
-                invocation_commands: Vec::new(),
-                web_socket_push: None,
-            }
-        }
-
-        async fn execute(&self, _args: Value, _app: &AppHandle) -> Result<Value, String> {
-            Ok(Value::Null)
-        }
-    }
-}
+#[path = "tool_registry_tests.rs"]
+mod tests;

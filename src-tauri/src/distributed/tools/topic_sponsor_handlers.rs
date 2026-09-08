@@ -2,10 +2,10 @@ use serde_json::{json, Value};
 use sqlx::{Pool, Sqlite};
 use tauri::AppHandle;
 
+use crate::vcp_modules::chat::topic_service::record_topic_unread_for_message_in_tx;
 use crate::vcp_modules::chat::topic_types::TopicKey;
 use crate::vcp_modules::chat_manager::ChatMessage;
 use crate::vcp_modules::message_repository::{MessageRenderCompiler, MessageRepository};
-use crate::vcp_modules::sync_hash::HashAggregator;
 
 use super::topic_sponsor_support::{
     find_topic, get_bool_arg, get_i64_arg, get_string_arg, get_topic_id_arg, load_messages,
@@ -50,7 +50,7 @@ pub(super) async fn handle_create_topic(
     }))
 }
 
-async fn persist_new_topic(
+pub(super) async fn persist_new_topic(
     pool: &SqlitePool,
     topic_key: &TopicKey,
     chat_message: &ChatMessage,
@@ -59,12 +59,15 @@ async fn persist_new_topic(
 ) -> Result<(), String> {
     let blocks = MessageRenderCompiler::compile(&chat_message.content);
     let render_bytes = MessageRenderCompiler::serialize(&blocks)?;
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query(
         "INSERT INTO topics (
             topic_id, owner_id, owner_type, title, created_at, updated_at,
             msg_count, locked, unread, unread_count
-         ) VALUES (?, ?, 'agent', ?, ?, ?, 0, 0, 1, 1)",
+         ) VALUES (?, ?, 'agent', ?, ?, ?, 0, 0, 0, 0)",
     )
     .bind(&topic_key.topic_id)
     .bind(&topic_key.owner_id)
@@ -83,7 +86,7 @@ async fn persist_new_topic(
     )
     .await?;
     set_topic_message_count(&mut tx, topic_key, 1).await?;
-    HashAggregator::bubble_from_topic_for_key(&mut tx, topic_key).await?;
+    record_topic_unread_for_message_in_tx(&mut tx, topic_key, &chat_message.id, true, now).await?;
     tx.commit().await.map_err(|e| e.to_string())
 }
 
@@ -106,7 +109,7 @@ async fn set_topic_message_count(
     Ok(())
 }
 
-fn build_chat_message(
+pub(super) fn build_chat_message(
     id: String,
     agent: &AgentInfo,
     topic_id: String,
@@ -304,7 +307,7 @@ fn validate_reply_target(
     Ok(())
 }
 
-async fn persist_topic_reply(
+pub(super) async fn persist_topic_reply(
     pool: &SqlitePool,
     chat_message: &ChatMessage,
     topic: &super::topic_sponsor_support::TopicRow,
@@ -313,7 +316,10 @@ async fn persist_topic_reply(
     let topic_key = TopicKey::new(&topic.owner_type, &topic.owner_id, &topic.id);
     let blocks = MessageRenderCompiler::compile(&chat_message.content);
     let render_bytes = MessageRenderCompiler::serialize(&blocks)?;
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     MessageRepository::upsert_message_for_topic(
         &mut tx,
         chat_message,
@@ -334,7 +340,7 @@ async fn persist_topic_reply(
     .map_err(|e| e.to_string())?
     .unwrap_or(0);
     update_reply_topic(&mut tx, &topic_key, msg_count, now).await?;
-    HashAggregator::bubble_from_topic_for_key(&mut tx, &topic_key).await?;
+    record_topic_unread_for_message_in_tx(&mut tx, &topic_key, &chat_message.id, true, now).await?;
     tx.commit().await.map_err(|e| e.to_string())
 }
 
@@ -346,7 +352,7 @@ async fn update_reply_topic(
 ) -> Result<(), String> {
     sqlx::query(
         "UPDATE topics
-         SET unread = 1, unread_count = unread_count + 1, msg_count = ?, updated_at = ?
+         SET msg_count = ?, updated_at = ?
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
     )
     .bind(msg_count)

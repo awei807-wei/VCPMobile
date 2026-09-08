@@ -35,28 +35,31 @@ impl OneShotTool for TopicSponsorTool {
             placeholder: None,
             invocation_commands: vec![InvocationCommand {
                 command_identifier: TOOL_NAME.to_string(),
-                description: "在 VCPMobile 本机话题库中执行话题操作。\n\
-参数:\n\
-- command (字符串, 必需): CreateTopic, ReadUnlockedTopics, CheckNewTopics, CheckUnreadMessages, ReplyToTopic, CheckTopicOwnership, ListUnlockedTopics, ReadTopicContent\n\
-- maid (字符串, 必需): 目标或发起请求的智能体名称\n\
-- topic_name (字符串, CreateTopic 必需): 新话题名称\n\
-- initial_message (字符串, CreateTopic 必需): 第一条 assistant 消息\n\
-- topic_id/topicId/TopicId (字符串): 指定话题 ID\n\
-- message (字符串, ReplyToTopic 必需): 回复内容\n\
-- sender_name (字符串, ReplyToTopic 必需): 回复者名称\n\
-- caller_name (字符串, CheckTopicOwnership 必需): 调用者名称\n\
-- include_read (布尔, ReadUnlockedTopics 可选): 是否包含已读话题\n\
-- days (整数, CheckNewTopics 可选): 检查最近几天\n\
-调用格式:\n\
-<<<[TOOL_REQUEST]>>>\n\
-tool_name:「始」MobileTopicSponsor「末」\n\
-command:「始」CreateTopic「末」\n\
-maid:「始」HANNA「末」\n\
-topic_name:「始」一个新想法「末」\n\
-initial_message:「始」主人，我突然想到，我们可以一起写一个故事！「末」\n\
-<<<[END_TOOL_REQUEST]>>>"
+                description: concat!(
+                    "在 VCPMobile 本机话题库中执行话题操作。\n",
+                    "参数:\n",
+                    "- command (字符串, 必需): CreateTopic, ReadUnlockedTopics, CheckNewTopics, CheckUnreadMessages, ReplyToTopic, CheckTopicOwnership, ListUnlockedTopics, ReadTopicContent\n",
+                    "- maid (字符串, 必需): 目标或发起请求的智能体名称\n",
+                    "- topic_name (字符串, CreateTopic 必需): 新话题名称\n",
+                    "- initial_message (字符串, CreateTopic 必需): 第一条 assistant 消息\n",
+                    "- topic_id/topicId/TopicId (字符串): 指定话题 ID\n",
+                    "- message (字符串, ReplyToTopic 必需): 回复内容\n",
+                    "- sender_name (字符串, ReplyToTopic 必需): 回复者名称\n",
+                    "- caller_name (字符串, CheckTopicOwnership 必需): 调用者名称\n",
+                    "- include_read (布尔, ReadUnlockedTopics 可选): 是否包含已读话题\n",
+                    "- days (整数, CheckNewTopics 可选): 检查最近几天\n",
+                    "调用格式:\n",
+                    "<<<[TOOL_REQUEST]>>>\n",
+                    "tool_name:「始」MobileTopicSponsor「末」\n",
+                    "command:「始」CreateTopic「末」\n",
+                    "maid:「始」HANNA「末」\n",
+                    "topic_name:「始」一个新想法「末」\n",
+                    "initial_message:「始」主人，我突然想到，我们可以一起写一个故事！「末」\n",
+                    "<<<[END_TOOL_REQUEST]>>>"
+                )
+                .to_string(),
+                example: "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MobileTopicSponsor「末」\ncommand:「始」ReplyToTopic「末」\nmaid:「始」HANNA「末」\ntopic_id:「始」topic_1234567890「末」\nmessage:「始」这是一条回复消息「末」\nsender_name:「始」HANNA「末」\n<<<[END_TOOL_REQUEST]>>>"
                     .to_string(),
-                example: "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MobileTopicSponsor「末」\ncommand:「始」ReplyToTopic「末」\nmaid:「始」HANNA「末」\ntopic_id:「始」topic_1234567890「末」\nmessage:「始」这是一条回复消息「末」\nsender_name:「始」HANNA「末」\n<<<[END_TOOL_REQUEST]>>>".to_string(),
             }],
             web_socket_push: None,
         }
@@ -89,198 +92,5 @@ initial_message:「始」主人，我突然想到，我们可以一起写一个�
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vcp_modules::message_repository::ContentCompressor;
-    use serde_json::json;
-
-    #[test]
-    fn topic_sponsor_manifest_exposes_create_topic() {
-        let manifest = TopicSponsorTool.manifest();
-        assert_eq!(manifest.name, "MobileTopicSponsor");
-        assert_eq!(
-            manifest.invocation_commands[0].command_identifier,
-            "MobileTopicSponsor"
-        );
-        assert!(manifest
-            .invocation_commands
-            .iter()
-            .any(|command| command.description.contains("CreateTopic")));
-    }
-
-    #[test]
-    fn parses_legacy_topic_id_aliases() {
-        assert_eq!(
-            get_topic_id_arg(&json!({ "TopicId": "topic_1" })).as_deref(),
-            Some("topic_1")
-        );
-    }
-
-    #[test]
-    fn escapes_sql_like_wildcards() {
-        assert_eq!(escape_like_pattern(r"agent_%\name"), r"agent\_\%\\name");
-    }
-
-    #[tokio::test]
-    async fn agent_lookup_treats_like_wildcards_literally() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(
-            "CREATE TABLE agents (
-                agent_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                updated_at BIGINT NOT NULL,
-                deleted_at BIGINT
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO agents (agent_id, name, updated_at, deleted_at)
-             VALUES
-                ('agent_1', 'Alpha', 1, NULL),
-                ('agent_2', 'Beta', 2, NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let wildcard = find_agent_info(&pool, "%").await;
-        assert!(wildcard.is_err());
-
-        sqlx::query(
-            "INSERT INTO agents (agent_id, name, updated_at, deleted_at)
-             VALUES ('agent_3', 'agent_%', 3, NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let exact = find_agent_info(&pool, "agent_%").await.unwrap();
-        assert_eq!(exact.id, "agent_3");
-    }
-
-    #[tokio::test]
-    async fn load_messages_keeps_valid_messages_when_one_is_corrupt() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(
-            "CREATE TABLE messages (
-                owner_type TEXT NOT NULL,
-                owner_id TEXT NOT NULL,
-                topic_id TEXT NOT NULL,
-                msg_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                name TEXT,
-                content BLOB NOT NULL,
-                timestamp BIGINT NOT NULL,
-                agent_id TEXT,
-                finish_reason TEXT,
-                deleted_at BIGINT
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO messages (owner_type, owner_id, topic_id, msg_id, role, name, content, timestamp, agent_id, finish_reason, deleted_at)
-             VALUES ('agent', 'agent_1', 'topic_1', 'msg_1', 'assistant', 'Alpha', ?, 1, 'agent_1', 'completed', NULL)",
-        )
-        .bind(ContentCompressor::compress("valid content").unwrap())
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO messages (owner_type, owner_id, topic_id, msg_id, role, name, content, timestamp, agent_id, finish_reason, deleted_at)
-             VALUES ('agent', 'agent_1', 'topic_1', 'msg_2', 'assistant', 'Alpha', ?, 2, 'agent_1', 'completed', NULL)",
-        )
-        .bind(vec![1_u8, 2, 3])
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO messages (owner_type, owner_id, topic_id, msg_id, role, name, content, timestamp, agent_id, finish_reason, deleted_at)
-             VALUES ('group', 'group_1', 'topic_1', 'msg_group', 'assistant', 'Group', ?, 3, NULL, 'completed', NULL)",
-        )
-        .bind(ContentCompressor::compress("must stay isolated").unwrap())
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let messages = load_messages(&pool, "agent_1", "topic_1").await.unwrap();
-
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["content"], "valid content");
-        assert_eq!(messages[0]["contentCorrupted"], false);
-        assert_eq!(messages[1]["contentCorrupted"], true);
-        assert!(messages[1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("解压失败"));
-    }
-
-    #[tokio::test]
-    async fn first_message_name_returns_none_for_null_name() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(
-            "CREATE TABLE messages (
-                owner_type TEXT NOT NULL,
-                owner_id TEXT NOT NULL,
-                topic_id TEXT NOT NULL,
-                msg_id TEXT NOT NULL,
-                name TEXT,
-                timestamp BIGINT NOT NULL,
-                deleted_at BIGINT
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO messages (owner_type, owner_id, topic_id, msg_id, name, timestamp, deleted_at)
-             VALUES ('agent', 'agent_1', 'topic_1', 'msg_1', NULL, 1, NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let name = first_message_name(&pool, "agent_1", "topic_1")
-            .await
-            .unwrap();
-
-        assert_eq!(name, None);
-    }
-
-    #[tokio::test]
-    async fn first_message_name_returns_first_non_null_name() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(
-            "CREATE TABLE messages (
-                owner_type TEXT NOT NULL,
-                owner_id TEXT NOT NULL,
-                topic_id TEXT NOT NULL,
-                msg_id TEXT NOT NULL,
-                name TEXT,
-                timestamp BIGINT NOT NULL,
-                deleted_at BIGINT
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO messages (owner_type, owner_id, topic_id, msg_id, name, timestamp, deleted_at)
-             VALUES
-                ('agent', 'agent_1', 'topic_1', 'msg_1', 'creator', 1, NULL),
-                ('agent', 'agent_1', 'topic_1', 'msg_2', NULL, 2, NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let name = first_message_name(&pool, "agent_1", "topic_1")
-            .await
-            .unwrap();
-
-        assert_eq!(name.as_deref(), Some("creator"));
-    }
-}
+#[path = "topic_sponsor_tests.rs"]
+mod tests;

@@ -1,34 +1,58 @@
-use std::collections::HashSet;
-use std::path::Path;
+#[path = "maintenance_gc_batch.rs"]
+mod batch;
+#[path = "maintenance_gc_db.rs"]
+mod db;
+#[path = "maintenance_gc_io.rs"]
+mod io;
+#[path = "maintenance_gc_outbox.rs"]
+mod outbox;
+#[path = "maintenance_gc_paths.rs"]
+mod paths;
+#[path = "maintenance_gc_pipeline.rs"]
+mod pipeline;
+#[path = "maintenance_gc_reference.rs"]
+mod reference;
+#[path = "maintenance_gc_write.rs"]
+mod write;
 
 use tauri::{AppHandle, State};
 
+use self::db::{read_gc_cursor, ATTACHMENT_GC_CURSOR_KEY, RELATION_GC_CURSOR_KEY};
+#[cfg(test)]
+use self::pipeline::commit_gc_batch_inner;
+use self::pipeline::{build_gc_batch, build_single_batch, commit_gc_batch};
+pub(crate) use self::write::{
+    clear_live_attachment_unlink_debts, clear_live_attachment_unlink_debts_rusqlite,
+};
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::file_manager::{
-    delete_attachment_physical, get_attachments_root_dir, get_multimodal_cache_dir,
-    get_thumbnails_root_dir,
+    attachment_gc_gate, get_attachments_root_dir, get_multimodal_cache_dir, get_thumbnails_root_dir,
 };
-use crate::vcp_modules::infra::utils::{is_valid_cas_hash, YieldCounter};
+pub(super) use io::calculate_dir_size;
 
-pub(super) async fn calculate_dir_size(path: &Path) -> u64 {
-    let mut total_size = 0;
-    let mut stack = vec![path.to_path_buf()];
-    let mut yield_ctrl = YieldCounter::new(200);
-    while let Some(current_path) = stack.pop() {
-        if current_path.is_file() {
-            yield_ctrl.tick().await;
-            if let Ok(meta) = tokio::fs::metadata(&current_path).await {
-                total_size += meta.len();
-            }
-        } else if current_path.is_dir() {
-            if let Ok(mut entries) = tokio::fs::read_dir(&current_path).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    stack.push(entry.path());
-                }
-            }
-        }
-    }
-    total_size
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AttachmentGcReport {
+    pub retained: usize,
+    pub reclaimed: usize,
+    pub ghost_files: usize,
+    pub deferred: usize,
+    pub has_more: bool,
+    pub cursor: Option<String>,
+}
+
+pub(crate) use paths::ManagedAttachmentRoots;
+
+/// 根据应用配置解析附件 GC 使用的真实 managed roots。
+///
+/// 生产写入口必须复用该路径来源，不能从数据库路径或目录 basename 猜测 root。
+pub(crate) fn managed_attachment_roots<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
+) -> Result<ManagedAttachmentRoots, String> {
+    Ok(ManagedAttachmentRoots::new(
+        get_attachments_root_dir(app_handle)?,
+        get_thumbnails_root_dir(app_handle)?,
+        get_multimodal_cache_dir(app_handle)?,
+    ))
 }
 
 #[tauri::command]
@@ -36,208 +60,155 @@ pub async fn cleanup_orphaned_attachments(
     app_handle: AppHandle,
     db_state: State<'_, DbState>,
 ) -> Result<String, String> {
-    let attachments_dir = get_attachments_root_dir(&app_handle)?;
-    scrub_deleted_attachment_links(&db_state).await;
-    let used_hashes = collect_used_hashes(&db_state).await?;
-    let (deleted_count, freed_size) =
-        remove_unreferenced_index_entries(&app_handle, &db_state, &used_hashes).await?;
-    let current_hashes = load_current_hashes(&db_state).await;
-    let (ghost_deleted_count, ghost_freed_size) =
-        sweep_ghost_files(&app_handle, &attachments_dir, &current_hashes).await;
-    let total_deleted = deleted_count + ghost_deleted_count;
-    let total_freed_mb = ((freed_size + ghost_freed_size) as f64) / 1024.0 / 1024.0;
+    let report = reclaim_orphaned_attachments(&app_handle, &db_state.pool).await?;
+    let total_deleted = report.reclaimed + report.ghost_files;
+    let status = if report.has_more || report.deferred > 0 {
+        "清理部分完成，仍有工作待处理"
+    } else {
+        "清理完成"
+    };
     Ok(format!(
-        "清理完成：共删除 {} 个孤立文件 (常规: {} 个，幽灵: {} 个)，释放空间: {:.2} MB",
-        total_deleted, deleted_count, ghost_deleted_count, total_freed_mb
+        "{status}：删除 {} 个孤立文件，回收 {} 条附件索引，保留 {} 个有效附件，延期 {} 条{}",
+        total_deleted,
+        report.reclaimed,
+        report.retained,
+        report.deferred,
+        report
+            .has_more
+            .then_some("，仍有分页待处理")
+            .unwrap_or_default()
     ))
 }
 
-async fn scrub_deleted_attachment_links(db_state: &State<'_, DbState>) {
-    let _ = sqlx::query(
-        "UPDATE message_attachments
-         SET display_name = '[附件已删除]', src = NULL, status = 'removed'
-         WHERE deleted_at IS NOT NULL
-            OR EXISTS (
-                SELECT 1 FROM messages m
-                WHERE m.owner_type = message_attachments.owner_type
-                  AND m.owner_id = message_attachments.owner_id
-                  AND m.topic_id = message_attachments.topic_id
-                  AND m.msg_id = message_attachments.msg_id
-                  AND m.deleted_at IS NOT NULL
-            )
-            OR EXISTS (
-                SELECT 1 FROM topics t
-                WHERE t.owner_type = message_attachments.owner_type
-                  AND t.owner_id = message_attachments.owner_id
-                  AND t.topic_id = message_attachments.topic_id
-                  AND (t.deleted_at IS NOT NULL
-                    OR (t.owner_type = 'agent' AND EXISTS (
-                        SELECT 1 FROM agents a WHERE a.agent_id = t.owner_id AND a.deleted_at IS NOT NULL
-                    ))
-                    OR (t.owner_type = 'group' AND EXISTS (
-                        SELECT 1 FROM groups g WHERE g.group_id = t.owner_id AND g.deleted_at IS NOT NULL
-                    )))
-            )",
-    )
-    .execute(&db_state.pool)
-    .await;
-    let _ = sqlx::query(
-        "DELETE FROM message_attachments AS ma WHERE EXISTS (
-         SELECT 1 FROM messages m
-         WHERE m.owner_type = ma.owner_type AND m.owner_id = ma.owner_id
-           AND m.topic_id = ma.topic_id AND m.msg_id = ma.msg_id
-           AND m.deleted_at IS NOT NULL)",
-    )
-    .execute(&db_state.pool)
-    .await;
+/// 执行一页有界、幂等的附件回收；写闸门覆盖提交后的物理清理窗口。
+pub async fn reclaim_orphaned_attachments<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
+    pool: &sqlx::SqlitePool,
+) -> Result<AttachmentGcReport, String> {
+    let roots = managed_attachment_roots(app_handle)?;
+    reclaim_orphaned_attachments_at_roots(pool, &roots).await
 }
 
-async fn collect_used_hashes(db_state: &State<'_, DbState>) -> Result<HashSet<String>, String> {
-    let hashes: Vec<(String,)> = sqlx::query_as(
-        "SELECT DISTINCT ma.hash FROM message_attachments ma
-             INNER JOIN messages m ON ma.owner_type = m.owner_type AND ma.owner_id = m.owner_id
-                AND ma.topic_id = m.topic_id AND ma.msg_id = m.msg_id
-             INNER JOIN topics t ON m.owner_type = t.owner_type AND m.owner_id = t.owner_id
-                AND m.topic_id = t.topic_id
-             LEFT JOIN agents a ON t.owner_id = a.agent_id AND t.owner_type = 'agent'
-             LEFT JOIN groups g ON t.owner_id = g.group_id AND t.owner_type = 'group'
-             WHERE m.deleted_at IS NULL
-               AND ma.deleted_at IS NULL
-               AND t.deleted_at IS NULL
-               AND (t.owner_type != 'agent' OR a.deleted_at IS NULL)
-               AND (t.owner_type != 'group' OR g.deleted_at IS NULL)",
-    )
-    .fetch_all(&db_state.pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(hashes.into_iter().map(|(hash,)| hash).collect())
+/// Consume at most `page_budget` GC pages and yield between pages. A caller
+/// can schedule another bounded tick when the returned report still has work.
+pub async fn reclaim_orphaned_attachments_with_budget<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
+    pool: &sqlx::SqlitePool,
+    page_budget: usize,
+) -> Result<AttachmentGcReport, String> {
+    let roots = managed_attachment_roots(app_handle)?;
+    reclaim_orphaned_attachments_at_roots_with_budget(pool, &roots, page_budget).await
 }
 
-async fn remove_unreferenced_index_entries(
-    app_handle: &AppHandle,
-    db_state: &State<'_, DbState>,
-    used_hashes: &HashSet<String>,
-) -> Result<(i32, u64), String> {
-    let indexed: Vec<(String, String)> =
-        sqlx::query_as("SELECT hash, internal_path FROM attachments")
-            .fetch_all(&db_state.pool)
-            .await
-            .unwrap_or_default();
-    let mut deleted_count = 0;
-    let mut freed_size = 0;
-    for (hash, local_path) in indexed {
-        if used_hashes.contains(&hash) {
-            continue;
+async fn reclaim_orphaned_attachments_at_roots_with_budget(
+    pool: &sqlx::SqlitePool,
+    roots: &ManagedAttachmentRoots,
+    page_budget: usize,
+) -> Result<AttachmentGcReport, String> {
+    let mut combined = AttachmentGcReport::default();
+    let page_budget = page_budget.max(1);
+    for page in 0..page_budget {
+        let report = reclaim_orphaned_attachments_at_roots(pool, roots).await?;
+        combined.retained += report.retained;
+        combined.reclaimed += report.reclaimed;
+        combined.ghost_files += report.ghost_files;
+        combined.deferred += report.deferred;
+        combined.has_more = report.has_more;
+        combined.cursor = report.cursor;
+        if !report.has_more || page + 1 == page_budget {
+            break;
         }
-        let path = Path::new(&local_path);
-        if path.exists() {
-            if let Ok(meta) = tokio::fs::metadata(path).await {
-                freed_size += meta.len();
-            }
-            let _ = delete_attachment_physical(app_handle, &hash, &local_path).await;
-            deleted_count += 1;
-        }
-        let _ = sqlx::query("DELETE FROM attachments WHERE hash = ?")
-            .bind(&hash)
-            .execute(&db_state.pool)
-            .await;
+        tokio::task::yield_now().await;
     }
-    Ok((deleted_count, freed_size))
+    Ok(combined)
 }
 
-async fn load_current_hashes(db_state: &State<'_, DbState>) -> HashSet<String> {
-    sqlx::query_as::<_, (String,)>("SELECT hash FROM attachments")
-        .fetch_all(&db_state.pool)
+pub async fn reclaim_single_orphaned_attachment<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
+    pool: &sqlx::SqlitePool,
+    hash: &str,
+) -> Result<bool, String> {
+    let roots = managed_attachment_roots(app_handle)?;
+    reclaim_single_orphaned_attachment_at_roots(pool, &roots, hash).await
+}
+
+#[cfg(test)]
+async fn reclaim_with_commit_failure_at_roots(
+    pool: &sqlx::SqlitePool,
+    roots: &ManagedAttachmentRoots,
+) -> Result<AttachmentGcReport, String> {
+    let _gate = attachment_gc_gate().write().await;
+    let mut connection = pool
+        .acquire()
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(hash,)| hash)
-        .collect()
+        .map_err(|error| format!("获取附件 GC 数据库连接失败: {error}"))?;
+    begin_gc_transaction(&mut connection).await?;
+    let cursor = read_gc_cursor(&mut *connection, ATTACHMENT_GC_CURSOR_KEY).await?;
+    let relation_cursor = read_gc_cursor(&mut *connection, RELATION_GC_CURSOR_KEY)
+        .await?
+        .parse::<i64>()
+        .unwrap_or_default();
+    let result = build_gc_batch(&mut connection, roots, &cursor, relation_cursor).await;
+    commit_gc_batch_inner(&mut connection, roots, result, true).await
 }
 
-async fn sweep_ghost_files(
-    app_handle: &AppHandle,
-    attachments_dir: &Path,
-    current_hashes: &HashSet<String>,
-) -> (i32, u64) {
-    let mut deleted = sweep_hash_files(attachments_dir, current_hashes).await;
-    if let Ok(thumbnails_dir) = get_thumbnails_root_dir(app_handle) {
-        let result =
-            sweep_named_files(&thumbnails_dir, current_hashes, GhostFileKind::Thumbnail).await;
-        deleted = add_sweep_results(deleted, result);
-    }
-    if let Ok(cache_dir) = get_multimodal_cache_dir(app_handle) {
-        let result = sweep_named_files(&cache_dir, current_hashes, GhostFileKind::Cache).await;
-        deleted = add_sweep_results(deleted, result);
-    }
-    deleted
+async fn reclaim_orphaned_attachments_at_roots(
+    pool: &sqlx::SqlitePool,
+    roots: &ManagedAttachmentRoots,
+) -> Result<AttachmentGcReport, String> {
+    let _gate = attachment_gc_gate().write().await;
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("获取附件 GC 数据库连接失败: {error}"))?;
+    begin_gc_transaction(&mut connection).await?;
+    let cursor = read_gc_cursor(&mut *connection, ATTACHMENT_GC_CURSOR_KEY).await?;
+    let relation_cursor = read_gc_cursor(&mut *connection, RELATION_GC_CURSOR_KEY)
+        .await?
+        .parse::<i64>()
+        .unwrap_or_default();
+    let result = build_gc_batch(&mut connection, roots, &cursor, relation_cursor).await;
+    commit_gc_batch(&mut connection, roots, result).await
 }
 
-fn add_sweep_results(left: (i32, u64), right: (i32, u64)) -> (i32, u64) {
-    (left.0 + right.0, left.1 + right.1)
-}
-
-async fn sweep_hash_files(dir: &Path, current_hashes: &HashSet<String>) -> (i32, u64) {
-    sweep_named_files(dir, current_hashes, GhostFileKind::Attachment).await
-}
-
-#[derive(Clone, Copy)]
-enum GhostFileKind {
-    Attachment,
-    Thumbnail,
-    Cache,
-}
-
-async fn sweep_named_files(
-    dir: &Path,
-    current_hashes: &HashSet<String>,
-    kind: GhostFileKind,
-) -> (i32, u64) {
-    let mut deleted = 0;
-    let mut freed_size = 0;
-    let mut file_yield = YieldCounter::new(200);
-    if !dir.exists() {
-        return (deleted, freed_size);
-    }
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        return (deleted, freed_size);
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        file_yield.tick().await;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
+async fn reclaim_single_orphaned_attachment_at_roots(
+    pool: &sqlx::SqlitePool,
+    roots: &ManagedAttachmentRoots,
+    hash: &str,
+) -> Result<bool, String> {
+    let _gate = attachment_gc_gate().write().await;
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("获取附件 GC 数据库连接失败: {error}"))?;
+    begin_gc_transaction(&mut connection).await?;
+    let result = build_single_batch(&mut connection, roots, hash).await;
+    match result {
+        Ok(batch) => {
+            sqlx::query("COMMIT")
+                .execute(&mut *connection)
+                .await
+                .map_err(|error| format!("提交附件 CAS 事务失败: {error}"))?;
+            let reclaimed = batch.report.reclaimed == 1;
+            Ok(reclaimed)
         }
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        let Some(hash) = ghost_file_hash(&file_name, kind) else {
-            continue;
-        };
-        if current_hashes.contains(&hash) {
-            continue;
-        }
-        if let Ok(meta) = tokio::fs::metadata(&path).await {
-            freed_size += meta.len();
-        }
-        if tokio::fs::remove_file(&path).await.is_ok() {
-            deleted += 1;
-            log::info!("[Maintenance] GC swept ghost file: {}", file_name);
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+            Err(error)
         }
     }
-    (deleted, freed_size)
 }
 
-fn ghost_file_hash(file_name: &str, kind: GhostFileKind) -> Option<String> {
-    match kind {
-        GhostFileKind::Attachment => {
-            let hash = file_name.split('.').next().unwrap_or(file_name);
-            is_valid_cas_hash(hash).then(|| hash.to_string())
-        }
-        GhostFileKind::Thumbnail if file_name.ends_with("_thumb.webp") && file_name.len() == 75 => {
-            Some(file_name[..64].to_string())
-        }
-        GhostFileKind::Cache if file_name.ends_with(".json") && file_name.len() == 69 => {
-            Some(file_name[..64].to_string())
-        }
-        _ => None,
-    }
+async fn begin_gc_transaction(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+) -> Result<(), String> {
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut **connection)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("开启附件 GC CAS 事务失败: {error}"))
 }
+
+#[cfg(test)]
+#[path = "maintenance_gc_tests.rs"]
+mod tests;

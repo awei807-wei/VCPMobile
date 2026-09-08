@@ -150,7 +150,7 @@ async fn migrates_external_fork_database_copy_without_logical_data_loss() {
             .fetch_one(&pool)
             .await
             .unwrap(),
-        8
+        12
     );
     assert!(sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('render_cache') WHERE name = 'content_hash')"

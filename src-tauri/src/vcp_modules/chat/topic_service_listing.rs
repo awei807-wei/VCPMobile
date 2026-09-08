@@ -10,21 +10,32 @@ pub async fn get_unread_counts(
     db_state: State<'_, DbState>,
 ) -> Result<HashMap<String, i32>, String> {
     let start_time = std::time::Instant::now();
+    let result = load_unread_counts(&db_state.pool).await?;
+    log::info!(
+        "[Profile] get_unread_counts finished. Total: {}ms",
+        start_time.elapsed().as_millis()
+    );
+    Ok(result)
+}
+
+pub(crate) async fn load_unread_counts(
+    pool: &sqlx::SqlitePool,
+) -> Result<HashMap<String, i32>, String> {
     let rows = sqlx::query(
         "SELECT owner_type, owner_id,
-                CAST(COALESCE(SUM(unread_count), 0) AS INTEGER) as total_count,
+                CAST(COALESCE(SUM(CASE WHEN unread = 1 THEN unread_count ELSE 0 END), 0) AS INTEGER) as total_count,
                 MAX(CASE WHEN unread = 1 THEN 1 ELSE 0 END) as has_unread
          FROM topics
          WHERE deleted_at IS NULL
          GROUP BY owner_type, owner_id",
     )
-    .fetch_all(&db_state.pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
 
     let mut result = HashMap::new();
     for row in rows {
-        let _owner_type: String = row.get("owner_type");
+        let owner_type: String = row.get("owner_type");
         let owner_id: String = row.get("owner_id");
         let total_count: i64 = row.get("total_count");
         let has_unread: i32 = row.get("has_unread");
@@ -36,15 +47,74 @@ pub async fn get_unread_counts(
             0
         };
         if value != 0 {
-            result.insert(owner_id, value);
+            result.insert(unread_owner_key(&owner_type, &owner_id), value);
         }
     }
 
-    log::info!(
-        "[Profile] get_unread_counts finished. Total: {}ms",
-        start_time.elapsed().as_millis()
-    );
     Ok(result)
+}
+
+pub(crate) fn unread_owner_key(owner_type: &str, owner_id: &str) -> String {
+    format!("{}:{}", owner_type, encode_uri_component(owner_id))
+}
+
+/// Keep the owner aggregation key byte-for-byte compatible with the frontend's
+/// `encodeURIComponent` contract. `urlencoding::encode` follows RFC 3986 and
+/// escapes `!`, `'`, `(`, `)` and `*`, while JavaScript leaves those bytes
+/// unescaped.
+fn encode_uri_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => encoded.push(*byte as char),
+            byte => {
+                use std::fmt::Write;
+                write!(encoded, "%{byte:02X}").expect("writing to String cannot fail");
+            }
+        }
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unread_owner_key;
+
+    #[test]
+    fn owner_unread_key_matches_frontend_encode_uri_component_contract() {
+        let cases = [
+            ("owner!x", "owner!x"),
+            ("owner with space", "owner%20with%20space"),
+            ("owner%value", "owner%25value"),
+            ("owner/path", "owner%2Fpath"),
+            ("所有者/😀", "%E6%89%80%E6%9C%89%E8%80%85%2F%F0%9F%98%80"),
+        ];
+        for (owner_id, encoded_id) in cases {
+            assert_eq!(
+                unread_owner_key("agent", owner_id),
+                format!("agent:{encoded_id}")
+            );
+        }
+    }
+
+    #[test]
+    fn owner_unread_key_keeps_agent_and_group_namespaces_separate() {
+        assert_ne!(
+            unread_owner_key("agent", "same/id"),
+            unread_owner_key("group", "same/id")
+        );
+    }
 }
 
 #[tauri::command]

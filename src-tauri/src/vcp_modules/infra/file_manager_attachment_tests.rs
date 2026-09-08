@@ -1,10 +1,23 @@
 use super::{
     canonical_file_within_root, check_existing_cas_size, check_existing_cas_size_async,
-    commit_registered_attachment, normalize_attachment_mime, safe_storage_extension,
-    validate_attachment_cas_path, verify_expected_hash, verify_file_sha256,
+    normalize_attachment_mime, safe_storage_extension, validate_attachment_cas_path,
+    verify_expected_hash, verify_file_sha256,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+#[path = "file_manager_attachment_registration_tests.rs"]
+mod registration_tests;
+
+static XDG_CONFIG_HOME_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub(crate) async fn lock_xdg_config_home() -> tokio::sync::MutexGuard<'static, ()> {
+    XDG_CONFIG_HOME_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
 
 fn test_root(label: &str) -> PathBuf {
     let root =
@@ -141,126 +154,4 @@ async fn cas_content_is_rehashed_before_binding() {
     assert!(verify_file_sha256(&path, &expected).await.is_err());
 
     remove_test_root(&root);
-}
-
-async fn execute_sql(pool: &sqlx::SqlitePool, statement: &str) {
-    sqlx::query(statement)
-        .execute(pool)
-        .await
-        .expect("execute fixture SQL");
-}
-
-async fn relation(pool: &sqlx::SqlitePool, msg_id: &str) -> (String, Option<String>) {
-    sqlx::query_as("SELECT status, src FROM message_attachments WHERE msg_id = ?")
-        .bind(msg_id)
-        .fetch_one(pool)
-        .await
-        .expect("read attachment relation")
-}
-
-#[tokio::test]
-async fn registration_promotes_only_live_message_topic_and_owner_relations() {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open database");
-    execute_sql(
-        &pool,
-        "CREATE TABLE attachments (
-            hash TEXT PRIMARY KEY, mime_type TEXT, size INTEGER, internal_path TEXT,
-            created_at INTEGER, updated_at INTEGER
-        )",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, deleted_at INTEGER)",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "CREATE TABLE groups (group_id TEXT PRIMARY KEY, deleted_at INTEGER)",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "CREATE TABLE topics (
-            owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
-            deleted_at INTEGER, PRIMARY KEY(owner_type, owner_id, topic_id)
-        )",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "CREATE TABLE messages (
-            owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
-            msg_id TEXT NOT NULL, deleted_at INTEGER,
-            PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
-        )",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "CREATE TABLE message_attachments (
-            owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
-            msg_id TEXT NOT NULL, hash TEXT, status TEXT, src TEXT, deleted_at INTEGER
-        )",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "INSERT INTO agents VALUES ('live-agent', NULL), ('dead-agent', 1)",
-    )
-    .await;
-    execute_sql(&pool, "INSERT INTO groups VALUES ('live-group', NULL)").await;
-    execute_sql(
-        &pool,
-        "INSERT INTO topics (owner_type, owner_id, topic_id, deleted_at) VALUES
-            ('agent', 'live-agent', 'live-agent-topic', NULL),
-            ('group', 'live-group', 'live-group-topic', NULL),
-            ('agent', 'live-agent', 'dead-topic', 1),
-            ('agent', 'dead-agent', 'dead-owner-topic', NULL)",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "INSERT INTO messages (owner_type, owner_id, topic_id, msg_id, deleted_at) VALUES
-            ('agent', 'live-agent', 'live-agent-topic', 'live-agent-message', NULL),
-            ('group', 'live-group', 'live-group-topic', 'live-group-message', NULL),
-            ('agent', 'live-agent', 'dead-topic', 'dead-topic-message', NULL),
-            ('agent', 'dead-agent', 'dead-owner-topic', 'dead-owner-message', NULL),
-            ('agent', 'live-agent', 'live-agent-topic', 'dead-message', 1)",
-    )
-    .await;
-    execute_sql(
-        &pool,
-        "INSERT INTO message_attachments
-            (owner_type, owner_id, topic_id, msg_id, hash, status, src, deleted_at) VALUES
-            ('agent', 'live-agent', 'live-agent-topic', 'live-agent-message', 'hash', 'desktop_only', NULL, NULL),
-            ('group', 'live-group', 'live-group-topic', 'live-group-message', 'hash', 'desktop_only', NULL, NULL),
-            ('agent', 'live-agent', 'dead-topic', 'dead-topic-message', 'hash', 'desktop_only', NULL, NULL),
-            ('agent', 'dead-agent', 'dead-owner-topic', 'dead-owner-message', 'hash', 'desktop_only', NULL, NULL),
-            ('agent', 'live-agent', 'live-agent-topic', 'dead-message', 'hash', 'desktop_only', NULL, NULL)",
-    )
-    .await;
-
-    commit_registered_attachment(&pool, "hash", "text/plain", 4, "/cas/hash", 10)
-        .await
-        .expect("register attachment");
-
-    assert_eq!(
-        relation(&pool, "live-agent-message").await,
-        ("ready".to_string(), Some("file:///cas/hash".to_string()))
-    );
-    assert_eq!(
-        relation(&pool, "live-group-message").await,
-        ("ready".to_string(), Some("file:///cas/hash".to_string()))
-    );
-    for msg_id in ["dead-topic-message", "dead-owner-message", "dead-message"] {
-        assert_eq!(
-            relation(&pool, msg_id).await,
-            ("desktop_only".to_string(), None)
-        );
-    }
 }

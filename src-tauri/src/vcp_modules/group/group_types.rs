@@ -31,7 +31,7 @@ pub struct GroupConfig {
     /// 发言模式 (sequential, naturerandom, invite_only)
     #[serde(default = "default_group_mode")]
     pub mode: String,
-    /// 成员标签 (映射 agentId -> tags)
+    /// 成员标签映射；成员移除后标签仍保留，重新加入时恢复。
     #[serde(default)]
     pub member_tags: Option<serde_json::Value>,
     /// 群组全局提示词

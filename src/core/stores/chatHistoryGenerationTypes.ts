@@ -8,6 +8,8 @@ import type {
 export type PendingGenerationOptions = {
   requestId?: string;
   registered?: boolean;
+  /** 调用方已持久化用户消息，生成阶段不得再次追加。 */
+  userMessagePersisted?: boolean;
   ownerId?: string;
   ownerType?: ConversationOwnerType;
   topicId?: string;

@@ -17,6 +17,30 @@ interface RegenerationDeps {
   currentIdentity: () => ConversationIdentity | null;
   isCurrentIdentity: (identity: ConversationIdentity) => boolean;
   summarizeTopic: () => Promise<void>;
+  reloadCurrentHistory?: (identity: ConversationIdentity) => Promise<void>;
+}
+
+interface RegenerationMutationResult {
+  msgCount: number;
+  deletedIds: string[];
+}
+
+function readRegenerationResult(value: unknown): RegenerationMutationResult {
+  if (!value || typeof value !== "object")
+    throw new Error("后端未返回有效的重新生成结果");
+  const result = value as { msgCount?: unknown; deletedIds?: unknown };
+  if (
+    typeof result.msgCount !== "number" ||
+    !Number.isSafeInteger(result.msgCount) ||
+    result.msgCount < 0 ||
+    !Array.isArray(result.deletedIds) ||
+    result.deletedIds.some((messageId) => typeof messageId !== "string")
+  )
+    throw new Error("后端返回的重新生成结果无效");
+  return {
+    msgCount: result.msgCount,
+    deletedIds: result.deletedIds as string[],
+  };
 }
 
 function handleRegenerationMessage(
@@ -26,19 +50,31 @@ function handleRegenerationMessage(
   topicId: string,
   ownerId: string,
   ownerType: ConversationOwnerType,
+  generation: number,
 ): void {
   const eventIdentity = makeConversationIdentity(ownerId, ownerType, topicId);
   if (
-    eventIdentity &&
-    sameConversationIdentity(eventIdentity, identity) &&
-    deps.isCurrentIdentity(identity) &&
-    !deps.currentChatHistory.value.some((item) => item.id === message.id)
-  ) {
-    deps.currentChatHistory.value.push(message);
-    deps.currentChatHistory.value.sort(
-      (left, right) => left.timestamp - right.timestamp,
-    );
+    !eventIdentity ||
+    !sameConversationIdentity(eventIdentity, identity) ||
+    !deps.isCurrentIdentity(identity)
+  )
+    return;
+  message.generation = generation;
+  const targetIndex = deps.currentChatHistory.value.findIndex(
+    (item) => item.id === message.id,
+  );
+  if (targetIndex === -1) deps.currentChatHistory.value.push(message);
+  else {
+    const existing = deps.currentChatHistory.value[targetIndex];
+    if (existing.role !== message.role) return;
+    if (existing.generation !== undefined && existing.generation > generation)
+      return;
+    if (existing !== message)
+      deps.currentChatHistory.value[targetIndex] = message;
   }
+  deps.currentChatHistory.value.sort(
+    (left, right) => left.timestamp - right.timestamp,
+  );
 }
 
 function handleRegenerationFinished(
@@ -47,12 +83,18 @@ function handleRegenerationFinished(
   topicId: string,
   ownerId: string,
   ownerType: ConversationOwnerType,
+  messageId: string,
+  generation: number,
 ): void {
   const eventIdentity = makeConversationIdentity(ownerId, ownerType, topicId);
   if (
     eventIdentity &&
     sameConversationIdentity(eventIdentity, identity) &&
-    deps.isCurrentIdentity(identity)
+    deps.isCurrentIdentity(identity) &&
+    deps.currentChatHistory.value.some(
+      (message) =>
+        message.id === messageId && message.generation === generation,
+    )
   ) {
     void deps.summarizeTopic();
   }
@@ -61,15 +103,18 @@ function handleRegenerationFinished(
 function createRegenerationChannel(
   deps: RegenerationDeps,
   identity: ConversationIdentity,
-): Channel<any> {
+): { channel: Channel<any>; commit: () => void } {
   const streamChannel = new Channel<any>();
-  streamChannel.onmessage = (event) =>
+  const bufferedEvents: any[] = [];
+  let committed = false;
+  const processEvent = (event: any) =>
     deps.streamStore.processStreamEvent(event, {
       onMessageCreated: (
         message: ChatMessage,
         topicId: string,
         ownerId: string,
         ownerType: ConversationOwnerType,
+        generation: number,
       ) =>
         handleRegenerationMessage(
           deps,
@@ -78,16 +123,41 @@ function createRegenerationChannel(
           topicId,
           ownerId,
           ownerType,
+          generation,
         ),
       onStreamFinished: (
-        _messageId: string,
+        messageId: string,
         topicId: string,
         ownerId: string,
         ownerType: ConversationOwnerType,
+        generation: number,
       ) =>
-        handleRegenerationFinished(deps, identity, topicId, ownerId, ownerType),
+        handleRegenerationFinished(
+          deps,
+          identity,
+          topicId,
+          ownerId,
+          ownerType,
+          messageId,
+          generation,
+        ),
     });
-  return streamChannel;
+  streamChannel.onmessage = (event) => {
+    if (!committed) {
+      bufferedEvents.push(event);
+      return;
+    }
+    processEvent(event);
+  };
+  return {
+    channel: streamChannel,
+    commit: () => {
+      committed = true;
+      const pendingEvents = bufferedEvents;
+      bufferedEvents.length = 0;
+      pendingEvents.forEach(processEvent);
+    },
+  };
 }
 
 async function regenerateResponse(
@@ -100,27 +170,8 @@ async function regenerateResponse(
   );
   if (!identity || targetIndex === -1) return;
 
-  let lastUserMsgIndex = targetIndex - 1;
-  while (
-    lastUserMsgIndex >= 0 &&
-    deps.currentChatHistory.value[lastUserMsgIndex].role !== "user"
-  )
-    lastUserMsgIndex -= 1;
-  if (lastUserMsgIndex === -1) return;
-
-  const lastUserMsg = deps.currentChatHistory.value[lastUserMsgIndex];
-  const countToDelete =
-    deps.currentChatHistory.value.length - lastUserMsgIndex - 1;
-  if (deps.isCurrentIdentity(identity)) {
-    deps.currentChatHistory.value = deps.currentChatHistory.value.slice(
-      0,
-      lastUserMsgIndex + 1,
-    );
-    deps.topicStore.decrementTopicMsgCount(identity, countToDelete);
-  }
-
   acquireScreenKeep();
-  const pendingRequestId = `regen_${lastUserMsg.id}`;
+  const pendingRequestId = `regen_${targetMessageId}`;
   deps.streamStore.addPendingGeneration(
     identity.ownerId,
     identity.ownerType,
@@ -128,16 +179,36 @@ async function regenerateResponse(
     pendingRequestId,
   );
   try {
-    const streamChannel = createRegenerationChannel(deps, identity);
-    await invoke("regenerate_topic_response", {
-      ownerId: identity.ownerId,
-      ownerType: identity.ownerType,
-      topicId: identity.topicId,
-      targetUserMsgId: lastUserMsg.id,
-      streamChannel,
-    });
+    const regenerationChannel = createRegenerationChannel(deps, identity);
+    const result = readRegenerationResult(
+      await invoke("regenerate_topic_response", {
+        ownerId: identity.ownerId,
+        ownerType: identity.ownerType,
+        topicId: identity.topicId,
+        targetResponseMsgId: targetMessageId,
+        streamChannel: regenerationChannel.channel,
+      }),
+    );
+    for (const messageId of result.deletedIds) {
+      deps.streamStore.cancelUnreadReceipt?.(identity, messageId);
+    }
+    if (deps.isCurrentIdentity(identity)) {
+      const deleted = new Set(result.deletedIds);
+      deps.currentChatHistory.value = deps.currentChatHistory.value.filter(
+        (message) => !deleted.has(message.id),
+      );
+      deps.topicStore.setTopicMsgCount?.(identity, result.msgCount);
+    }
+    regenerationChannel.commit();
   } catch (error) {
-    console.error("[ChatHistoryStore] Regeneration failed:", error);
+    console.error("[ChatHistoryStore] 重新生成失败：", error);
+    if (deps.isCurrentIdentity(identity) && deps.reloadCurrentHistory) {
+      try {
+        await deps.reloadCurrentHistory(identity);
+      } catch (reloadError) {
+        console.error("[ChatHistoryStore] 重新加载历史失败：", reloadError);
+      }
+    }
   } finally {
     deps.streamStore.removePendingGeneration(
       identity.ownerId,

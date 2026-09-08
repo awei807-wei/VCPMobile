@@ -293,10 +293,11 @@ pub(crate) async fn register_promoted_file(
     promoted: &PromotedFile,
     original_name: String,
     mime_type: Option<String>,
+    gate: &super::AttachmentReadGuard,
 ) -> Result<AttachmentData, String> {
     let initial_mime = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
     let refined_mime = get_refined_mime_type(&promoted.path, &original_name, &initial_mime);
-    super::registration::register_attachment_internal(
+    super::registration::register_attachment_internal_unlocked(
         app_handle,
         &db_state.pool,
         staging.hash.clone(),
@@ -304,6 +305,7 @@ pub(crate) async fn register_promoted_file(
         refined_mime,
         staging.size,
         promoted.path.to_string_lossy().into_owned(),
+        gate,
     )
     .await
 }
@@ -314,6 +316,7 @@ pub(crate) async fn process_staged_thumbnail(
     source: &Path,
     hash: &str,
     created_at: u64,
+    _gate: &super::AttachmentReadGuard,
 ) -> Result<String, String> {
     let thumbs_dir = get_thumbnails_root_dir(app_handle)?;
     tokio::fs::create_dir_all(&thumbs_dir)
@@ -327,13 +330,27 @@ pub(crate) async fn process_staged_thumbnail(
     if !destination.exists() {
         copy_thumbnail_to_cas(source, &destination, hash).await?;
     }
+    let mut tx = db_state
+        .pool
+        .begin()
+        .await
+        .map_err(|error| format!("启动附件缩略图元数据事务失败: {error}"))?;
     sqlx::query("UPDATE attachments SET thumbnail_path = ?, updated_at = ? WHERE hash = ?")
         .bind(&destination_str)
         .bind(created_at as i64)
         .bind(hash)
-        .execute(&db_state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|error| format!("更新附件缩略图元数据失败: {error}"))?;
+    let roots =
+        crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(app_handle)?;
+    crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
+        &mut *tx, hash, &roots,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("提交附件缩略图元数据事务失败: {error}"))?;
     if let Err(error) = tokio::fs::remove_file(source).await {
         log::warn!("附件缩略图已注册，但清理 staging 文件失败: {error}");
     }

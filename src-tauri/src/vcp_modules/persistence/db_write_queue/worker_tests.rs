@@ -5,6 +5,7 @@ use super::{
 use crate::vcp_modules::persistence::db_write_queue::DbWriteTask;
 use crate::vcp_modules::sync_dto::{AgentTopicSyncDTO, GroupTopicSyncDTO};
 use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use rusqlite::{Connection, TransactionBehavior};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -49,6 +50,9 @@ fn setup_schema(connection: &Connection) {
              CREATE TABLE topics (
                 owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
                 title TEXT, created_at INTEGER, locked INTEGER, unread INTEGER,
+                unread_count INTEGER NOT NULL DEFAULT 0,
+                msg_count INTEGER NOT NULL DEFAULT 0,
+                last_message_updated_at INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER, config_hash TEXT NOT NULL DEFAULT '',
                 content_hash TEXT NOT NULL DEFAULT '', deleted_at INTEGER,
                 PRIMARY KEY(owner_type, owner_id, topic_id)
@@ -58,10 +62,185 @@ fn setup_schema(connection: &Connection) {
                 msg_id TEXT NOT NULL, content_hash TEXT NOT NULL DEFAULT '',
                 timestamp INTEGER, deleted_at INTEGER
              );
+             CREATE TABLE messages_fts (
+                owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT, content TEXT
+             );
+             CREATE TABLE render_cache (
+                owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT
+             );
+             CREATE TABLE message_attachments (
+                owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT
+             );
+             CREATE TABLE active_generations (
+                owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT
+             );
+             CREATE TABLE message_unread_receipts (
+                owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
+                msg_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+                counted_unread INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
+             );
              INSERT INTO agents (agent_id) VALUES ('agent-a');
              INSERT INTO groups (group_id) VALUES ('group-a');",
         )
         .expect("create worker contract schema");
+}
+
+#[tokio::test]
+async fn real_worker_topic_read_sync_clears_stale_receipt_before_delete() {
+    let path = std::env::temp_dir().join(format!(
+        "vcp-mobile-write-queue-unread-{}-{}.sqlite",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let connection = Connection::open(&path).expect("open worker unread database");
+    setup_schema(&connection);
+    connection
+        .execute(
+            "INSERT INTO topics
+                (owner_type, owner_id, topic_id, title, created_at, locked,
+                 unread, unread_count, updated_at)
+             VALUES ('agent', 'agent-a', 'topic-read', 'stale unread', 1, 1, 1, 7, 1)",
+            [],
+        )
+        .expect("seed stale unread topic");
+    connection
+        .execute_batch(
+            "INSERT INTO messages
+                (owner_type, owner_id, topic_id, msg_id, content_hash, timestamp, deleted_at)
+             VALUES
+                ('agent', 'agent-a', 'topic-read', 'message-a', 'hash-a', 10, NULL),
+                ('agent', 'agent-a', 'topic-read', 'message-b', 'hash-b', 20, NULL);
+             INSERT INTO message_unread_receipts
+                (owner_type, owner_id, topic_id, msg_id, created_at, counted_unread)
+             VALUES ('agent', 'agent-a', 'topic-read', 'message-a', 1, 1);",
+        )
+        .expect("seed old unread message and receipt");
+    drop(connection);
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open queue coordination pool");
+    let mut queue = super::DbWriteQueue::new(pool, path.clone());
+    queue
+        .submit(DbWriteTask::AgentTopic {
+            topic_id: "topic-read".to_string(),
+            dto: AgentTopicSyncDTO {
+                id: "topic-read".to_string(),
+                name: "read from sync".to_string(),
+                created_at: 1,
+                locked: true,
+                unread: false,
+                owner_id: "agent-a".to_string(),
+            },
+        })
+        .await
+        .expect("submit topic read sync");
+    queue
+        .flush()
+        .await
+        .expect("worker should commit topic read");
+
+    let verification = Connection::open(&path).expect("open verification connection");
+    let state: (i64, i64) = verification
+        .query_row(
+            "SELECT unread, unread_count FROM topics
+             WHERE owner_type = 'agent' AND owner_id = 'agent-a' AND topic_id = 'topic-read'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read synced topic");
+    assert_eq!(state, (0, 0));
+    let old_receipt: i64 = verification
+        .query_row(
+            "SELECT counted_unread FROM message_unread_receipts
+             WHERE owner_type = 'agent' AND owner_id = 'agent-a'
+               AND topic_id = 'topic-read' AND msg_id = 'message-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read cleared old unread receipt");
+    assert_eq!(old_receipt, 0);
+
+    verification
+        .execute(
+            "UPDATE topics SET unread = 1, unread_count = 1
+             WHERE owner_type = 'agent' AND owner_id = 'agent-a' AND topic_id = 'topic-read'",
+            [],
+        )
+        .expect("seed new unread message count");
+    verification
+        .execute(
+            "INSERT INTO message_unread_receipts
+                (owner_type, owner_id, topic_id, msg_id, created_at, counted_unread)
+             VALUES ('agent', 'agent-a', 'topic-read', 'message-b', 2, 1)",
+            [],
+        )
+        .expect("seed new unread receipt");
+    drop(verification);
+
+    queue
+        .submit(DbWriteTask::DeleteMessage {
+            message: MessageKey::new(TopicKey::new("agent", "agent-a", "topic-read"), "message-a"),
+            deleted_at: 3,
+        })
+        .await
+        .expect("submit old message delete");
+    queue
+        .flush()
+        .await
+        .expect("worker should delete old message");
+
+    let verification = Connection::open(&path).expect("reopen verification connection");
+    let final_state: (i64, i64) = verification
+        .query_row(
+            "SELECT unread, unread_count FROM topics
+             WHERE owner_type = 'agent' AND owner_id = 'agent-a' AND topic_id = 'topic-read'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read final topic unread state");
+    assert_eq!(final_state, (1, 1));
+    let deleted_at: Option<i64> = verification
+        .query_row(
+            "SELECT deleted_at FROM messages
+             WHERE owner_type = 'agent' AND owner_id = 'agent-a'
+               AND topic_id = 'topic-read' AND msg_id = 'message-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read deleted old message");
+    assert_eq!(deleted_at, Some(3));
+    let deleted_receipt_count: i64 = verification
+        .query_row(
+            "SELECT COUNT(*) FROM message_unread_receipts
+             WHERE owner_type = 'agent' AND owner_id = 'agent-a'
+               AND topic_id = 'topic-read' AND msg_id = 'message-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count deleted old unread receipt");
+    assert_eq!(deleted_receipt_count, 0);
+    let remaining_receipt: i64 = verification
+        .query_row(
+            "SELECT counted_unread FROM message_unread_receipts
+             WHERE owner_type = 'agent' AND owner_id = 'agent-a'
+               AND topic_id = 'topic-read' AND msg_id = 'message-b'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read new unread receipt");
+    assert_eq!(remaining_receipt, 1);
+
+    if let Some(worker) = queue._worker.take() {
+        drop(queue);
+        worker.await.expect("worker should stop cleanly");
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
 }
 
 #[test]
@@ -90,6 +269,7 @@ fn topic_upserts_are_queued_for_hash_bubbling() {
                 topics: vec![(group_batch.id.clone(), group_batch.clone())],
             },
         ],
+        None,
     )
     .expect("apply topic tasks");
 

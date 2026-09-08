@@ -1,30 +1,27 @@
 use crate::vcp_modules::agent_types::AgentConfig;
-use dashmap::DashMap;
+use crate::vcp_modules::owner_lock::{OwnerLockHandle, OwnerLockRegistry};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-/// AgentConfigState 的全局状态。
+/// Agent 配置服务状态只负责串行化实体写入。
+///
+/// 配置本身不在内存中缓存；读取始终从 SQLite 组装完整快照，避免同步、话题、未读
+/// 或头像写入后还需要通知服务层失效缓存。锁注册表只为实际写入路径临时创建条目，
+/// 最后一个持有者释放后自动回收。
 pub struct AgentConfigState {
-    /// 配置缓存: agent_id -> AgentConfig
-    pub caches: DashMap<String, AgentConfig>,
-    /// 任务队列锁: agent_id -> Mutex
-    pub locks: DashMap<String, Arc<Mutex<()>>>,
+    owner_locks: Arc<OwnerLockRegistry>,
 }
 
 impl AgentConfigState {
     pub fn new() -> Self {
-        Self {
-            caches: DashMap::new(),
-            locks: DashMap::new(),
-        }
+        Self::with_owner_locks(OwnerLockRegistry::new())
     }
 
-    pub async fn acquire_lock(&self, agent_id: &str) -> Arc<Mutex<()>> {
-        self.locks
-            .entry(agent_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .value()
-            .clone()
+    pub(crate) fn with_owner_locks(owner_locks: Arc<OwnerLockRegistry>) -> Self {
+        Self { owner_locks }
+    }
+
+    pub(crate) async fn acquire_lock(&self, agent_id: &str) -> OwnerLockHandle {
+        self.owner_locks.acquire_owner("agent", agent_id)
     }
 }
 

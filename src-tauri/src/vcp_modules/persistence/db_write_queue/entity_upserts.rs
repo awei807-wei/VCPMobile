@@ -1,8 +1,7 @@
 use super::DbWriteQueue;
 
-use crate::vcp_modules::sync_dto::{
-    AgentSyncDTO, AgentTopicSyncDTO, GroupSyncDTO, GroupTopicSyncDTO,
-};
+use crate::vcp_modules::sync_dto::{AgentSyncDTO, AgentTopicSyncDTO, GroupTopicSyncDTO};
+use crate::vcp_modules::sync_error::SyncErrorStage;
 use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::TopicKey;
 use rusqlite::OptionalExtension;
@@ -13,7 +12,25 @@ impl DbWriteQueue {
         id: &str,
         dto: &AgentSyncDTO,
     ) -> rusqlite::Result<()> {
+        Self::rusqlite_upsert_agent_if_expected(tx, id, dto, None).map(|_| ())
+    }
+
+    pub(super) fn rusqlite_upsert_agent_if_expected(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        dto: &AgentSyncDTO,
+        expected_config_hash: Option<&str>,
+    ) -> rusqlite::Result<()> {
         require_non_empty(id, "Agent upsert requires a non-empty id")?;
+        if !expected_config_matches(tx, "agents", "agent_id", id, expected_config_hash)? {
+            log::warn!(
+                "[DbWriteQueue] skipped stale Agent pull for {id}: local config_hash changed"
+            );
+            return Err(DbWriteQueue::sync_snapshot_stale_error(
+                format!("local Agent {id} changed after the sync snapshot"),
+                SyncErrorStage::OwnerMetadata,
+            ));
+        }
         let now = chrono::Utc::now().timestamp_millis();
         let config_hash = HashAggregator::compute_agent_config_hash(dto);
         let changed = tx.execute(
@@ -43,47 +60,8 @@ impl DbWriteQueue {
                 now
             ],
         )?;
-        require_changed(changed, format!("Agent {id} is tombstoned"))
-    }
-
-    pub(super) fn rusqlite_upsert_group(
-        tx: &rusqlite::Transaction<'_>,
-        id: &str,
-        dto: &GroupSyncDTO,
-    ) -> rusqlite::Result<()> {
-        require_non_empty(id, "Group upsert requires a non-empty id")?;
-        let now = chrono::Utc::now().timestamp_millis();
-        let config_hash = HashAggregator::compute_group_config_hash(dto);
-        let changed = tx.execute(
-            "INSERT INTO groups (
-                group_id, name, mode, group_prompt, invite_prompt,
-                use_unified_model, unified_model, tag_match_mode,
-                created_at, config_hash, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(group_id) DO UPDATE SET
-                name = excluded.name, mode = excluded.mode,
-                group_prompt = excluded.group_prompt, invite_prompt = excluded.invite_prompt,
-                use_unified_model = excluded.use_unified_model,
-                unified_model = excluded.unified_model, tag_match_mode = excluded.tag_match_mode,
-                created_at = excluded.created_at, config_hash = excluded.config_hash,
-                updated_at = excluded.updated_at
-             WHERE groups.deleted_at IS NULL",
-            rusqlite::params![
-                id,
-                &dto.name,
-                &dto.mode,
-                &dto.group_prompt,
-                &dto.invite_prompt,
-                if dto.use_unified_model { 1 } else { 0 },
-                &dto.unified_model,
-                &dto.tag_match_mode,
-                dto.created_at,
-                &config_hash,
-                now
-            ],
-        )?;
-        require_changed(changed, format!("Group {id} is tombstoned"))?;
-        replace_group_members(tx, id, dto, now)
+        require_changed(changed, format!("Agent {id} is tombstoned"))?;
+        Ok(())
     }
 
     pub(super) fn rusqlite_upsert_avatar(
@@ -165,7 +143,9 @@ impl DbWriteQueue {
             VALUES ('agent', ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_type, owner_id, topic_id) DO UPDATE SET
                 title = excluded.title, locked = excluded.locked,
-                unread = excluded.unread, updated_at = excluded.updated_at",
+                unread = excluded.unread,
+                unread_count = CASE WHEN excluded.unread = 0 THEN 0 ELSE topics.unread_count END,
+                updated_at = excluded.updated_at",
             rusqlite::params![
                 &key.owner_id,
                 &key.topic_id,
@@ -182,7 +162,11 @@ impl DbWriteQueue {
                 "Agent topic {}/{} upsert affected {changed} rows",
                 key.owner_id, key.topic_id
             ),
-        )
+        )?;
+        if !dto.unread {
+            clear_topic_unread_receipts(tx, key)?;
+        }
+        Ok(())
     }
 
     pub(super) fn rusqlite_upsert_group_topic(
@@ -234,7 +218,32 @@ impl DbWriteQueue {
     }
 }
 
-fn require_non_empty(value: &str, message: &str) -> rusqlite::Result<()> {
+fn clear_topic_unread_receipts(
+    tx: &rusqlite::Transaction<'_>,
+    key: &TopicKey,
+) -> rusqlite::Result<()> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'message_unread_receipts'
+            )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE message_unread_receipts
+         SET counted_unread = 0
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
+           AND counted_unread = 1",
+        rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
+    )?;
+    Ok(())
+}
+
+pub(super) fn require_non_empty(value: &str, message: &str) -> rusqlite::Result<()> {
     if value.is_empty() {
         Err(DbWriteQueue::sync_contract_error(message))
     } else {
@@ -242,7 +251,7 @@ fn require_non_empty(value: &str, message: &str) -> rusqlite::Result<()> {
     }
 }
 
-fn require_changed(changed: usize, message: String) -> rusqlite::Result<()> {
+pub(super) fn require_changed(changed: usize, message: String) -> rusqlite::Result<()> {
     if changed == 1 {
         Ok(())
     } else {
@@ -250,26 +259,22 @@ fn require_changed(changed: usize, message: String) -> rusqlite::Result<()> {
     }
 }
 
-fn replace_group_members(
+pub(super) fn expected_config_matches(
     tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    id_column: &str,
     id: &str,
-    dto: &GroupSyncDTO,
-    now: i64,
-) -> rusqlite::Result<()> {
-    tx.execute("DELETE FROM group_members WHERE group_id = ?", [id])?;
-    let member_tags = dto.member_tags.as_ref().and_then(|value| value.as_object());
-    for member in &dto.members {
-        let tag = member_tags
-            .and_then(|tags| tags.get(member))
-            .and_then(|value| value.as_str());
-        tx.execute(
-            "INSERT INTO group_members
-             (group_id, agent_id, member_tag, sort_order, updated_at)
-             VALUES (?, ?, ?, 0, ?)",
-            rusqlite::params![id, member, tag, now],
-        )?;
-    }
-    Ok(())
+    expected_config_hash: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let Some(expected_config_hash) = expected_config_hash else {
+        return Ok(true);
+    };
+    let sql =
+        format!("SELECT config_hash FROM {table} WHERE {id_column} = ? AND deleted_at IS NULL");
+    let current = tx
+        .query_row(&sql, [id], |row| row.get::<_, String>(0))
+        .optional()?;
+    Ok(current.is_some_and(|current| current == expected_config_hash))
 }
 
 fn is_valid_avatar_owner(owner_type: &str, owner_id: &str) -> bool {

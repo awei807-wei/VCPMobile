@@ -1,7 +1,9 @@
 use crate::vcp_modules::content_parser::ContentBlock;
+use crate::vcp_modules::infra::vcp_client::ActiveRequestRegistry;
 use crate::vcp_modules::message_service;
 use crate::vcp_modules::topic_types::TopicKey;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Attachment {
@@ -192,6 +194,46 @@ pub async fn append_single_message(
     .await
 }
 
+/// 在单一 SQLite mutation 中编辑锚点并截断其后的历史。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn edit_message_and_truncate_history(
+    app_handle: tauri::AppHandle,
+    db_state: tauri::State<'_, crate::vcp_modules::db_manager::DbState>,
+    active_requests: tauri::State<'_, crate::vcp_modules::vcp_client::ActiveRequests>,
+    owner_id: String,
+    owner_type: String,
+    topic_id: String,
+    anchor_message_id: String,
+    message: ChatMessage,
+) -> Result<message_service::EditMessageMutationResult, String> {
+    let topic_key = TopicKey::new(owner_type, owner_id, topic_id);
+    let active_registry = active_requests.0.clone();
+    let mutation_topic = topic_key.clone();
+    let operation_registry = active_registry.clone();
+    let pool = db_state.pool.clone();
+    active_registry
+        .with_topic_mutation(&topic_key, move |captured| {
+            let active_registry = operation_registry;
+            let topic_key = mutation_topic;
+            async move {
+                let result = message_service::edit_message_and_truncate_history(
+                    app_handle,
+                    &pool,
+                    &topic_key.owner_id,
+                    &topic_key.owner_type,
+                    topic_key.topic_id.clone(),
+                    anchor_message_id,
+                    message,
+                )
+                .await?;
+                cancel_captured_active_request_epochs_all(&active_registry, captured).await;
+                Ok(result)
+            }
+        })
+        .await
+}
+
 #[tauri::command]
 pub async fn patch_single_message(
     app_handle: tauri::AppHandle,
@@ -215,32 +257,84 @@ pub async fn patch_single_message(
 
 #[tauri::command]
 pub async fn delete_messages(
+    _app_handle: tauri::AppHandle,
     db_state: tauri::State<'_, crate::vcp_modules::db_manager::DbState>,
+    active_requests: tauri::State<'_, crate::vcp_modules::vcp_client::ActiveRequests>,
     owner_id: String,
     owner_type: String,
     topic_id: String,
     msg_ids: Vec<String>,
-) -> Result<(), String> {
+) -> Result<message_service::MessageMutationResult, String> {
     let topic_key = TopicKey::new(owner_type, owner_id, topic_id);
-    message_service::delete_messages_for_topic(&db_state.pool, &topic_key, msg_ids).await
+    let captured = capture_active_request_epochs(&active_requests, &topic_key);
+    let result =
+        message_service::delete_messages_for_topic(&db_state.pool, &topic_key, msg_ids).await?;
+    cancel_captured_active_requests(&active_requests, captured, &result.active_ids).await;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn truncate_history_after_timestamp(
     _app_handle: tauri::AppHandle,
     db_state: tauri::State<'_, crate::vcp_modules::db_manager::DbState>,
+    active_requests: tauri::State<'_, crate::vcp_modules::vcp_client::ActiveRequests>,
     owner_id: String,
     owner_type: String,
     topic_id: String,
-    timestamp: i64,
-) -> Result<(), String> {
+    anchor_message_id: String,
+    include_anchor: bool,
+) -> Result<message_service::MessageMutationResult, String> {
     let topic_key = TopicKey::new(owner_type, owner_id, topic_id);
-    message_service::truncate_history_after_timestamp_for_topic(
+    let captured = capture_active_request_epochs(&active_requests, &topic_key);
+    let result = message_service::truncate_history_after_timestamp_for_topic(
         &db_state.pool,
         &topic_key,
-        timestamp,
+        &anchor_message_id,
+        include_anchor,
     )
-    .await
+    .await?;
+    cancel_captured_active_requests(&active_requests, captured, &result.active_ids).await;
+    Ok(result)
+}
+
+/// 在 mutation 开始前捕获本话题的完整请求身份和 registry epoch。
+pub(crate) fn capture_active_request_epochs(
+    active_requests: &crate::vcp_modules::vcp_client::ActiveRequests,
+    topic_key: &TopicKey,
+) -> Vec<(crate::vcp_modules::topic_types::MessageKey, u64)> {
+    active_requests.0.snapshot_epochs_for_topic(topic_key)
+}
+
+/// 只取消 mutation 开始前捕获、且仍属于相同 epoch 的旧请求。
+pub(crate) async fn cancel_captured_active_requests(
+    active_requests: &crate::vcp_modules::vcp_client::ActiveRequests,
+    captured: Vec<(crate::vcp_modules::topic_types::MessageKey, u64)>,
+    affected_ids: &[String],
+) {
+    cancel_captured_active_request_epochs(&active_requests.0, captured, affected_ids).await;
+}
+
+pub(crate) async fn cancel_captured_active_request_epochs(
+    active_requests: &ActiveRequestRegistry,
+    captured: Vec<(crate::vcp_modules::topic_types::MessageKey, u64)>,
+    affected_ids: &[String],
+) {
+    let affected = affected_ids.iter().collect::<HashSet<_>>();
+    for (key, epoch) in captured {
+        if !affected.contains(&key.msg_id) {
+            continue;
+        }
+        let _ = active_requests.cancel_if_current(&key, epoch).await;
+    }
+}
+
+pub(crate) async fn cancel_captured_active_request_epochs_all(
+    active_requests: &ActiveRequestRegistry,
+    captured: Vec<(crate::vcp_modules::topic_types::MessageKey, u64)>,
+) {
+    for (key, epoch) in captured {
+        let _ = active_requests.cancel_if_current(&key, epoch).await;
+    }
 }
 
 // --- 增量同步逻辑 (Delta Sync) (Moved to sync_manager.rs) ---

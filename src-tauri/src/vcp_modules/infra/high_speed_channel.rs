@@ -1,9 +1,10 @@
 use crate::vcp_modules::db_manager::DbState;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 #[derive(serde::Deserialize)]
 pub struct UploadMetadata {
@@ -18,203 +19,319 @@ pub struct UploadEndpoint {
     pub token: String,
 }
 
-/// 准备高速上传链路：启动临时本地服务器并返回端口
-///
-/// 【适用场景】非 Android 端的大文件 (≥2MB) 上传。前端通过 XHR 向本地临时 TCP
-/// 端口发送流式数据，Rust 直接写入磁盘，绕过 Tauri IPC 的内存限制。
-///
-/// Android 端不走此链路：Android 通过原生插件 `pick_file` 在 Kotlin 层完成流式
-/// 拷贝与哈希，直接调用 `register_local_file` 零拷贝注册，无需 WebView 参与传输。
+/// 准备高速上传链路：启动临时本地服务器并返回端口。
 #[tauri::command]
 pub async fn prepare_vcp_upload<R: Runtime>(
     app_handle: AppHandle<R>,
     db_state: State<'_, DbState>,
     metadata: UploadMetadata,
 ) -> Result<UploadEndpoint, String> {
-    // 1. 监听本地随机端口
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|e| e.to_string())?;
-    let port = listener.local_addr().unwrap().port();
+        .map_err(|error| error.to_string())?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
     let token = uuid::Uuid::new_v4().to_string();
+    let endpoint = UploadEndpoint {
+        url: format!("http://127.0.0.1:{port}"),
+        token: token.clone(),
+    };
+    tauri::async_runtime::spawn(run_upload_worker(
+        app_handle,
+        db_state.pool.clone(),
+        metadata,
+        listener,
+    ));
+    Ok(endpoint)
+}
 
-    let url = format!("http://127.0.0.1:{}", port);
-    let token_clone = token.clone();
-    let pool = db_state.pool.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let mut upload_finished = false;
-        let timeout = std::time::Duration::from_secs(20);
-        let start_time = std::time::Instant::now();
-
-        let mut temp_dir = app_handle.path().app_cache_dir().unwrap();
-        temp_dir.push("uploads");
-        if !temp_dir.exists() {
-            let _ = fs::create_dir_all(&temp_dir);
-        }
-
-        while !upload_finished && start_time.elapsed() < timeout {
-            let accept_res =
-                tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept())
-                    .await;
-
-            let (mut socket, _addr) = match accept_res {
-                Ok(Ok(conn)) => conn,
-                _ => continue,
-            };
-
-            let mut buffer = [0u8; 65536];
-            let mut body_started = false;
-            let mut header_data = Vec::with_capacity(4096);
-
-            let session_id = uuid::Uuid::new_v4().to_string();
-            let temp_file_path = temp_dir.join(format!("{}.tmp", session_id));
-
-            let mut bytes_count = 0u64;
-            let mut hasher = Sha256::new();
-            let mut is_options = false;
-            let mut file: Option<tokio::fs::File> = None;
-
-            loop {
-                let n = match socket.read(&mut buffer).await {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-
-                let data = if !body_started {
-                    header_data.extend_from_slice(&buffer[..n]);
-                    if let Some(pos) = header_data.windows(4).position(|w| w == b"\r\n\r\n") {
-                        body_started = true;
-                        let header_str = String::from_utf8_lossy(&header_data[..pos]);
-
-                        if header_str.starts_with("OPTIONS") {
-                            is_options = true;
-                            let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n";
-                            socket.write_all(resp.as_bytes()).await.ok();
-                            break;
-                        }
-
-                        file = tokio::fs::File::create(&temp_file_path).await.ok();
-
-                        let header_len_in_current_buffer = if header_data.len() > n {
-                            let consumed_before = header_data.len() - n;
-                            (pos + 4).saturating_sub(consumed_before)
-                        } else {
-                            0
-                        };
-
-                        if header_len_in_current_buffer < n {
-                            &buffer[header_len_in_current_buffer..n]
-                        } else {
-                            &[]
-                        }
-                    } else {
-                        &[]
-                    }
-                } else {
-                    &buffer[..n]
-                };
-
-                if !data.is_empty() && !is_options {
-                    if let Some(ref mut f) = file {
-                        let _ = f.write_all(data).await;
-                    }
-                    hasher.update(data);
-                    bytes_count += data.len() as u64;
-
-                    if bytes_count >= metadata.size {
-                        break;
-                    }
-                }
+async fn run_upload_worker<R: Runtime>(
+    app_handle: AppHandle<R>,
+    pool: sqlx::SqlitePool,
+    metadata: UploadMetadata,
+    listener: TcpListener,
+) {
+    let Some(temp_dir) = prepare_upload_temp_dir(&app_handle) else {
+        return;
+    };
+    let timeout = std::time::Duration::from_secs(20);
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        let Ok(Ok((mut socket, _))) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept()).await
+        else {
+            continue;
+        };
+        let temp_path = temp_dir.join(format!("{}.tmp", uuid::Uuid::new_v4()));
+        match receive_upload(&mut socket, &temp_path, metadata.size).await {
+            Ok(ReceivedUpload::Options) => {}
+            Ok(ReceivedUpload::Incomplete) => {
+                let _ = fs::remove_file(&temp_path);
+                send_http_response(&mut socket, 400, b"Incomplete Data").await;
             }
-
-            if let Some(mut f) = file.take() {
-                let _ = f.flush().await;
-                drop(f);
-            }
-
-            if !is_options && bytes_count > 0 {
-                if bytes_count < metadata.size {
-                    let _ = fs::remove_file(&temp_file_path);
-                    let response =
-                        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nIncomplete Data";
-                    let _ = socket.write_all(response.as_bytes()).await;
-                } else {
-                    let hash = hex::encode(hasher.finalize());
-                    let final_data_res = finalize_high_speed_upload(
-                        &app_handle,
-                        &pool,
-                        &temp_file_path,
-                        &metadata,
-                        hash,
-                        bytes_count,
-                    )
-                    .await;
-
-                    let (status, body) = match final_data_res {
-                        Ok(data) => (200, serde_json::to_vec(&data).unwrap_or_default()),
-                        Err(e) => (500, e.into_bytes()),
-                    };
-
-                    let response = format!(
-                        "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        status, body.len()
-                    );
-                    let _ = socket.write_all(response.as_bytes()).await;
-                    let _ = socket.write_all(&body).await;
-
-                    upload_finished = true;
+            Ok(ReceivedUpload::Complete { hash, size }) => {
+                let result = finalize_high_speed_upload(
+                    &app_handle,
+                    &pool,
+                    &temp_path,
+                    &metadata,
+                    hash,
+                    size,
+                )
+                .await;
+                match result {
+                    Ok(data) => {
+                        let body = serde_json::to_vec(&data).unwrap_or_default();
+                        send_http_response(&mut socket, 200, &body).await;
+                    }
+                    Err(error) => send_http_response(&mut socket, 500, error.as_bytes()).await,
                 }
+                break;
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                send_http_response(&mut socket, 500, error.as_bytes()).await;
             }
         }
-    });
+    }
+}
 
-    Ok(UploadEndpoint {
-        url,
-        token: token_clone,
-    })
+fn prepare_upload_temp_dir<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    let path = app_handle.path().app_cache_dir().ok()?.join("uploads");
+    fs::create_dir_all(&path).ok()?;
+    Some(path)
+}
+
+enum ReceivedUpload {
+    Options,
+    Incomplete,
+    Complete { hash: String, size: u64 },
+}
+
+struct UploadReceiveState {
+    temp_path: PathBuf,
+    header_data: Vec<u8>,
+    body_started: bool,
+    file: Option<tokio::fs::File>,
+    hasher: Sha256,
+    bytes_count: u64,
+}
+
+impl UploadReceiveState {
+    fn new(temp_path: &Path) -> Self {
+        Self {
+            temp_path: temp_path.to_path_buf(),
+            header_data: Vec::with_capacity(4096),
+            body_started: false,
+            file: None,
+            hasher: Sha256::new(),
+            bytes_count: 0,
+        }
+    }
+
+    async fn append_body(&mut self, data: &[u8]) -> Result<(), String> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if self.file.is_none() {
+            self.file = Some(
+                tokio::fs::File::create(&self.temp_path)
+                    .await
+                    .map_err(|error| format!("创建上传临时文件失败: {error}"))?,
+            );
+        }
+        self.file
+            .as_mut()
+            .expect("上传文件已创建")
+            .write_all(data)
+            .await
+            .map_err(|error| format!("写入上传临时文件失败: {error}"))?;
+        self.hasher.update(data);
+        self.bytes_count += data.len() as u64;
+        Ok(())
+    }
+
+    async fn finish(mut self, expected_size: u64) -> Result<ReceivedUpload, String> {
+        if let Some(mut file) = self.file.take() {
+            file.flush()
+                .await
+                .map_err(|error| format!("刷新上传临时文件失败: {error}"))?;
+        }
+        if self.bytes_count < expected_size {
+            return Ok(ReceivedUpload::Incomplete);
+        }
+        Ok(ReceivedUpload::Complete {
+            hash: hex::encode(self.hasher.finalize()),
+            size: self.bytes_count,
+        })
+    }
+}
+
+enum HeaderChunk {
+    Pending,
+    Options,
+    Body(Vec<u8>),
+}
+
+fn parse_header_chunk(
+    header_data: &mut Vec<u8>,
+    body_started: &mut bool,
+    chunk: &[u8],
+) -> HeaderChunk {
+    if *body_started {
+        return HeaderChunk::Body(chunk.to_vec());
+    }
+    header_data.extend_from_slice(chunk);
+    let Some(position) = header_data
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+    else {
+        return HeaderChunk::Pending;
+    };
+    *body_started = true;
+    if header_data[..position].starts_with(b"OPTIONS") {
+        return HeaderChunk::Options;
+    }
+    let body_start = position + 4;
+    HeaderChunk::Body(header_data[body_start..].to_vec())
+}
+
+async fn receive_upload(
+    socket: &mut TcpStream,
+    temp_path: &Path,
+    expected_size: u64,
+) -> Result<ReceivedUpload, String> {
+    let mut state = UploadReceiveState::new(temp_path);
+    let mut buffer = [0_u8; 65_536];
+    loop {
+        let bytes = socket
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("读取上传请求失败: {error}"))?;
+        if bytes == 0 {
+            break;
+        }
+        match parse_header_chunk(
+            &mut state.header_data,
+            &mut state.body_started,
+            &buffer[..bytes],
+        ) {
+            HeaderChunk::Pending => continue,
+            HeaderChunk::Options => {
+                send_options_response(socket).await;
+                return Ok(ReceivedUpload::Options);
+            }
+            HeaderChunk::Body(data) => {
+                state.append_body(&data).await?;
+                if state.bytes_count >= expected_size {
+                    break;
+                }
+            }
+        }
+    }
+    state.finish(expected_size).await
+}
+
+async fn send_options_response(socket: &mut TcpStream) {
+    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n";
+    let _ = socket.write_all(response.as_bytes()).await;
+}
+
+async fn send_http_response(socket: &mut TcpStream, status: u16, body: &[u8]) {
+    let response = format!(
+        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = socket.write_all(response.as_bytes()).await;
+    let _ = socket.write_all(body).await;
 }
 
 async fn finalize_high_speed_upload<R: Runtime>(
     app_handle: &AppHandle<R>,
     pool: &sqlx::SqlitePool,
-    temp_path: &std::path::PathBuf,
+    temp_path: &Path,
     metadata: &UploadMetadata,
     hash: String,
     size: u64,
 ) -> Result<crate::vcp_modules::file_manager::AttachmentData, String> {
-    let ext = std::path::Path::new(&metadata.name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    let internal_name = if ext.is_empty() {
-        hash.clone()
-    } else {
-        format!("{}.{}", hash, ext)
-    };
-
-    let dest = crate::vcp_modules::file_manager::get_attachments_root_dir(app_handle)?;
-    if !dest.exists() {
-        fs::create_dir_all(&dest).ok();
-    }
-    let dest_path = dest.join(internal_name);
-
-    if !dest_path.exists() {
-        crate::vcp_modules::file_manager::safe_rename(temp_path, &dest_path)
-            .map_err(|e| e.to_string())?;
-    } else {
-        let _ = std::fs::remove_file(temp_path);
-    }
-
-    crate::vcp_modules::file_manager::register_attachment_internal(
+    let gate = crate::vcp_modules::file_manager::attachment_gc_gate()
+        .read()
+        .await;
+    let destination = publish_high_speed_file(app_handle, temp_path, metadata, &hash, size).await?;
+    let result = crate::vcp_modules::file_manager::register_attachment_internal_unlocked(
         app_handle,
         pool,
         hash,
         metadata.name.clone(),
         metadata.mime.clone(),
         size,
-        dest_path.to_str().unwrap().to_string(),
+        destination.path.to_string_lossy().into_owned(),
+        &gate,
     )
-    .await
+    .await;
+    match result {
+        Ok(data) => Ok(data),
+        Err(error) => {
+            if destination.published {
+                rollback_published_file(&destination.path).await;
+            }
+            Err(error)
+        }
+    }
 }
+
+struct PublishedDestination {
+    path: PathBuf,
+    published: bool,
+}
+
+async fn publish_high_speed_file<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    temp_path: &Path,
+    metadata: &UploadMetadata,
+    hash: &str,
+    size: u64,
+) -> Result<PublishedDestination, String> {
+    let root = crate::vcp_modules::file_manager::get_attachments_root_dir(app_handle)?;
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|error| format!("创建附件目录失败: {error}"))?;
+    let extension = crate::vcp_modules::file_manager::safe_storage_extension(&metadata.name);
+    let filename = extension
+        .map(|value| format!("{hash}.{value}"))
+        .unwrap_or_else(|| hash.to_string());
+    let destination = root.join(filename);
+    match tokio::fs::symlink_metadata(&destination).await {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            crate::vcp_modules::file_manager::check_existing_cas_size_async(&destination, size)
+                .await?;
+            let _ = tokio::fs::remove_file(temp_path).await;
+            Ok(PublishedDestination {
+                path: destination,
+                published: false,
+            })
+        }
+        Ok(_) => Err("高速上传目标不是 regular file".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::vcp_modules::file_manager::safe_rename(temp_path, &destination)
+                .map_err(|error| format!("发布高速上传 CAS 文件失败: {error}"))?;
+            Ok(PublishedDestination {
+                path: destination,
+                published: true,
+            })
+        }
+        Err(error) => Err(format!("检查高速上传 CAS 文件失败: {error}")),
+    }
+}
+
+async fn rollback_published_file(path: &Path) {
+    if let Err(error) = tokio::fs::remove_file(path).await {
+        log::warn!("高速上传数据库注册失败，清理已发布文件失败: {error}");
+    }
+}
+
+#[cfg(test)]
+#[path = "high_speed_channel_tests.rs"]
+mod tests;

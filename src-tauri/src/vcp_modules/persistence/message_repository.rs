@@ -231,10 +231,20 @@ mod composite_identity_tests {
             },
         ]);
         let key = TopicKey::new("agent", "owner-a", "topic");
+        let gate = crate::vcp_modules::infra::file_manager::attachment_gc_gate()
+            .read()
+            .await;
         let mut tx = pool.begin().await.expect("begin");
-        MessageRepository::upsert_message_for_topic(&mut tx, &message, &key, &[], true)
-            .await
-            .expect("upsert attachments");
+        MessageRepository::upsert_message_for_topic_with_attachment_gate(
+            &mut tx,
+            &message,
+            &key,
+            &[],
+            true,
+            &gate,
+        )
+        .await
+        .expect("upsert attachments");
         tx.commit().await.expect("commit");
         let rows = sqlx::query(
             "SELECT attachment_order, display_name FROM message_attachments

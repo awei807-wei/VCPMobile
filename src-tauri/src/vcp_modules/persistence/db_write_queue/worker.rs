@@ -1,5 +1,6 @@
 use super::{DbWriteQueue, DbWriteTask};
 
+use crate::vcp_modules::owner_lock::{OwnerLockHandle, OwnerLockRegistry};
 use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
 use rusqlite::{Connection, TransactionBehavior};
 use std::collections::HashSet;
@@ -13,12 +14,27 @@ mod apply;
 
 type ConnectionHolder = Arc<Mutex<Option<Connection>>>;
 
-pub(super) fn spawn(db_path: PathBuf, rx: mpsc::Receiver<DbWriteTask>) -> JoinHandle<()> {
+pub(super) fn spawn(
+    db_path: PathBuf,
+    rx: mpsc::Receiver<DbWriteTask>,
+    owner_locks: Arc<OwnerLockRegistry>,
+    attachment_roots: Option<
+        crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
+) -> JoinHandle<()> {
     let holder: ConnectionHolder = Arc::new(Mutex::new(None));
-    tokio::spawn(run(rx, db_path, holder))
+    tokio::spawn(run(rx, db_path, holder, owner_locks, attachment_roots))
 }
 
-async fn run(mut rx: mpsc::Receiver<DbWriteTask>, db_path: PathBuf, holder: ConnectionHolder) {
+async fn run(
+    mut rx: mpsc::Receiver<DbWriteTask>,
+    db_path: PathBuf,
+    holder: ConnectionHolder,
+    owner_locks: Arc<OwnerLockRegistry>,
+    attachment_roots: Option<
+        crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
+) {
     log::info!("[DbWriteQueue] Worker started (Turbo rusqlite Mode)");
     let mut success_count = 0u32;
     let mut error_count = 0u32;
@@ -30,7 +46,14 @@ async fn run(mut rx: mpsc::Receiver<DbWriteTask>, db_path: PathBuf, holder: Conn
             continue;
         }
         let (tasks, flush_tx) = collect_batch(first_task, &mut rx).await;
-        let result = execute_batch(tasks, db_path.clone(), holder.clone()).await;
+        let result = execute_batch(
+            tasks,
+            db_path.clone(),
+            holder.clone(),
+            owner_locks.clone(),
+            attachment_roots.clone(),
+        )
+        .await;
         match result {
             Ok(()) => success_count += 1,
             Err(error) => {
@@ -91,11 +114,17 @@ async fn execute_batch(
     tasks: Vec<DbWriteTask>,
     db_path: PathBuf,
     holder: ConnectionHolder,
+    owner_locks: Arc<OwnerLockRegistry>,
+    attachment_roots: Option<
+        crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || execute_batch_sync(tasks, db_path, holder))
-        .await
-        .map_err(|error| format!("write worker join error: {error}"))?
-        .map_err(|error| format!("rusqlite execution error: {error}"))
+    tokio::task::spawn_blocking(move || {
+        execute_batch_sync_with_owner_locks(tasks, db_path, holder, owner_locks, attachment_roots)
+    })
+    .await
+    .map_err(|error| format!("write worker join error: {error}"))?
+    .map_err(|error| format!("rusqlite execution error: {error}"))
 }
 
 fn execute_batch_sync(
@@ -103,6 +132,24 @@ fn execute_batch_sync(
     db_path: PathBuf,
     holder: ConnectionHolder,
 ) -> rusqlite::Result<()> {
+    execute_batch_sync_with_owner_locks(tasks, db_path, holder, OwnerLockRegistry::new(), None)
+}
+
+fn execute_batch_sync_with_owner_locks(
+    tasks: Vec<DbWriteTask>,
+    db_path: PathBuf,
+    holder: ConnectionHolder,
+    owner_locks: Arc<OwnerLockRegistry>,
+    attachment_roots: Option<
+        crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
+) -> rusqlite::Result<()> {
+    let _attachment_gate = crate::vcp_modules::file_manager::attachment_gc_gate_blocking_read();
+    let owner_handles = acquire_owner_locks(&owner_locks, &tasks);
+    let _owner_guards = owner_handles
+        .iter()
+        .map(OwnerLockHandle::blocking_lock)
+        .collect::<Vec<_>>();
     let mut guard = holder.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
     if guard.is_none() {
         let conn = open_connection(&db_path)?;
@@ -116,10 +163,29 @@ fn execute_batch_sync(
     // reads so SQLite's busy handler can wait safely instead of failing the
     // whole sync drain.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (owners, topics) = apply_tasks(&tx, tasks)?;
+    let (owners, topics) = apply_tasks(&tx, tasks, attachment_roots.as_ref())?;
     bubble_topics(&tx, topics)?;
     bubble_owners(&tx, owners)?;
     tx.commit()
+}
+
+fn acquire_owner_locks(
+    registry: &Arc<OwnerLockRegistry>,
+    tasks: &[DbWriteTask],
+) -> Vec<OwnerLockHandle> {
+    let mut keys = tasks
+        .iter()
+        .filter_map(|task| match task {
+            DbWriteTask::Agent { id, .. } => Some(("agent", id.as_str())),
+            DbWriteTask::Group { id, .. } => Some(("group", id.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys.dedup();
+    keys.into_iter()
+        .map(|(owner_type, owner_id)| registry.acquire_owner(owner_type, owner_id))
+        .collect()
 }
 
 fn open_connection(db_path: &PathBuf) -> rusqlite::Result<Connection> {
@@ -133,11 +199,14 @@ fn open_connection(db_path: &PathBuf) -> rusqlite::Result<Connection> {
 fn apply_tasks(
     tx: &rusqlite::Transaction<'_>,
     tasks: Vec<DbWriteTask>,
+    attachment_roots: Option<
+        &crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
 ) -> rusqlite::Result<(HashSet<OwnerKey>, HashSet<TopicKey>)> {
     let mut owners = HashSet::new();
     let mut topics = HashSet::new();
     for task in tasks {
-        apply_task(tx, task, &mut owners, &mut topics)?;
+        apply_task(tx, task, &mut owners, &mut topics, attachment_roots)?;
     }
     Ok((owners, topics))
 }
@@ -147,8 +216,11 @@ fn apply_task(
     task: DbWriteTask,
     owners: &mut HashSet<OwnerKey>,
     topics: &mut HashSet<TopicKey>,
+    attachment_roots: Option<
+        &crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
 ) -> rusqlite::Result<()> {
-    apply::apply_task(tx, task, owners, topics)
+    apply::apply_task(tx, task, owners, topics, attachment_roots)
 }
 
 fn apply_agent_topics(

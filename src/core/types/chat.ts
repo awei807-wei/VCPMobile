@@ -134,6 +134,8 @@ export interface ChatMessage {
   tailBlock?: ContentBlock;
   tailFrame?: TailFrame;
   tailSnapshot?: MarkdownNode[];
+  /** 前端流序列；helper generation 不得写入此字段。 */
+  generation?: number;
 }
 
 export type AstMutation =
@@ -229,6 +231,7 @@ export interface AuroraUpdate {
   tailFrame?: TailFrame;
   tailSnapshot?: MarkdownNode[];
   content?: string;
+  chunk?: string;
 }
 
 /**
@@ -239,6 +242,11 @@ export interface StreamEvent {
   chunk?: any;
   messageId?: string;
   message_id?: string;
+  generation?: number;
+  requestGeneration?: number;
+  request_generation?: number;
+  requestEpoch?: number;
+  request_epoch?: number;
   context?: any;
   finishReason?: string;
   error?: string;

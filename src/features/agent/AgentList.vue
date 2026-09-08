@@ -156,6 +156,10 @@ const filteredCombinedItems = computed(() => {
             sessionStore.currentSelectedItem?.type === 'group' &&
             sessionStore.currentSelectedItem?.id === group.id
           "
+          :show-unread="
+            assistantStore.getOwnerUnreadCount(group.id, 'group') === -1 ||
+            assistantStore.getOwnerUnreadCount(group.id, 'group') > 0
+          "
           :swipe-x="currentSwipeX"
           :swipe-active="activeSwipeId === ownerSwipeKey('group', group.id)"
           :is-dragging="isDragging"
@@ -197,8 +201,8 @@ const filteredCombinedItems = computed(() => {
             sessionStore.currentSelectedItem?.id === agent.id
           "
           :show-unread="
-            assistantStore.unreadCounts[agent.id] === -1 ||
-            assistantStore.unreadCounts[agent.id] > 0
+            assistantStore.getOwnerUnreadCount(agent.id, 'agent') === -1 ||
+            assistantStore.getOwnerUnreadCount(agent.id, 'agent') > 0
           "
           :swipe-x="currentSwipeX"
           :swipe-active="activeSwipeId === ownerSwipeKey('agent', agent.id)"

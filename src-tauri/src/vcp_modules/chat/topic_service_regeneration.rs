@@ -2,7 +2,7 @@ use crate::vcp_modules::chat_manager::ChatMessage;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::settings_manager::SettingsState;
 use crate::vcp_modules::topic_types::TopicKey;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::Row;
 use tauri::{ipc::Channel, AppHandle, State};
 
@@ -19,28 +19,33 @@ pub async fn regenerate_topic_response(
     owner_id: String,
     owner_type: String,
     topic_id: String,
-    target_user_msg_id: String,
+    target_response_msg_id: String,
     stream_channel: Channel<crate::vcp_modules::vcp_client::StreamEvent>,
 ) -> Result<Value, String> {
-    log::info!(
-        "[TopicService] Regenerating response for topic: {}, target msg: {}",
-        topic_id,
-        target_user_msg_id
-    );
     let topic_key = TopicKey::new(owner_type.clone(), owner_id.clone(), topic_id.clone());
-    let (chat_msg, timestamp) =
-        load_regeneration_message(&app_handle, &db_state.pool, &topic_key, &target_user_msg_id)
-            .await?;
-    crate::vcp_modules::message_service::truncate_history_after_timestamp_for_topic(
+    let (chat_msg, anchor_message_id) =
+        load_regeneration_message(&db_state.pool, &topic_key, &target_response_msg_id).await?;
+    let captured = crate::vcp_modules::chat_manager::capture_active_request_epochs(
+        &active_requests,
+        &topic_key,
+    );
+    let mutation = crate::vcp_modules::message_service::truncate_history_after_timestamp_for_topic(
         &db_state.pool,
         &topic_key,
-        timestamp,
+        &anchor_message_id,
+        false,
     )
     .await?;
+    crate::vcp_modules::chat_manager::cancel_captured_active_requests(
+        &active_requests,
+        captured,
+        &mutation.active_ids,
+    )
+    .await;
     let settings =
         crate::vcp_modules::settings_manager::read_settings(app_handle.clone(), settings_state)
             .await?;
-    dispatch_regeneration(
+    let dispatch = dispatch_regeneration(
         app_handle,
         agent_state,
         group_state,
@@ -54,27 +59,27 @@ pub async fn regenerate_topic_response(
         settings,
         stream_channel,
     )
-    .await
+    .await?;
+    Ok(json!({
+        "status": "started",
+        "msgCount": mutation.msg_count,
+        "deletedIds": mutation.deleted_ids,
+        "anchor": mutation.anchor,
+        "dispatch": dispatch,
+    }))
 }
 
 async fn load_regeneration_message(
-    app_handle: &AppHandle,
     pool: &sqlx::SqlitePool,
     topic_key: &TopicKey,
     message_id: &str,
-) -> Result<(ChatMessage, i64), String> {
-    let content = crate::vcp_modules::message_service::fetch_raw_message_content_for_key(
-        app_handle,
-        &topic_key.owner_type,
-        &topic_key.owner_id,
-        &topic_key.topic_id,
-        message_id,
-    )
-    .await?;
+) -> Result<(ChatMessage, String), String> {
     let row = sqlx::query(
-        "SELECT timestamp, role, name, agent_id, group_id, is_group_message
+        "SELECT msg_id, timestamp, role, name, content, updated_at, agent_id, group_id,
+                is_group_message, finish_reason
          FROM messages
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?",
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?
+           AND deleted_at IS NULL",
     )
     .bind(&topic_key.owner_type)
     .bind(&topic_key.owner_id)
@@ -82,27 +87,94 @@ async fn load_regeneration_message(
     .bind(message_id)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
-    let timestamp: i64 = row.get("timestamp");
-    let message = ChatMessage {
-        id: message_id.to_string(),
-        role: row.get("role"),
-        name: row.get("name"),
+    .map_err(|error| format!("目标响应不存在、已删除或不属于当前话题：{error}"))?;
+    let target_timestamp: i64 = row
+        .try_get("timestamp")
+        .map_err(|error| format!("读取目标响应时间失败：{error}"))?;
+    let target_role: String = row
+        .try_get("role")
+        .map_err(|error| format!("读取目标响应角色失败：{error}"))?;
+    let (anchor_id, anchor_row) = if target_role == "user" {
+        (message_id.to_string(), row)
+    } else {
+        let anchor_row = sqlx::query(
+            "SELECT msg_id, timestamp, role, name, content, updated_at, agent_id, group_id,
+                    is_group_message, finish_reason
+             FROM messages
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
+               AND deleted_at IS NULL AND role = 'user'
+               AND (timestamp < ? OR (timestamp = ? AND msg_id < ?))
+             ORDER BY timestamp DESC, msg_id DESC LIMIT 1",
+        )
+        .bind(&topic_key.owner_type)
+        .bind(&topic_key.owner_id)
+        .bind(&topic_key.topic_id)
+        .bind(target_timestamp)
+        .bind(target_timestamp)
+        .bind(message_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| format!("查找完整历史中的 user 锚点失败：{error}"))?
+        .ok_or_else(|| "目标响应之前不存在可重新生成的 user 消息".to_string())?;
+        let anchor_id: String = anchor_row
+            .try_get("msg_id")
+            .map_err(|error| format!("读取 user 锚点 ID 失败：{error}"))?;
+        (anchor_id, anchor_row)
+    };
+    let message = decode_regeneration_message(pool, topic_key, anchor_row).await?;
+    Ok((message, anchor_id))
+}
+
+async fn decode_regeneration_message(
+    _pool: &sqlx::SqlitePool,
+    topic_key: &TopicKey,
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<ChatMessage, String> {
+    let content = crate::vcp_modules::persistence::message_content_storage::decode_message_content(
+        &row, "content",
+    )?;
+    let timestamp: i64 = row
+        .try_get("timestamp")
+        .map_err(|error| format!("读取 user 锚点时间失败：{error}"))?;
+    let updated_at: i64 = row
+        .try_get("updated_at")
+        .map_err(|error| format!("读取 user 锚点更新时间失败：{error}"))?;
+    Ok(ChatMessage {
+        id: row
+            .try_get("msg_id")
+            .map_err(|error| format!("读取 user 锚点 ID 失败：{error}"))?,
+        role: row
+            .try_get("role")
+            .map_err(|error| format!("读取 user 锚点角色失败：{error}"))?,
+        name: row
+            .try_get("name")
+            .map_err(|error| format!("读取 user 锚点名称失败：{error}"))?,
         content,
-        timestamp: timestamp as u64,
-        updated_at: Some(timestamp as u64),
+        timestamp: u64::try_from(timestamp).map_err(|_| "user 锚点时间无效".to_string())?,
+        updated_at: Some(
+            u64::try_from(updated_at).map_err(|_| "user 锚点更新时间无效".to_string())?,
+        ),
         is_thinking: Some(false),
-        agent_id: row.get("agent_id"),
-        group_id: row.get("group_id"),
+        agent_id: row
+            .try_get("agent_id")
+            .map_err(|error| format!("读取 user 锚点 agent 失败：{error}"))?,
+        group_id: row
+            .try_get("group_id")
+            .map_err(|error| format!("读取 user 锚点 group 失败：{error}"))?,
         topic_id: Some(topic_key.topic_id.clone()),
-        is_group_message: Some(row.get::<i64, _>("is_group_message") != 0),
-        finish_reason: None,
+        is_group_message: Some(
+            row.try_get::<i64, _>("is_group_message")
+                .map_err(|error| format!("读取 user 锚点类型失败：{error}"))?
+                != 0,
+        ),
+        finish_reason: row
+            .try_get("finish_reason")
+            .map_err(|error| format!("读取 user 锚点结束原因失败：{error}"))?,
         attachments: None,
         blocks: None,
         shell: None,
         content_hash: None,
-    };
-    Ok((message, timestamp))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

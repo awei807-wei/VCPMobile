@@ -1,6 +1,9 @@
 use super::message_batch::validate_topic_key;
 use super::DbWriteQueue;
 
+#[path = "message_delete_unread.rs"]
+mod unread_receipts;
+
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use rusqlite::OptionalExtension;
 use rusqlite::ToSql;
@@ -163,6 +166,15 @@ fn delete_message_side_tables(
                 .collect::<Vec<_>>();
             tx.execute(&sql, &*refs)?;
         }
+        delete_message_unread_receipts(tx, key, chunk)?;
     }
     Ok(())
+}
+
+fn delete_message_unread_receipts(
+    tx: &rusqlite::Transaction<'_>,
+    key: &TopicKey,
+    message_ids: &[String],
+) -> rusqlite::Result<()> {
+    unread_receipts::delete_message_unread_receipts(tx, key, message_ids)
 }

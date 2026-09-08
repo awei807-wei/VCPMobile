@@ -8,10 +8,21 @@ pub(super) fn apply_task(
     task: DbWriteTask,
     owners: &mut HashSet<OwnerKey>,
     topics: &mut HashSet<TopicKey>,
+    attachment_roots: Option<
+        &crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
 ) -> rusqlite::Result<()> {
     match task {
-        DbWriteTask::Agent { id, dto } => apply_agent(tx, id, dto, owners),
-        DbWriteTask::Group { id, dto } => apply_group(tx, id, dto, owners),
+        DbWriteTask::Agent {
+            id,
+            dto,
+            expected_config_hash,
+        } => apply_agent(tx, id, dto, expected_config_hash.as_deref(), owners),
+        DbWriteTask::Group {
+            id,
+            dto,
+            expected_config_hash,
+        } => apply_group(tx, id, dto, expected_config_hash.as_deref(), owners),
         DbWriteTask::Avatar {
             owner_type,
             owner_id,
@@ -29,7 +40,7 @@ pub(super) fn apply_task(
         DbWriteTask::GroupTopicBatch { topics: batch } => {
             super::apply_group_topics(tx, batch, owners, topics)
         }
-        task => apply_remaining_task(tx, task, owners, topics),
+        task => apply_remaining_task(tx, task, owners, topics, attachment_roots),
     }
 }
 
@@ -38,6 +49,9 @@ fn apply_remaining_task(
     task: DbWriteTask,
     owners: &mut HashSet<OwnerKey>,
     topics: &mut HashSet<TopicKey>,
+    attachment_roots: Option<
+        &crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
 ) -> rusqlite::Result<()> {
     match task {
         DbWriteTask::TopicMessages {
@@ -57,6 +71,7 @@ fn apply_remaining_task(
             skip_bubble,
             owners,
             topics,
+            attachment_roots,
         ),
         DbWriteTask::TopicMessagesCanonical {
             topic,
@@ -75,6 +90,7 @@ fn apply_remaining_task(
             skip_bubble,
             owners,
             topics,
+            attachment_roots,
         ),
         DbWriteTask::DeleteTopic { topic, deleted_at } => {
             apply_delete_topic(tx, topic, deleted_at, owners)
@@ -92,9 +108,10 @@ fn apply_agent(
     tx: &Transaction<'_>,
     id: String,
     dto: crate::vcp_modules::sync_dto::AgentSyncDTO,
+    expected_config_hash: Option<&str>,
     owners: &mut HashSet<OwnerKey>,
 ) -> rusqlite::Result<()> {
-    DbWriteQueue::rusqlite_upsert_agent(tx, &id, &dto)?;
+    DbWriteQueue::rusqlite_upsert_agent_if_expected(tx, &id, &dto, expected_config_hash)?;
     owners.insert(OwnerKey::new("agent", id));
     Ok(())
 }
@@ -103,9 +120,10 @@ fn apply_group(
     tx: &Transaction<'_>,
     id: String,
     dto: crate::vcp_modules::sync_dto::GroupSyncDTO,
+    expected_config_hash: Option<&str>,
     owners: &mut HashSet<OwnerKey>,
 ) -> rusqlite::Result<()> {
-    DbWriteQueue::rusqlite_upsert_group(tx, &id, &dto)?;
+    DbWriteQueue::rusqlite_upsert_group_if_expected(tx, &id, &dto, expected_config_hash)?;
     owners.insert(OwnerKey::new("group", id));
     Ok(())
 }
@@ -157,22 +175,25 @@ fn apply_topic_messages(
     messages: Vec<crate::vcp_modules::chat_manager::ChatMessage>,
     compressed_contents: Vec<Vec<u8>>,
     render_bytes: Vec<Vec<u8>>,
-    content_hashes: Vec<String>,
+    _content_hashes: Vec<String>,
     skip_bubble: bool,
     owners: &mut HashSet<OwnerKey>,
     topics: &mut HashSet<TopicKey>,
+    attachment_roots: Option<
+        &crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
 ) -> rusqlite::Result<()> {
     let key = DbWriteQueue::rusqlite_resolve_topic_key(tx, &topic_id)?;
     if !skip_bubble {
         record_topic(key, owners, topics);
     }
-    DbWriteQueue::rusqlite_upsert_messages_batch(
+    DbWriteQueue::rusqlite_upsert_messages_batch_with_roots(
         tx,
         &topic_id,
         messages,
         compressed_contents,
         render_bytes,
-        content_hashes,
+        attachment_roots,
     )
 }
 
@@ -187,17 +208,21 @@ fn apply_canonical_messages(
     skip_bubble: bool,
     owners: &mut HashSet<OwnerKey>,
     topics: &mut HashSet<TopicKey>,
+    attachment_roots: Option<
+        &crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
+    >,
 ) -> rusqlite::Result<()> {
     if !skip_bubble {
         record_topic(topic.clone(), owners, topics);
     }
-    DbWriteQueue::rusqlite_upsert_messages_batch_for_key_if_unchanged(
+    DbWriteQueue::rusqlite_upsert_messages_batch_for_key_if_unchanged_with_roots(
         tx,
         &topic,
         messages,
         compressed_contents,
         render_bytes,
         expected_states.as_ref(),
+        attachment_roots,
     )
 }
 

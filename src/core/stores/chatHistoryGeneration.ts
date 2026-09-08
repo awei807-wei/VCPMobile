@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { acquireScreenKeep } from "../composables/useScreenKeeper";
-import type { ChatMessage } from "../types/chat";
+import type { ChatMessage, ContentBlock } from "../types/chat";
 import { hasWorkingAttachments } from "./attachmentSendGate";
 import type {
   HistoryGenerationDeps,
@@ -15,6 +15,41 @@ import {
 } from "./chatHistoryGenerationSupport";
 import type { ConversationIdentity } from "./chatStoreIdentity";
 
+interface MessageMutationResult {
+  msgCount: number;
+  deletedIds: string[];
+  blocks?: ContentBlock[];
+}
+
+interface ResolvedEditedMessage {
+  originalId: string;
+  targetMessage: ChatMessage;
+}
+
+function readMessageMutationResult(value: unknown): MessageMutationResult {
+  if (!value || typeof value !== "object")
+    throw new Error("后端未返回有效的消息 mutation 结果");
+  const result = value as {
+    msgCount?: unknown;
+    deletedIds?: unknown;
+    blocks?: unknown;
+  };
+  if (
+    typeof result.msgCount !== "number" ||
+    !Number.isSafeInteger(result.msgCount) ||
+    result.msgCount < 0 ||
+    !Array.isArray(result.deletedIds) ||
+    result.deletedIds.some((messageId) => typeof messageId !== "string") ||
+    (result.blocks !== undefined && !Array.isArray(result.blocks))
+  )
+    throw new Error("后端返回的消息 mutation 结果无效");
+  return {
+    msgCount: result.msgCount,
+    deletedIds: result.deletedIds as string[],
+    blocks: result.blocks as ContentBlock[] | undefined,
+  };
+}
+
 async function triggerGeneration(
   deps: HistoryGenerationDeps,
   userMsg: ChatMessage,
@@ -26,13 +61,16 @@ async function triggerGeneration(
   const { identity, pendingIdentity, requestId } = generation;
   acquireScreenKeep();
   try {
-    await appendUserMessage(deps, identity, userMsg);
-    const settings = deps.settingsStore.settings;
-    if (!settings) throw new Error("应用尚未完成初始化");
-    const streamChannel = createGenerationChannel(deps, identity);
-    await invokeChatGeneration(identity, userMsg, settings, streamChannel);
-  } catch (error) {
-    console.error("[ChatHistoryStore] Generation failed:", error);
+    if (!pendingOptions.userMessagePersisted)
+      await appendUserMessage(deps, identity, userMsg);
+    try {
+      const settings = deps.settingsStore.settings;
+      if (!settings) throw new Error("应用尚未完成初始化");
+      const streamChannel = createGenerationChannel(deps, identity);
+      await invokeChatGeneration(identity, userMsg, settings, streamChannel);
+    } catch (error) {
+      console.error("[ChatHistoryStore] Generation failed:", error);
+    }
   } finally {
     deps.streamStore.removePendingGeneration(
       pendingIdentity.ownerId,
@@ -56,6 +94,60 @@ function getSendIdentity(
   return identity;
 }
 
+function resolveEditedMessage(
+  deps: HistoryGenerationDeps,
+  content: string,
+): ResolvedEditedMessage | null {
+  const originalId = deps.editingOriginalMessageId.value;
+  if (!originalId) return null;
+  const targetMessage = deps.currentChatHistory.value.find(
+    (message) => message.id === originalId,
+  );
+  if (!targetMessage) return null;
+  return {
+    originalId,
+    targetMessage: {
+      ...targetMessage,
+      content,
+      blocks: [{ type: "markdown", content }],
+    },
+  };
+}
+
+function applyCommittedEditMutation(
+  deps: HistoryGenerationDeps,
+  identity: ConversationIdentity,
+  mutation: MessageMutationResult,
+): void {
+  for (const messageId of mutation.deletedIds) {
+    deps.streamStore.cancelUnreadReceipt?.(identity, messageId);
+  }
+  if (!deps.isCurrentIdentity(identity)) return;
+  const deleted = new Set(mutation.deletedIds);
+  deps.currentChatHistory.value = deps.currentChatHistory.value.filter(
+    (message) => message.id === deps.editingOriginalMessageId.value || !deleted.has(message.id),
+  );
+  deps.topicStore.setTopicMsgCount?.(identity, mutation.msgCount);
+}
+
+function applyPersistedEdit(
+  deps: HistoryGenerationDeps,
+  identity: ConversationIdentity,
+  targetMessage: ChatMessage,
+  blocks?: ContentBlock[],
+): void {
+  if (!deps.isCurrentIdentity(identity)) return;
+  const currentIndex = deps.currentChatHistory.value.findIndex(
+    (message) => message.id === targetMessage.id,
+  );
+  if (currentIndex !== -1)
+    deps.currentChatHistory.value[currentIndex] = {
+      ...targetMessage,
+      blocks: blocks ?? targetMessage.blocks,
+    };
+  deps.editingOriginalMessageId.value = null;
+}
+
 async function resendEditedMessage(
   deps: HistoryGenerationDeps,
   content: string,
@@ -65,15 +157,9 @@ async function resendEditedMessage(
     options: PendingGenerationOptions,
   ) => Promise<void>,
 ): Promise<boolean> {
-  const originalId = deps.editingOriginalMessageId.value;
-  if (!originalId) return false;
-  deps.editingOriginalMessageId.value = null;
-  const targetIndex = deps.currentChatHistory.value.findIndex(
-    (message) => message.id === originalId,
-  );
-  if (targetIndex === -1) return false;
-
-  const targetMessage = deps.currentChatHistory.value[targetIndex];
+  const resolved = resolveEditedMessage(deps, content);
+  if (!resolved) return false;
+  const { originalId, targetMessage } = resolved;
   deps.streamStore.addPendingGeneration(
     identity.ownerId,
     identity.ownerType,
@@ -81,27 +167,28 @@ async function resendEditedMessage(
     originalId,
   );
   try {
-    targetMessage.content = content;
-    targetMessage.blocks = [{ type: "markdown", content }];
-    await invoke("truncate_history_after_timestamp", {
-      ownerId: identity.ownerId,
-      ownerType: identity.ownerType,
-      topicId: identity.topicId,
-      timestamp: targetMessage.timestamp,
-    });
-    if (deps.isCurrentIdentity(identity)) {
-      deps.currentChatHistory.value = deps.currentChatHistory.value.slice(
-        0,
-        targetIndex + 1,
-      );
-    }
+    const mutation = readMessageMutationResult(
+      await invoke("edit_message_and_truncate_history", {
+        ownerId: identity.ownerId,
+        ownerType: identity.ownerType,
+        topicId: identity.topicId,
+        anchorMessageId: targetMessage.id,
+        message: { ...targetMessage, blocks: undefined },
+      }),
+    );
+    applyCommittedEditMutation(deps, identity, mutation);
+    if (!deps.isCurrentIdentity(identity)) return true;
+    applyPersistedEdit(deps, identity, targetMessage, mutation.blocks);
     await generate(targetMessage, {
       requestId: originalId,
       registered: true,
+      userMessagePersisted: true,
       ownerId: identity.ownerId,
       ownerType: identity.ownerType,
       topicId: identity.topicId,
     });
+  } catch (error) {
+    throw error;
   } finally {
     deps.streamStore.removePendingGeneration(
       identity.ownerId,
@@ -192,7 +279,15 @@ async function sendMessage(
   if (!identity) return;
   const generate = (message: ChatMessage, options: PendingGenerationOptions) =>
     triggerGeneration(deps, message, options);
-  if (await resendEditedMessage(deps, content, identity, generate)) return;
+  // An edit intent is authoritative.  If its local target disappeared while
+  // the editor was open, fail closed instead of silently creating a new user
+  // message in the same conversation.
+  if (deps.editingOriginalMessageId.value) {
+    if (!(await resendEditedMessage(deps, content, identity, generate))) {
+      throw new Error("编辑目标消息未在当前历史记录中找到，已拒绝发送新消息");
+    }
+    return;
+  }
   await sendNewMessage(deps, content, identity, generate);
 }
 

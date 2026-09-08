@@ -24,6 +24,16 @@ pub(super) fn write_attachments(
     messages: &[ChatMessage],
     canonical_messages: &[MessageSyncDTO],
 ) -> rusqlite::Result<()> {
+    write_attachments_with_roots(tx, key, messages, canonical_messages, None)
+}
+
+pub(super) fn write_attachments_with_roots(
+    tx: &rusqlite::Transaction<'_>,
+    key: &TopicKey,
+    messages: &[ChatMessage],
+    canonical_messages: &[MessageSyncDTO],
+    roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+) -> rusqlite::Result<()> {
     if messages.len() != canonical_messages.len() {
         return Err(
             crate::vcp_modules::db_write_queue::DbWriteQueue::sync_contract_error(
@@ -73,7 +83,8 @@ pub(super) fn write_attachments(
         .map(|message| message.id.clone())
         .collect::<Vec<_>>();
     delete_message_attachments(tx, key, &message_ids)?;
-    insert_attachment_relations(tx, key, &relations)
+    insert_attachment_relations(tx, key, &relations)?;
+    clear_live_attachment_unlink_debts(tx, &relations, roots)
 }
 
 /// Persist a canonical Wire 1.4 attachment relation. Local path/status stay
@@ -82,6 +93,15 @@ pub(super) fn write_attachments_for_dto(
     tx: &rusqlite::Transaction<'_>,
     key: &TopicKey,
     messages: &[MessageSyncDTO],
+) -> rusqlite::Result<()> {
+    write_attachments_for_dto_with_roots(tx, key, messages, None)
+}
+
+pub(super) fn write_attachments_for_dto_with_roots(
+    tx: &rusqlite::Transaction<'_>,
+    key: &TopicKey,
+    messages: &[MessageSyncDTO],
+    roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
 ) -> rusqlite::Result<()> {
     let mut relations = Vec::new();
     for message in messages {
@@ -116,7 +136,29 @@ pub(super) fn write_attachments_for_dto(
         .map(|message| message.id.clone())
         .collect::<Vec<_>>();
     delete_message_attachments(tx, key, &message_ids)?;
-    insert_attachment_relations(tx, key, &relations)
+    insert_attachment_relations(tx, key, &relations)?;
+    clear_live_attachment_unlink_debts(tx, &relations, roots)
+}
+
+fn clear_live_attachment_unlink_debts(
+    tx: &rusqlite::Transaction<'_>,
+    relations: &[AttachmentRelation],
+    roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+) -> rusqlite::Result<()> {
+    let Some(roots) = roots else {
+        return Ok(());
+    };
+    let mut hashes = std::collections::HashSet::new();
+    for relation in relations {
+        if hashes.insert(relation.hash.as_str()) {
+            crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts_rusqlite(
+                tx,
+                &relation.hash,
+                roots,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn attachment_order(

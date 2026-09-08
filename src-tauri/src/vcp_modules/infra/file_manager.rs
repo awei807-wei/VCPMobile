@@ -18,12 +18,19 @@ pub use legacy::{
 
 #[allow(unused_imports)]
 pub(crate) use attachment::{
-    canonical_file_within_root, check_existing_cas_size, check_existing_cas_size_async,
-    commit_registered_attachment, normalize_attachment_mime, resolve_attachment_cas_file,
-    safe_storage_extension, store_file_semaphore, validate_attachment_cas_path,
-    verify_expected_hash, verify_file_sha256,
+    attachment_gc_gate, attachment_gc_gate_blocking_read, canonical_file_within_root,
+    check_existing_cas_size, check_existing_cas_size_async, commit_registered_attachment,
+    commit_registered_attachment_unlocked, normalize_attachment_mime,
+    register_attachment_internal_unlocked, resolve_attachment_cas_file, safe_storage_extension,
+    store_file_semaphore, validate_attachment_cas_path, verify_expected_hash, verify_file_sha256,
+    AttachmentReadGuard,
 };
 
 #[cfg(test)]
 #[path = "file_manager_attachment_tests.rs"]
 mod attachment_tests;
+
+#[cfg(test)]
+pub(crate) async fn lock_attachment_test_environment() -> tokio::sync::MutexGuard<'static, ()> {
+    attachment_tests::lock_xdg_config_home().await
+}

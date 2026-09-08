@@ -1,3 +1,5 @@
+use crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots;
+use crate::vcp_modules::owner_lock::OwnerLockRegistry;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_types::MessageVersionState;
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
@@ -7,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
 mod attachments;
+mod entity_group_upserts;
 mod entity_upserts;
 mod hash_bubbles;
 mod message_batch;
@@ -23,10 +26,12 @@ pub enum DbWriteTask {
     Agent {
         id: String,
         dto: crate::vcp_modules::sync_dto::AgentSyncDTO,
+        expected_config_hash: Option<String>,
     },
     Group {
         id: String,
         dto: crate::vcp_modules::sync_dto::GroupSyncDTO,
+        expected_config_hash: Option<String>,
     },
     Avatar {
         owner_type: String,
@@ -81,6 +86,7 @@ pub struct DbWriteQueue {
     sender: mpsc::Sender<DbWriteTask>,
     logger: Option<Arc<Mutex<SyncLogger>>>,
     db_path: std::path::PathBuf,
+    attachment_roots: Option<ManagedAttachmentRoots>,
     _worker: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -90,19 +96,38 @@ impl Clone for DbWriteQueue {
             sender: self.sender.clone(),
             logger: self.logger.clone(),
             db_path: self.db_path.clone(),
+            attachment_roots: self.attachment_roots.clone(),
             _worker: None,
         }
     }
 }
 
 impl DbWriteQueue {
-    pub fn new(_pool: sqlx::SqlitePool, db_path: std::path::PathBuf) -> Self {
+    pub fn new(pool: sqlx::SqlitePool, db_path: std::path::PathBuf) -> Self {
+        Self::new_with_owner_locks(pool, db_path, OwnerLockRegistry::new())
+    }
+
+    pub fn new_with_owner_locks(
+        pool: sqlx::SqlitePool,
+        db_path: std::path::PathBuf,
+        owner_locks: std::sync::Arc<OwnerLockRegistry>,
+    ) -> Self {
+        Self::new_with_owner_locks_and_attachment_roots(pool, db_path, owner_locks, None)
+    }
+
+    pub fn new_with_owner_locks_and_attachment_roots(
+        _pool: sqlx::SqlitePool,
+        db_path: std::path::PathBuf,
+        owner_locks: std::sync::Arc<OwnerLockRegistry>,
+        attachment_roots: Option<ManagedAttachmentRoots>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(256);
-        let worker = worker::spawn(db_path.clone(), rx);
+        let worker = worker::spawn(db_path.clone(), rx, owner_locks, attachment_roots.clone());
         Self {
             sender: tx,
             logger: None,
             db_path,
+            attachment_roots,
             _worker: Some(worker),
         }
     }
@@ -135,6 +160,19 @@ impl DbWriteQueue {
             std::io::ErrorKind::InvalidData,
             message.into(),
         )))
+    }
+
+    pub(super) fn sync_snapshot_stale_error(
+        message: impl Into<String>,
+        stage: crate::vcp_modules::sync_error::SyncErrorStage,
+    ) -> rusqlite::Error {
+        let message = message.into();
+        Self::sync_contract_error(crate::vcp_modules::sync_error::encode_local_sync_error(
+            SNAPSHOT_STALE_MARKER,
+            stage,
+            &message,
+            Vec::new(),
+        ))
     }
 
     pub(super) fn take_pending_errors(errors: &mut Vec<String>) -> Result<(), String> {

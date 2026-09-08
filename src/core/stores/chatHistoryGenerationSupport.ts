@@ -109,7 +109,11 @@ function updateCompiledMessage(
   const targetIndex = deps.currentChatHistory.value.findIndex(
     (message) => message.id === userMsg.id,
   );
-  if (targetIndex !== -1 && deps.isCurrentIdentity(identity)) {
+  if (
+    targetIndex !== -1 &&
+    deps.currentChatHistory.value[targetIndex] === userMsg &&
+    deps.isCurrentIdentity(identity)
+  ) {
     deps.currentChatHistory.value[targetIndex] = {
       ...deps.currentChatHistory.value[targetIndex],
       blocks: compiledBlocks as any,
@@ -138,19 +142,28 @@ function handleGenerationMessage(
   topicId: string,
   ownerId: string,
   ownerType: ConversationOwnerType,
+  generation: number,
 ): void {
   const eventIdentity = makeConversationIdentity(ownerId, ownerType, topicId);
-  if (
-    eventIdentity &&
-    sameConversationIdentity(eventIdentity, identity) &&
-    deps.isCurrentIdentity(identity) &&
-    !deps.currentChatHistory.value.some((item) => item.id === message.id)
-  ) {
-    deps.currentChatHistory.value.push(message);
-    deps.currentChatHistory.value.sort(
-      (left, right) => left.timestamp - right.timestamp,
-    );
+  if (!eventIdentity || !sameConversationIdentity(eventIdentity, identity) ||
+      !deps.isCurrentIdentity(identity)) return;
+  message.generation = generation;
+  const targetIndex = deps.currentChatHistory.value.findIndex(
+    (item) => item.id === message.id,
+  );
+  if (targetIndex === -1) deps.currentChatHistory.value.push(message);
+  else {
+    const existing = deps.currentChatHistory.value[targetIndex];
+    if (existing.role !== message.role) return;
+    const existingGeneration = existing.generation;
+    if (existingGeneration !== undefined && existingGeneration > generation)
+      return;
+    if (existing !== message)
+      deps.currentChatHistory.value[targetIndex] = message;
   }
+  deps.currentChatHistory.value.sort(
+    (left, right) => left.timestamp - right.timestamp,
+  );
 }
 
 function handleGenerationFinished(
@@ -159,12 +172,17 @@ function handleGenerationFinished(
   topicId: string,
   ownerId: string,
   ownerType: ConversationOwnerType,
+  messageId: string,
+  generation: number,
 ): void {
   const eventIdentity = makeConversationIdentity(ownerId, ownerType, topicId);
   if (
     eventIdentity &&
     sameConversationIdentity(eventIdentity, identity) &&
-    deps.isCurrentIdentity(identity)
+    deps.isCurrentIdentity(identity) &&
+    deps.currentChatHistory.value.some(
+      (message) => message.id === messageId && message.generation === generation,
+    )
   ) {
     void summarizeTopic(deps);
   }
@@ -182,6 +200,7 @@ export function createGenerationChannel(
         topicId: string,
         ownerId: string,
         ownerType: ConversationOwnerType,
+        generation: number,
       ) =>
         handleGenerationMessage(
           deps,
@@ -190,14 +209,24 @@ export function createGenerationChannel(
           topicId,
           ownerId,
           ownerType,
+          generation,
         ),
       onStreamFinished: (
-        _messageId: string,
+        messageId: string,
         topicId: string,
         ownerId: string,
         ownerType: ConversationOwnerType,
+        generation: number,
       ) =>
-        handleGenerationFinished(deps, identity, topicId, ownerId, ownerType),
+        handleGenerationFinished(
+          deps,
+          identity,
+          topicId,
+          ownerId,
+          ownerType,
+          messageId,
+          generation,
+        ),
     });
   return streamChannel;
 }

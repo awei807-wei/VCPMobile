@@ -2,10 +2,11 @@ use super::message_batch::{
     filter_canonical_payload, filter_legacy_payload, find_tombstoned_dto_ids, find_tombstoned_ids,
     validate_topic_key,
 };
-use super::{DbWriteQueue, ExpectedMessageStates, SNAPSHOT_STALE_MARKER};
+use super::{DbWriteQueue, ExpectedMessageStates};
 
 use crate::vcp_modules::chat_manager::ChatMessage;
 use crate::vcp_modules::sync_dto::MessageSyncDTO;
+use crate::vcp_modules::sync_error::SyncErrorStage;
 use crate::vcp_modules::sync_types::{MessageDeletedState, MessageLiveState, MessageVersionState};
 use crate::vcp_modules::topic_types::TopicKey;
 use rusqlite::OptionalExtension;
@@ -24,6 +25,24 @@ impl DbWriteQueue {
         compressed_contents: Vec<Vec<u8>>,
         render_bytes: Vec<Vec<u8>>,
         _content_hashes: Vec<String>,
+    ) -> rusqlite::Result<()> {
+        Self::rusqlite_upsert_messages_batch_with_roots(
+            tx,
+            topic_id,
+            messages,
+            compressed_contents,
+            render_bytes,
+            None,
+        )
+    }
+
+    pub(super) fn rusqlite_upsert_messages_batch_with_roots(
+        tx: &rusqlite::Transaction<'_>,
+        topic_id: &str,
+        messages: Vec<ChatMessage>,
+        compressed_contents: Vec<Vec<u8>>,
+        render_bytes: Vec<Vec<u8>>,
+        roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
     ) -> rusqlite::Result<()> {
         let key = Self::rusqlite_resolve_topic_key(tx, topic_id)?;
         validate_legacy_message_batch(tx, &key, &messages, &compressed_contents, &render_bytes)?;
@@ -51,6 +70,7 @@ impl DbWriteQueue {
             &canonical_messages,
             &compressed_contents,
             &render_bytes,
+            roots,
         )
     }
 
@@ -81,6 +101,26 @@ impl DbWriteQueue {
         render_bytes: Vec<Vec<u8>>,
         expected_states: Option<&ExpectedMessageStates>,
     ) -> rusqlite::Result<()> {
+        Self::rusqlite_upsert_messages_batch_for_key_if_unchanged_with_roots(
+            tx,
+            key,
+            messages,
+            compressed_contents,
+            render_bytes,
+            expected_states,
+            None,
+        )
+    }
+
+    pub(super) fn rusqlite_upsert_messages_batch_for_key_if_unchanged_with_roots(
+        tx: &rusqlite::Transaction<'_>,
+        key: &TopicKey,
+        messages: Vec<MessageSyncDTO>,
+        compressed_contents: Vec<Vec<u8>>,
+        render_bytes: Vec<Vec<u8>>,
+        expected_states: Option<&ExpectedMessageStates>,
+        roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+    ) -> rusqlite::Result<()> {
         validate_canonical_message_batch(tx, key, &messages, &compressed_contents, &render_bytes)?;
         if let Some(expected) = expected_states {
             validate_message_snapshot(tx, key, &messages, expected)?;
@@ -91,7 +131,15 @@ impl DbWriteQueue {
         if messages.is_empty() {
             return Ok(());
         }
-        Self::upsert_canonical_rows(tx, key, &[], &messages, &compressed_contents, &render_bytes)
+        Self::upsert_canonical_rows(
+            tx,
+            key,
+            &[],
+            &messages,
+            &compressed_contents,
+            &render_bytes,
+            roots,
+        )
     }
 
     fn upsert_canonical_rows(
@@ -101,6 +149,7 @@ impl DbWriteQueue {
         messages: &[MessageSyncDTO],
         compressed_contents: &[Vec<u8>],
         render_bytes: &[Vec<u8>],
+        roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
     ) -> rusqlite::Result<()> {
         message_upsert_rows::insert_message_rows(
             tx,
@@ -111,9 +160,15 @@ impl DbWriteQueue {
         )?;
         super::message_fts::refresh_fts(tx, key, messages)?;
         if local_messages.is_empty() {
-            super::attachments::write_attachments_for_dto(tx, key, messages)
+            super::attachments::write_attachments_for_dto_with_roots(tx, key, messages, roots)
         } else {
-            super::attachments::write_attachments(tx, key, local_messages, messages)
+            super::attachments::write_attachments_with_roots(
+                tx,
+                key,
+                local_messages,
+                messages,
+                roots,
+            )
         }
     }
 }
@@ -129,16 +184,18 @@ fn validate_message_snapshot(
             .iter()
             .any(|message| !expected.contains_key(&message.id))
     {
-        return Err(DbWriteQueue::sync_contract_error(format!(
-            "{SNAPSHOT_STALE_MARKER}: pull snapshot does not cover the canonical message batch"
-        )));
+        return Err(DbWriteQueue::sync_snapshot_stale_error(
+            "pull snapshot does not cover the canonical message batch",
+            SyncErrorStage::Messages,
+        ));
     }
     for message in messages {
         let current = load_message_version(tx, key, &message.id)?;
         if current != expected[&message.id] {
-            return Err(DbWriteQueue::sync_contract_error(format!(
-                "{SNAPSHOT_STALE_MARKER}: local message changed after the Phase 3 snapshot"
-            )));
+            return Err(DbWriteQueue::sync_snapshot_stale_error(
+                "local message changed after the Phase 3 snapshot",
+                SyncErrorStage::Messages,
+            ));
         }
     }
     Ok(())

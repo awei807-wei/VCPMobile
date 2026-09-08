@@ -33,15 +33,20 @@ pub use message_service_context::{
 pub use message_service_deletions::{
     delete_message_attachment, delete_message_attachment_for_key, delete_messages,
     delete_messages_for_topic, truncate_history_after_timestamp,
-    truncate_history_after_timestamp_for_topic,
+    truncate_history_after_timestamp_for_topic, MessageMutationAnchor, MessageMutationResult,
 };
 pub use message_service_history::load_chat_history_internal;
 #[allow(unused_imports)]
 pub use message_service_mutations::{
-    append_single_message, fetch_raw_message_content, fetch_raw_message_content_for_key,
-    patch_single_message, re_render_message, re_render_message_for_key,
+    append_single_message, edit_message_and_truncate_history,
+    edit_message_and_truncate_history_with_loaded_attachments, fetch_raw_message_content,
+    fetch_raw_message_content_for_key, patch_single_message, re_render_message,
+    re_render_message_for_key, EditMessageMutationResult,
 };
-pub use message_service_stream::finalize_stream_message;
+pub use message_service_stream::{
+    finalize_stream_message, finalize_stream_message_guarded, persist_stream_skeleton_guarded,
+    update_existing_message_content, StreamFinalizationStatus,
+};
 
 #[cfg(test)]
 #[path = "message_service_tests.rs"]

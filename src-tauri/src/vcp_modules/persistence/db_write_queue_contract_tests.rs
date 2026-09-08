@@ -1,15 +1,25 @@
+use super::SNAPSHOT_STALE_MARKER;
 use super::{DbWriteQueue, DbWriteTask};
+use crate::vcp_modules::agent_service::{internal_write_agent_config, AgentConfigState};
+use crate::vcp_modules::agent_types::AgentConfig;
 use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
+use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::group_service::{internal_write_group_config, GroupManagerState};
+use crate::vcp_modules::group_types::GroupConfig;
 use crate::vcp_modules::message_repository::ContentCompressor;
+use crate::vcp_modules::owner_lock::OwnerLockRegistry;
 use crate::vcp_modules::sync_dto::{
     AgentSyncDTO, AgentTopicSyncDTO, AttachmentSyncDTO, GroupSyncDTO, GroupTopicSyncDTO,
     MessageSyncDTO,
 };
+use crate::vcp_modules::sync_error::attempt_restart_code;
 use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::sync_types::{MessageLiveState, MessageVersionState};
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use rusqlite::Connection;
+use serde_json::json;
 use std::collections::BTreeMap;
+use tauri::Manager;
 
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -37,6 +47,41 @@ fn group_dto(name: &str) -> GroupSyncDTO {
         use_unified_model: false,
         unified_model: None,
         tag_match_mode: None,
+        created_at: 1,
+    }
+}
+
+fn service_agent_config(name: &str) -> AgentConfig {
+    AgentConfig {
+        id: "agent-live".to_string(),
+        name: name.to_string(),
+        system_prompt: format!("system {name}"),
+        mobile_system_prompt: format!("mobile {name}"),
+        model: "model".to_string(),
+        temperature: 1.0,
+        context_token_limit: 1024,
+        max_output_tokens: 256,
+        stream_output: true,
+        use_temperature: true,
+        avatar_calculated_color: None,
+        topics: Vec::new(),
+    }
+}
+
+fn service_group_config(name: &str) -> GroupConfig {
+    GroupConfig {
+        id: "group-live".to_string(),
+        name: name.to_string(),
+        avatar_calculated_color: None,
+        members: vec!["agent-live".to_string()],
+        mode: "round".to_string(),
+        member_tags: Some(json!({})),
+        group_prompt: None,
+        invite_prompt: None,
+        use_unified_model: false,
+        unified_model: None,
+        topics: Vec::new(),
+        tag_match_mode: Some("strict".to_string()),
         created_at: 1,
     }
 }
@@ -99,9 +144,11 @@ fn setup_schema(connection: &Connection) {
     connection
         .execute_batch(
             "CREATE TABLE agents (
-                agent_id TEXT PRIMARY KEY, name TEXT, system_prompt TEXT, model TEXT,
-                temperature REAL, context_token_limit INTEGER, max_output_tokens INTEGER,
-                stream_output INTEGER, config_hash TEXT NOT NULL DEFAULT '',
+                agent_id TEXT PRIMARY KEY, name TEXT, system_prompt TEXT,
+                mobile_system_prompt TEXT, model TEXT, temperature REAL,
+                context_token_limit INTEGER, max_output_tokens INTEGER,
+                stream_output INTEGER, use_temperature INTEGER,
+                config_hash TEXT NOT NULL DEFAULT '',
                 content_hash TEXT NOT NULL DEFAULT '', updated_at INTEGER, deleted_at INTEGER
              );
              CREATE TABLE groups (
@@ -112,6 +159,10 @@ fn setup_schema(connection: &Connection) {
              );
              CREATE TABLE group_members (
                 group_id TEXT, agent_id TEXT, member_tag TEXT, sort_order INTEGER, updated_at INTEGER
+             );
+             CREATE TABLE group_member_tags (
+                group_id TEXT, agent_id TEXT, member_tag TEXT, updated_at INTEGER,
+                PRIMARY KEY (group_id, agent_id)
              );
              CREATE TABLE avatars (
                 owner_type TEXT, owner_id TEXT, avatar_hash TEXT, mime_type TEXT,
@@ -221,6 +272,39 @@ fn entity_writes_validate_ids_parents_and_tombstones() {
     assert!(
         DbWriteQueue::rusqlite_upsert_group(&tx, "group-deleted", &group_dto("stale"),).is_err()
     );
+    tx.execute(
+        "UPDATE topics SET title = 'Agent 当前标题', unread = 1, unread_count = 3,
+            content_hash = 'Agent 当前内容指纹'
+         WHERE owner_type = 'agent' AND owner_id = 'agent-live'
+           AND topic_id = 'topic-live'",
+        [],
+    )
+    .expect("更新 Agent 话题样例失败");
+    DbWriteQueue::rusqlite_upsert_agent(&tx, "agent-live", &agent_dto("更新后的 Agent"))
+        .expect("Agent 配置写入失败");
+    assert_eq!(
+        tx.query_row(
+            "SELECT title, unread, unread_count, content_hash FROM topics
+             WHERE owner_type = 'agent' AND owner_id = 'agent-live'
+               AND topic_id = 'topic-live'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i32>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .unwrap(),
+        (
+            "Agent 当前标题".to_string(),
+            1,
+            3,
+            "Agent 当前内容指纹".to_string()
+        )
+    );
     assert!(DbWriteQueue::rusqlite_upsert_avatar(&tx, "agent", "", &[1]).is_err());
     assert!(DbWriteQueue::rusqlite_upsert_avatar(&tx, "agent", "missing", &[1]).is_err());
     assert!(DbWriteQueue::rusqlite_upsert_avatar(&tx, "agent", "agent-deleted", &[1]).is_err());
@@ -295,6 +379,269 @@ fn entity_writes_validate_ids_parents_and_tombstones() {
         )
         .unwrap(),
         "old-agent"
+    );
+}
+
+#[test]
+fn owner_entity_cas_rejects_a_stale_pull_after_local_configuration_changes() {
+    let mut connection = Connection::open_in_memory().expect("open test database");
+    setup_schema(&connection);
+    seed_entities(&connection);
+    let tx = connection.transaction().expect("begin transaction");
+    tx.execute(
+        "UPDATE agents SET config_hash = ?, name = 'agent-local' WHERE agent_id = 'agent-live'",
+        [HASH_B],
+    )
+    .expect("store local Agent baseline");
+    tx.execute(
+        "UPDATE groups SET config_hash = ?, name = 'group-local' WHERE group_id = 'group-live'",
+        [HASH_B],
+    )
+    .expect("store local Group baseline");
+
+    let agent_error = DbWriteQueue::rusqlite_upsert_agent_if_expected(
+        &tx,
+        "agent-live",
+        &agent_dto("stale Agent"),
+        Some(HASH_A),
+    )
+    .expect_err("Agent CAS mismatch must fail the write");
+    assert!(agent_error.to_string().contains(SNAPSHOT_STALE_MARKER));
+    assert_eq!(
+        attempt_restart_code("ENTITY_PULL_FAILED", &agent_error.to_string()).as_deref(),
+        Some(SNAPSHOT_STALE_MARKER)
+    );
+    let group_error = DbWriteQueue::rusqlite_upsert_group_if_expected(
+        &tx,
+        "group-live",
+        &group_dto("stale Group"),
+        Some(HASH_A),
+    )
+    .expect_err("Group CAS mismatch must fail the write");
+    assert!(group_error.to_string().contains(SNAPSHOT_STALE_MARKER));
+    assert_eq!(
+        attempt_restart_code("ENTITY_PULL_FAILED", &group_error.to_string()).as_deref(),
+        Some(SNAPSHOT_STALE_MARKER)
+    );
+    assert_eq!(
+        tx.query_row(
+            "SELECT name FROM agents WHERE agent_id = 'agent-live'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "agent-local"
+    );
+    assert_eq!(
+        tx.query_row(
+            "SELECT name FROM groups WHERE group_id = 'group-live'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "group-local"
+    );
+}
+
+#[test]
+fn owner_entity_cas_accepts_an_unchanged_hash_for_agent_and_group() {
+    let mut connection = Connection::open_in_memory().expect("open test database");
+    setup_schema(&connection);
+    seed_entities(&connection);
+    connection
+        .execute(
+            "UPDATE agents SET config_hash = ? WHERE agent_id = 'agent-live'",
+            [HASH_A],
+        )
+        .expect("store Agent manifest hash");
+    connection
+        .execute(
+            "UPDATE groups SET config_hash = ? WHERE group_id = 'group-live'",
+            [HASH_A],
+        )
+        .expect("store Group manifest hash");
+    let tx = connection.transaction().expect("begin transaction");
+
+    DbWriteQueue::rusqlite_upsert_agent_if_expected(
+        &tx,
+        "agent-live",
+        &agent_dto("current Agent"),
+        Some(HASH_A),
+    )
+    .expect("an unchanged Agent hash must allow the pull");
+    DbWriteQueue::rusqlite_upsert_group_if_expected(
+        &tx,
+        "group-live",
+        &group_dto("current Group"),
+        Some(HASH_A),
+    )
+    .expect("an unchanged Group hash must allow the pull");
+
+    assert_eq!(
+        tx.query_row(
+            "SELECT name FROM agents WHERE agent_id = 'agent-live'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "current Agent"
+    );
+    assert_eq!(
+        tx.query_row(
+            "SELECT name FROM groups WHERE group_id = 'group-live'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "current Group"
+    );
+}
+
+#[test]
+fn group_write_separates_active_members_persistent_tags_and_topics() {
+    let mut connection = Connection::open_in_memory().expect("打开测试数据库失败");
+    setup_schema(&connection);
+    seed_entities(&connection);
+    connection
+        .execute_batch(
+            "INSERT INTO groups (group_id, name, deleted_at)
+                 VALUES ('group-other', '另一个群组', NULL);
+             INSERT INTO group_members (group_id, agent_id, member_tag, sort_order, updated_at)
+                 VALUES ('group-live', 'agent-removed', '旧列标签', 0, 1);
+             INSERT INTO group_member_tags (group_id, agent_id, member_tag, updated_at)
+                 VALUES
+                 ('group-live', 'agent-removed', '旧标签', 1),
+                 ('group-other', 'agent-live', '其他群组标签', 1);
+             UPDATE topics SET title = '当前标题', unread = 1, unread_count = 7,
+                 content_hash = '当前内容指纹'
+                 WHERE owner_type = 'group' AND owner_id = 'group-live'
+                   AND topic_id = 'topic-group';",
+        )
+        .expect("写入群组标签与话题样例失败");
+
+    let tx = connection.transaction().expect("开启群组配置事务失败");
+    let mut dto = group_dto("更新后的群组");
+    dto.members = vec!["agent-z".to_string(), "agent-live".to_string()];
+    dto.member_tags = Some(json!({"agent-live": "主持人"}));
+    DbWriteQueue::rusqlite_upsert_group(&tx, "group-live", &dto).expect("群组配置写入失败");
+
+    let active_members: Vec<String> = tx
+        .prepare(
+            "SELECT agent_id FROM group_members
+             WHERE group_id = 'group-live' ORDER BY sort_order",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(active_members, vec!["agent-z", "agent-live"]);
+
+    let tags: Vec<(String, String)> = tx
+        .prepare(
+            "SELECT agent_id, member_tag FROM group_member_tags
+             WHERE group_id = 'group-live' ORDER BY agent_id",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(tags, vec![("agent-live".to_string(), "主持人".to_string())]);
+    assert_eq!(
+        tx.query_row(
+            "SELECT title, unread, unread_count, content_hash FROM topics
+             WHERE owner_type = 'group' AND owner_id = 'group-live'
+               AND topic_id = 'topic-group'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i32>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .unwrap(),
+        ("当前标题".to_string(), 1, 7, "当前内容指纹".to_string())
+    );
+    assert_eq!(
+        tx.query_row(
+            "SELECT member_tag FROM group_member_tags
+             WHERE group_id = 'group-other' AND agent_id = 'agent-live'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "其他群组标签"
+    );
+    let first_hash: String = tx
+        .query_row(
+            "SELECT config_hash FROM groups WHERE group_id = 'group-live'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    tx.commit().expect("提交群组配置事务失败");
+
+    let tx = connection.transaction().expect("开启 Wire 标签事务失败");
+    dto.member_tags = None;
+    DbWriteQueue::rusqlite_upsert_group(&tx, "group-live", &dto).expect("None 应保留旧标签");
+    assert_eq!(
+        tx.query_row(
+            "SELECT member_tag FROM group_member_tags
+             WHERE group_id = 'group-live' AND agent_id = 'agent-live'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "主持人"
+    );
+    let second_hash: String = tx
+        .query_row(
+            "SELECT config_hash FROM groups WHERE group_id = 'group-live'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(second_hash, first_hash, "重读并回写后的群组哈希必须稳定");
+    tx.commit().expect("提交 Wire 标签事务失败");
+
+    let tx = connection.transaction().expect("开启标签清理事务失败");
+    dto.member_tags = Some(json!({
+        "agent-live": "",
+        "agent-removed": null
+    }));
+    DbWriteQueue::rusqlite_upsert_group(&tx, "group-live", &dto).expect("空标签清理失败");
+    assert_eq!(
+        tx.query_row(
+            "SELECT COUNT(*) FROM group_member_tags WHERE group_id = 'group-live'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    tx.commit().expect("提交标签清理事务失败");
+
+    let tx = connection.transaction().expect("开启非法标签事务失败");
+    dto.member_tags = Some(json!({"agent-live": 3}));
+    let error = DbWriteQueue::rusqlite_upsert_group(&tx, "group-live", &dto)
+        .expect_err("非法标签值必须拒绝");
+    assert!(error
+        .to_string()
+        .contains("memberTags 的值必须是字符串或 null"));
+    tx.rollback().expect("回滚非法标签事务失败");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT name FROM groups WHERE group_id = 'group-live'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "更新后的群组"
     );
 }
 
@@ -732,6 +1079,7 @@ async fn submit_and_flush_propagate_worker_errors() {
         .submit(DbWriteTask::Agent {
             id: "agent".to_string(),
             dto: agent_dto("agent"),
+            expected_config_hash: None,
         })
         .await
         .expect("task should enter queue");
@@ -749,6 +1097,145 @@ async fn submit_and_flush_propagate_worker_errors() {
         drop(queue);
         worker.await.expect("worker should stop cleanly");
     }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+}
+
+#[tokio::test]
+async fn real_worker_rejects_agent_and_group_pulls_after_interleaved_local_updates() {
+    let path = std::env::temp_dir().join(format!(
+        "vcp-mobile-write-queue-cas-{}-{}.sqlite",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let connection = Connection::open(&path).expect("open worker CAS database");
+    setup_schema(&connection);
+    seed_entities(&connection);
+    drop(connection);
+
+    let database_url = format!("sqlite://{}", path.to_string_lossy());
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .expect("open SQLx worker CAS database");
+    let owner_locks = OwnerLockRegistry::new();
+    let app = tauri::test::mock_app();
+    app.manage(DbState {
+        pool: pool.clone(),
+        path: path.clone(),
+    });
+    app.manage(AgentConfigState::with_owner_locks(owner_locks.clone()));
+    app.manage(GroupManagerState::with_owner_locks(owner_locks.clone()));
+    internal_write_agent_config(
+        &app.handle(),
+        "agent-live",
+        &service_agent_config("agent-baseline"),
+    )
+    .await
+    .expect("service Agent baseline write");
+    internal_write_group_config(
+        &app.handle(),
+        "group-live",
+        &service_group_config("group-baseline"),
+    )
+    .await
+    .expect("service Group baseline write");
+    let agent_baseline_hash: String =
+        sqlx::query_scalar("SELECT config_hash FROM agents WHERE agent_id = 'agent-live'")
+            .fetch_one(&pool)
+            .await
+            .expect("read Agent manifest baseline");
+    let group_baseline_hash: String =
+        sqlx::query_scalar("SELECT config_hash FROM groups WHERE group_id = 'group-live'")
+            .fetch_one(&pool)
+            .await
+            .expect("read Group manifest baseline");
+    let mut queue =
+        DbWriteQueue::new_with_owner_locks(pool.clone(), path.clone(), owner_locks.clone());
+
+    let agent_handle = owner_locks.acquire_owner("agent", "agent-live");
+    let agent_guard = agent_handle.lock().await;
+    queue
+        .submit(DbWriteTask::Agent {
+            id: "agent-live".to_string(),
+            dto: agent_dto("stale Agent pull"),
+            expected_config_hash: Some(agent_baseline_hash),
+        })
+        .await
+        .expect("submit Agent pull");
+    tokio::task::yield_now().await;
+
+    internal_write_agent_config(
+        &app.handle(),
+        "agent-live",
+        &service_agent_config("agent-local-save"),
+    )
+    .await
+    .expect("interleaved local Agent service save");
+    drop(agent_guard);
+    drop(agent_handle);
+    let agent_error = queue
+        .flush()
+        .await
+        .expect_err("real worker Agent CAS mismatch must fail flush");
+    assert!(agent_error.contains(SNAPSHOT_STALE_MARKER));
+    assert_eq!(
+        attempt_restart_code("ENTITY_PULL_FAILED", &agent_error).as_deref(),
+        Some(SNAPSHOT_STALE_MARKER)
+    );
+
+    let group_handle = owner_locks.acquire_owner("group", "group-live");
+    let group_guard = group_handle.lock().await;
+    queue
+        .submit(DbWriteTask::Group {
+            id: "group-live".to_string(),
+            dto: group_dto("stale Group pull"),
+            expected_config_hash: Some(group_baseline_hash),
+        })
+        .await
+        .expect("submit Group pull");
+    tokio::task::yield_now().await;
+    internal_write_group_config(
+        &app.handle(),
+        "group-live",
+        &service_group_config("group-local-save"),
+    )
+    .await
+    .expect("interleaved local Group service save");
+    drop(group_guard);
+    drop(group_handle);
+
+    let group_error = queue
+        .flush()
+        .await
+        .expect_err("real worker Group CAS mismatch must fail flush");
+    assert!(group_error.contains(SNAPSHOT_STALE_MARKER));
+    assert_eq!(
+        attempt_restart_code("ENTITY_PULL_FAILED", &group_error).as_deref(),
+        Some(SNAPSHOT_STALE_MARKER)
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE agent_id = 'agent-live'")
+            .fetch_one(&pool)
+            .await
+            .expect("read Agent after CAS"),
+        "agent-local-save"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT name FROM groups WHERE group_id = 'group-live'")
+            .fetch_one(&pool)
+            .await
+            .expect("read Group after CAS"),
+        "group-local-save"
+    );
+
+    if let Some(worker) = queue._worker.take() {
+        drop(queue);
+        worker.await.expect("worker should stop cleanly");
+    }
+    pool.close().await;
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
     let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));

@@ -7,6 +7,8 @@ pub mod persistence;
 pub mod sync;
 pub mod updater;
 
+pub(crate) mod owner_lock;
+
 // 2. 扁平化外观代理导出 (Façade Re-exporting)
 // 完美兼容 lib.rs 和外部文件对原有扁平模块的引用
 

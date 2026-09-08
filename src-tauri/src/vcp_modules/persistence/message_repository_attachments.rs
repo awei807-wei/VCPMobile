@@ -1,5 +1,6 @@
 use super::MessageRepository;
 use crate::vcp_modules::chat_manager::Attachment;
+use crate::vcp_modules::infra::file_manager::AttachmentReadGuard;
 use crate::vcp_modules::topic_types::TopicKey;
 
 impl MessageRepository {
@@ -9,10 +10,32 @@ impl MessageRepository {
         msg_id: &str,
         timestamp: i64,
         attachments: &[Attachment],
+        gate: &AttachmentReadGuard,
+    ) -> Result<(), String> {
+        Self::upsert_attachments_for_message_with_roots(
+            tx,
+            key,
+            msg_id,
+            timestamp,
+            attachments,
+            gate,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn upsert_attachments_for_message_with_roots(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        key: &TopicKey,
+        msg_id: &str,
+        timestamp: i64,
+        attachments: &[Attachment],
+        gate: &AttachmentReadGuard,
+        roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
     ) -> Result<(), String> {
         delete_attachment_relations(tx, key, msg_id).await?;
         for (index, attachment) in ordered_attachments(attachments, key, msg_id)? {
-            upsert_attachment(tx, key, msg_id, timestamp, index, attachment).await?;
+            upsert_attachment(tx, key, msg_id, timestamp, index, attachment, roots, gate).await?;
         }
         Ok(())
     }
@@ -78,6 +101,8 @@ async fn upsert_attachment(
     timestamp: i64,
     attachment_order: i32,
     attachment: &Attachment,
+    roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+    _gate: &AttachmentReadGuard,
 ) -> Result<(), String> {
     let hash = attachment.hash.clone().unwrap_or_else(|| {
         crate::vcp_modules::infra::utils::calculate_sha256(attachment.src.as_bytes())
@@ -86,6 +111,33 @@ async fn upsert_attachment(
         .image_frames
         .as_ref()
         .and_then(|frames| serde_json::to_string(frames).ok());
+    upsert_attachment_row(tx, attachment, &hash, image_frames, timestamp).await?;
+    insert_attachment_relation(
+        tx,
+        key,
+        msg_id,
+        timestamp,
+        attachment_order,
+        attachment,
+        &hash,
+    )
+    .await?;
+    if let Some(roots) = roots {
+        crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
+            &mut **tx, &hash, roots,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn upsert_attachment_row(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    attachment: &Attachment,
+    hash: &str,
+    image_frames: Option<String>,
+    timestamp: i64,
+) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO attachments (
             hash, mime_type, size, internal_path, extracted_text, image_frames,
@@ -100,7 +152,7 @@ async fn upsert_attachment(
             thumbnail_path = COALESCE(attachments.thumbnail_path, excluded.thumbnail_path),
             updated_at = excluded.updated_at",
     )
-    .bind(&hash)
+    .bind(hash)
     .bind(&attachment.r#type)
     .bind(i64::try_from(attachment.size).unwrap_or(i64::MAX))
     .bind(&attachment.internal_path)
@@ -111,17 +163,8 @@ async fn upsert_attachment(
     .bind(timestamp)
     .execute(&mut **tx)
     .await
-    .map_err(|error| error.to_string())?;
-    insert_attachment_relation(
-        tx,
-        key,
-        msg_id,
-        timestamp,
-        attachment_order,
-        attachment,
-        &hash,
-    )
-    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 async fn insert_attachment_relation(

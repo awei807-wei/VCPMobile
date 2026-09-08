@@ -9,6 +9,7 @@ use super::ingest_helpers::{
 };
 use super::registration::AttachmentData;
 use super::validation::{resolve_attachment_cas_file, store_file_semaphore};
+use crate::vcp_modules::infra::file_manager::attachment_gc_gate;
 use crate::vcp_modules::infra::file_manager::get_refined_mime_type;
 
 /// 存储文件到中心化附件目录 (内容寻址存储)
@@ -26,6 +27,7 @@ pub async fn store_file(
     file_bytes: Vec<u8>,
     mime_type: String,
 ) -> Result<AttachmentData, String> {
+    let _gate = attachment_gc_gate().read().await;
     validate_memory_upload(file_bytes.len())?;
     let _permit = store_file_semaphore()
         .acquire_owned()
@@ -40,7 +42,7 @@ pub async fn store_file(
         .ok_or("无效的附件路径字符")?
         .to_string();
     let refined_mime = get_refined_mime_type(&internal_file_path, &original_name, &mime_type);
-    super::registration::register_attachment_internal(
+    super::registration::register_attachment_internal_unlocked(
         &app_handle,
         &db_state.pool,
         hash,
@@ -48,6 +50,7 @@ pub async fn store_file(
         refined_mime,
         file_bytes.len() as u64,
         internal_path_str,
+        &_gate,
     )
     .await
 }
@@ -97,6 +100,7 @@ async fn register_local_file_impl(
     db_state: &DbState,
     args: RegisterLocalFileArgs,
 ) -> Result<AttachmentData, String> {
+    let _gate = attachment_gc_gate().read().await;
     let staging = prepare_staged_upload(
         app_handle,
         &args.local_path,
@@ -119,6 +123,7 @@ async fn register_local_file_impl(
         &promoted,
         args.original_name,
         args.mime_type,
+        &_gate,
     )
     .await
     {
@@ -136,6 +141,7 @@ async fn register_local_file_impl(
             &source_thumbnail,
             &staging.hash,
             attachment_data.created_at,
+            &_gate,
         )
         .await
         {

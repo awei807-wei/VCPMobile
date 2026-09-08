@@ -1,13 +1,19 @@
 use super::message_repository_render::ContentCompressor;
 use super::message_repository_support::resolve_message_updated_at;
 use super::{ExistingMessageState, MessageRepository};
+#[path = "message_repository_upsert_attachments.rs"]
+mod attachments;
 #[path = "message_repository_upsert_decode.rs"]
 mod decode;
+#[path = "message_repository_upsert_support.rs"]
+mod upsert_support;
 use crate::vcp_modules::chat_manager::ChatMessage;
+use crate::vcp_modules::infra::file_manager::AttachmentReadGuard;
 use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use decode::decode_existing_message;
 use sqlx::Row;
+use upsert_support::ensure_topic_is_live;
 
 impl MessageRepository {
     async fn resolve_legacy_topic_key(
@@ -89,6 +95,73 @@ impl MessageRepository {
         render_content: &[u8],
         skip_bubble: bool,
     ) -> Result<(), String> {
+        if message.attachments.is_some() {
+            return Err("带附件的消息写入必须先取得附件读闸门".to_string());
+        }
+        Self::upsert_message_for_topic_unlocked(
+            tx,
+            message,
+            key,
+            render_content,
+            skip_bubble,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// 在调用方已经持有附件读闸门时，原子写入消息及其附件关系。
+    pub async fn upsert_message_for_topic_with_attachment_gate(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        message: &ChatMessage,
+        key: &TopicKey,
+        render_content: &[u8],
+        skip_bubble: bool,
+        gate: &AttachmentReadGuard,
+    ) -> Result<(), String> {
+        Self::upsert_message_for_topic_with_attachment_gate_and_roots(
+            tx,
+            message,
+            key,
+            render_content,
+            skip_bubble,
+            gate,
+            None,
+        )
+        .await
+    }
+
+    /// 在调用方已持有附件读闸门且已解析真实 managed roots 时，原子写入消息及其附件关系。
+    pub async fn upsert_message_for_topic_with_attachment_gate_and_roots(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        message: &ChatMessage,
+        key: &TopicKey,
+        render_content: &[u8],
+        skip_bubble: bool,
+        gate: &AttachmentReadGuard,
+        roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+    ) -> Result<(), String> {
+        Self::upsert_message_for_topic_unlocked(
+            tx,
+            message,
+            key,
+            render_content,
+            skip_bubble,
+            Some(gate),
+            roots,
+        )
+        .await
+    }
+
+    async fn upsert_message_for_topic_unlocked(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        message: &ChatMessage,
+        key: &TopicKey,
+        render_content: &[u8],
+        skip_bubble: bool,
+        gate: Option<&AttachmentReadGuard>,
+        roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+    ) -> Result<(), String> {
         let prepared = prepare_upsert(tx, message, key).await?;
         if prepared.core_changed {
             write_message_row(tx, message, key, &prepared).await?;
@@ -97,7 +170,10 @@ impl MessageRepository {
         if prepared.content_changed {
             update_message_fts(tx, key, message, &prepared.message_key).await?;
         }
-        persist_message_attachments(tx, key, message, &prepared).await?;
+        if let Some(gate) = gate {
+            attachments::persist_message_attachments(tx, key, message, &prepared, gate, roots)
+                .await?;
+        }
         if !skip_bubble && prepared.fingerprint_changed {
             HashAggregator::bubble_from_topic_for_key(tx, key).await?;
         }
@@ -106,10 +182,10 @@ impl MessageRepository {
 }
 
 struct PreparedUpsert {
-    message_key: MessageKey,
+    pub(super) message_key: MessageKey,
     content_hash: String,
     effective_updated_at: i64,
-    message_timestamp: i64,
+    pub(super) message_timestamp: i64,
     content_changed: bool,
     fingerprint_changed: bool,
     core_changed: bool,
@@ -317,58 +393,4 @@ async fn update_message_fts(
     .await
     .map(|_| ())
     .map_err(|error| error.to_string())
-}
-
-async fn persist_message_attachments(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    key: &TopicKey,
-    message: &ChatMessage,
-    prepared: &PreparedUpsert,
-) -> Result<(), String> {
-    if let Some(attachments) = &message.attachments {
-        MessageRepository::upsert_attachments_for_message(
-            tx,
-            key,
-            &prepared.message_key.msg_id,
-            prepared.message_timestamp,
-            attachments,
-        )
-        .await
-    } else {
-        sqlx::query(
-            "DELETE FROM message_attachments
-             WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND msg_id = ?",
-        )
-        .bind(&key.owner_type)
-        .bind(&key.owner_id)
-        .bind(&key.topic_id)
-        .bind(&prepared.message_key.msg_id)
-        .execute(&mut **tx)
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-    }
-}
-
-async fn ensure_topic_is_live(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    key: &TopicKey,
-) -> Result<(), String> {
-    let topic_is_live: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1 FROM topics
-            WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL
-         )",
-    )
-    .bind(&key.owner_type)
-    .bind(&key.owner_id)
-    .bind(&key.topic_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|error| error.to_string())?;
-    if topic_is_live {
-        Ok(())
-    } else {
-        Err(format!("topic {} is deleted or missing", key.topic_id))
-    }
 }

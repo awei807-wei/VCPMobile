@@ -2,15 +2,40 @@ import type { Ref } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { useChatSessionStore } from "./chatSessionStore";
 import type { useNotificationStore } from "./notification";
+import {
+  applyTopicUnreadState,
+  createTopicUnreadMutationQueue,
+  reportTopicUnreadMutationFailure,
+  validateTopicUnreadState,
+  type TopicUnreadMutationQueue,
+  type TopicUnreadState,
+} from "./topicListCounters";
 import type { Topic } from "./topicTypes";
+import type { ConversationIdentity } from "./chatStoreIdentity";
 
 export interface TopicStoreContext {
   topics: Ref<Topic[]>;
   loading: Ref<boolean>;
   currentAgentId: Ref<string | null>;
   currentOwnerKey: Ref<string | null>;
+  requestEpoch: Ref<number>;
   sessionStore: ReturnType<typeof useChatSessionStore>;
   notificationStore: ReturnType<typeof useNotificationStore>;
+  unreadMutationQueue?: TopicUnreadMutationQueue;
+  reloadOwnerTopics?: (
+    ownerId: string,
+    ownerType: "agent" | "group",
+  ) => Promise<void>;
+  applyOwnerUnreadCount?: (
+    ownerId: string,
+    ownerType: "agent" | "group",
+    unreadCount: number,
+  ) => void;
+  refreshOwnerUnreadCount?: (
+    ownerId: string,
+    ownerType: "agent" | "group",
+  ) => Promise<void>;
+  cancelUnreadReceiptsForTopic?: (identity: ConversationIdentity) => void;
 }
 
 function hasTopicIdentity(
@@ -53,6 +78,30 @@ const mapTopicChunk = (
     msgCount: (topic as any).msgCount || 0,
   }));
 
+function beginTopicRequest(
+  context: TopicStoreContext,
+  ownerId: string,
+  ownerType: "agent" | "group",
+): { ownerKey: string; epoch: number } {
+  const ownerKey = `${ownerType}:${ownerId}`;
+  const epoch = context.requestEpoch.value + 1;
+  context.requestEpoch.value = epoch;
+  context.currentAgentId.value = ownerId;
+  context.currentOwnerKey.value = ownerKey;
+  return { ownerKey, epoch };
+}
+
+function isCurrentTopicRequest(
+  context: TopicStoreContext,
+  ownerKey: string,
+  epoch: number,
+): boolean {
+  return (
+    context.currentOwnerKey.value === ownerKey &&
+    context.requestEpoch.value === epoch
+  );
+}
+
 const loadTopicList = async (
   context: TopicStoreContext,
   ownerId: string,
@@ -60,20 +109,19 @@ const loadTopicList = async (
 ) => {
   if (!ownerId) return;
   if (owner_type !== "agent" && owner_type !== "group") {
-    throw new Error(`Unsupported topic owner type: ${owner_type}`);
+    throw new Error(`不支持的话题所有者类型：${owner_type}`);
   }
   const ownerType: "agent" | "group" = owner_type;
-  context.currentAgentId.value = ownerId;
-  const requestOwnerKey = `${ownerType}:${ownerId}`;
-  context.currentOwnerKey.value = requestOwnerKey;
-  console.log(`[TopicStore] Loading topics for ${ownerType}: ${ownerId}`);
+  const request = beginTopicRequest(context, ownerId, ownerType);
+  const { ownerKey: requestOwnerKey, epoch: requestEpoch } = request;
+  console.log(`[TopicStore] 正在加载 ${ownerType} 所有者的话题：${ownerId}`);
   context.loading.value = true;
 
   try {
     const channel = new Channel<Topic[]>();
     context.topics.value = [];
     channel.onmessage = (chunk) => {
-      if (context.currentOwnerKey.value !== requestOwnerKey) return;
+      if (!isCurrentTopicRequest(context, requestOwnerKey, requestEpoch)) return;
       context.topics.value.push(...mapTopicChunk(chunk, ownerId, ownerType));
       context.topics.value = [...context.topics.value];
     };
@@ -82,11 +130,11 @@ const loadTopicList = async (
       ownerType,
       onChunk: channel,
     });
-    console.log(`[TopicStore] Topic list streaming completed for ${ownerId}`);
+    console.log(`[TopicStore] 所有者 ${ownerId} 的话题列表流式加载完成`);
   } catch (error) {
-    console.error("[TopicStore] Failed to load topics:", error);
+    console.error("[TopicStore] 加载话题失败：", error);
   } finally {
-    if (context.currentOwnerKey.value === requestOwnerKey) {
+    if (isCurrentTopicRequest(context, requestOwnerKey, requestEpoch)) {
       context.loading.value = false;
     }
   }
@@ -98,9 +146,11 @@ const createTopic = async (
   ownerType: "agent" | "group",
   name: string,
 ) => {
+  const createEpoch = context.requestEpoch.value;
+  const createOwnerKey = `${ownerType}:${ownerId}`;
   try {
     console.log(
-      `[TopicStore] Creating new topic "${name}" for ${ownerType} ${ownerId}`,
+      `[TopicStore] 正在为 ${ownerType} ${ownerId} 创建话题“${name}”`,
     );
     const newTopic = await invoke<Topic>("create_topic", {
       ownerId,
@@ -116,7 +166,7 @@ const createTopic = async (
       unread: false,
       locked: true,
     };
-    if (context.currentOwnerKey.value === `${ownerType}:${ownerId}`) {
+    if (isCurrentTopicRequest(context, createOwnerKey, createEpoch)) {
       context.topics.value.unshift(topicWithState);
       context.topics.value = [...context.topics.value];
     }
@@ -128,7 +178,7 @@ const createTopic = async (
     });
     return topicWithState;
   } catch (error: any) {
-    console.error("[TopicStore] Failed to create topic:", error);
+    console.error("[TopicStore] 创建话题失败：", error);
     context.notificationStore.addNotification({
       type: "error",
       title: "创建话题失败",
@@ -149,8 +199,9 @@ const deleteTopic = async (
   topicId: string,
 ) => {
   try {
-    console.log(`[TopicStore] Deleting topic ${topicId}`);
+    console.log(`[TopicStore] 正在删除话题：${topicId}`);
     await invoke("delete_topic", { ownerId, ownerType, topicId });
+    context.cancelUnreadReceiptsForTopic?.({ ownerId, ownerType, topicId });
     context.topics.value = context.topics.value.filter(
       (topic) => !hasTopicIdentity(topic, ownerId, ownerType, topicId),
     );
@@ -160,6 +211,13 @@ const deleteTopic = async (
       message: "话题及其记录已被移除",
       toastOnly: true,
     });
+    if (context.refreshOwnerUnreadCount) {
+      try {
+        await context.refreshOwnerUnreadCount(ownerId, ownerType);
+      } catch (error) {
+        console.error("[TopicStore] 删除话题后刷新 owner 未读聚合失败：", error);
+      }
+    }
     if (!isCurrentSessionTopic(context, ownerId, ownerType, topicId)) return;
     const nextTopic = context.topics.value[0];
     if (nextTopic) {
@@ -172,7 +230,7 @@ const deleteTopic = async (
       context.sessionStore.currentTopicId = null;
     }
   } catch (error) {
-    console.error("[TopicStore] Failed to delete topic:", error);
+    console.error("[TopicStore] 删除话题失败：", error);
     throw error;
   }
 };
@@ -186,7 +244,7 @@ const updateTopicTitle = async (
 ) => {
   try {
     console.log(
-      `[TopicStore] Updating title for topic ${topicId} to "${newTitle}"`,
+      `[TopicStore] 正在将话题 ${topicId} 的标题更新为“${newTitle}”`,
     );
     await invoke("update_topic_title", {
       ownerId,
@@ -211,7 +269,7 @@ const updateTopicTitle = async (
       context.sessionStore.currentSelectedItem.name = newTitle;
     }
   } catch (error) {
-    console.error("[TopicStore] Failed to update topic title:", error);
+    console.error("[TopicStore] 更新话题标题失败：", error);
     throw error;
   }
 };
@@ -240,7 +298,7 @@ const toggleTopicLock = async (
     };
     context.topics.value = [...context.topics.value];
   } catch (error) {
-    console.error("[TopicStore] Failed to toggle topic lock:", error);
+    console.error("[TopicStore] 切换话题锁定状态失败：", error);
     throw error;
   }
 };
@@ -251,30 +309,48 @@ const setTopicUnread = async (
   ownerType: "agent" | "group",
   topicId: string,
   unread: boolean,
+  queue: TopicUnreadMutationQueue,
 ) => {
-  try {
-    await invoke("set_topic_unread", { ownerId, ownerType, topicId, unread });
-    const index = context.topics.value.findIndex(
-      (topic) => hasTopicIdentity(topic, ownerId, ownerType, topicId),
-    );
-    if (index === -1) return;
-    context.topics.value[index] = {
-      ...context.topics.value[index],
-      unread,
-    };
-    context.topics.value = [...context.topics.value];
-  } catch (error) {
-    console.error("[TopicStore] Failed to set topic unread:", error);
-    throw error;
-  }
+  const identity = { ownerId, ownerType, topicId };
+  return queue.enqueue(identity, async () => {
+    try {
+      const result = await invoke<TopicUnreadState>("set_topic_unread", {
+        ...identity,
+        unread,
+      });
+      const state = validateTopicUnreadState(result, identity);
+      applyTopicUnreadState(context.topics, state);
+      if (
+        context.applyOwnerUnreadCount &&
+        state.ownerUnreadCount !== undefined
+      ) {
+        context.applyOwnerUnreadCount(
+          state.ownerId,
+          state.ownerType,
+          state.ownerUnreadCount,
+        );
+      }
+    } catch (error) {
+      await reportTopicUnreadMutationFailure(identity, error, {
+        notificationStore: context.notificationStore,
+        reloadOwnerTopics: context.reloadOwnerTopics,
+        applyOwnerUnreadCount: context.applyOwnerUnreadCount,
+        refreshOwnerUnreadCount: context.refreshOwnerUnreadCount,
+      });
+    }
+  });
 };
 
 const invalidateAllTopicCaches = (context: TopicStoreContext) => {
+  context.requestEpoch.value += 1;
   context.topics.value = [];
-  console.log("[TopicStore] All topic caches invalidated");
+  context.loading.value = false;
+  console.log("[TopicStore] 已使所有话题缓存失效");
 };
 
 export function createTopicListActions(context: TopicStoreContext) {
+  const unreadMutationQueue =
+    context.unreadMutationQueue ?? createTopicUnreadMutationQueue();
   return {
     loadTopicList: (ownerId: string, ownerType: string) =>
       loadTopicList(context, ownerId, ownerType),
@@ -304,7 +380,20 @@ export function createTopicListActions(context: TopicStoreContext) {
       ownerType: "agent" | "group",
       topicId: string,
       unread: boolean,
-    ) => setTopicUnread(context, ownerId, ownerType, topicId, unread),
+    ) =>
+      setTopicUnread(
+        context,
+        ownerId,
+        ownerType,
+        topicId,
+        unread,
+        unreadMutationQueue,
+      ),
     invalidateAllTopicCaches: () => invalidateAllTopicCaches(context),
+    setUnreadReceiptCancellation: (
+      callback: (identity: ConversationIdentity) => void,
+    ) => {
+      context.cancelUnreadReceiptsForTopic = callback;
+    },
   };
 }

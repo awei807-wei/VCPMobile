@@ -4,11 +4,14 @@ use crate::vcp_modules::chat_manager::ChatMessage;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::message_service;
 use crate::vcp_modules::vcp_client::{
-    perform_vcp_request, ActiveRequests, StreamEvent, VcpRequestPayload,
+    acquire_stream_service, mark_message_as_error_guarded_with_channel, perform_vcp_request,
+    ActiveRequests, GuardedTransition, StreamEvent, VcpRequestError, VcpRequestOutcome,
+    VcpRequestPayload,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{ipc::Channel, AppHandle, State};
+use tauri_plugin_vcp_mobile::stream::StreamIdentity;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,7 +63,13 @@ pub async fn internal_process_agent_chat_message(
     let thinking_id = new_thinking_id(&agent_id);
     let agent_config =
         read_agent_config_internal(&app_handle, &agent_state, &agent_id, Some(true)).await?;
-    start_stream_service(&app_handle, &agent_config.name, "AgentChatAppService");
+    let stream_identity = StreamIdentity::new("agent", &agent_id, &topic_id, &thinking_id);
+    let stream_lease = acquire_stream_service(
+        &app_handle,
+        &agent_config.name,
+        &stream_identity,
+        "AgentChatAppService",
+    );
     let request_payload = prepare_agent_request(AgentRequestInput {
         app_handle: &app_handle,
         db_state: &db_state,
@@ -74,8 +83,6 @@ pub async fn internal_process_agent_chat_message(
         vcp_api_key,
     })
     .await?;
-    let context = request_payload.context.clone();
-    let _ = stream_channel.send(StreamEvent::thinking(thinking_id.clone(), context));
     let result = perform_vcp_request(
         &app_handle,
         active_requests.0.clone(),
@@ -83,17 +90,9 @@ pub async fn internal_process_agent_chat_message(
         Some(stream_channel.clone()),
     )
     .await;
-    stop_stream_service(&app_handle, &agent_config.name, "AgentChatAppService");
-    finalize_agent_result(
-        result,
-        &app_handle,
-        &db_state,
-        &agent_id,
-        &topic_id,
-        &thinking_id,
-        stream_channel,
-    )
-    .await?;
+    let finalized = finalize_agent_result(result, &app_handle, &db_state, stream_channel).await;
+    drop(stream_lease);
+    finalized?;
     Ok(json!({ "status": "sent", "messageId": thinking_id }))
 }
 
@@ -140,6 +139,7 @@ async fn prepare_agent_request(input: AgentRequestInput<'_>) -> Result<VcpReques
         build_agent_context(db_state, &history, agent_id, topic_id, agent_config).await?;
     let context = Some(json!({
         "agentId": agent_id,
+        "ownerType": "agent",
         "topicId": topic_id,
         "agentName": agent_config.name
     }));
@@ -200,42 +200,100 @@ async fn build_agent_context(
 }
 
 async fn finalize_agent_result(
-    result: Result<(Value, bool), String>,
+    result: Result<VcpRequestOutcome, VcpRequestError>,
     app_handle: &AppHandle,
     db_state: &DbState,
-    agent_id: &str,
-    topic_id: &str,
-    thinking_id: &str,
     stream_channel: Channel<StreamEvent>,
 ) -> Result<(), String> {
     match result {
-        Ok((res, is_aborted)) => {
-            if let Some(full_content) = res["fullContent"].as_str() {
-                let finish_reason = finish_reason(&res, is_aborted);
-                message_service::finalize_stream_message(
-                    app_handle.clone(),
-                    &db_state.pool,
-                    agent_id,
-                    "agent",
-                    topic_id.to_string(),
-                    thinking_id.to_string(),
-                    full_content.to_string(),
-                    is_aborted,
-                    finish_reason,
-                    Some(stream_channel),
-                    Some(agent_id.to_string()),
-                )
-                .await?;
+        Ok(outcome) => finalize_agent_success(outcome, app_handle, db_state, stream_channel).await,
+        Err(error) => finalize_agent_error(error, app_handle, db_state, stream_channel).await,
+    }
+}
+
+async fn finalize_agent_success(
+    outcome: VcpRequestOutcome,
+    app_handle: &AppHandle,
+    db_state: &DbState,
+    stream_channel: Channel<StreamEvent>,
+) -> Result<(), String> {
+    let VcpRequestOutcome {
+        response,
+        is_aborted,
+        completion_lease,
+        request_guard,
+    } = outcome;
+    let _request_guard = request_guard;
+    let Some(full_content) = response["fullContent"].as_str() else {
+        let mark_result = mark_message_as_error_guarded_with_channel(
+            app_handle,
+            &db_state.pool,
+            &completion_lease,
+            Some("响应缺少 fullContent".to_string()),
+            Some(stream_channel),
+        )
+        .await?;
+        return match mark_result {
+            GuardedTransition::Applied(()) => Err("响应缺少 fullContent".to_string()),
+            GuardedTransition::Skipped => {
+                log::warn!("[AgentChatAppService] 缺少正文的旧请求已跳过");
+                Ok(())
             }
-        }
-        Err(error) => {
-            log::error!(
-                "[AgentChatAppService] perform_vcp_request failed: {}",
-                error
-            );
-        }
+        };
+    };
+    let finalization = message_service::finalize_stream_message_guarded(
+        app_handle.clone(),
+        &db_state.pool,
+        &completion_lease,
+        full_content.to_string(),
+        is_aborted,
+        finish_reason(&response, is_aborted),
+        Some(stream_channel),
+        Some(completion_lease.key().topic.owner_id.clone()),
+    )
+    .await?;
+    if matches!(
+        finalization,
+        message_service::StreamFinalizationStatus::Skipped
+    ) {
+        log::warn!("[AgentChatAppService] 旧请求终结已跳过");
     }
     Ok(())
+}
+
+async fn finalize_agent_error(
+    error: VcpRequestError,
+    app_handle: &AppHandle,
+    db_state: &DbState,
+    stream_channel: Channel<StreamEvent>,
+) -> Result<(), String> {
+    let VcpRequestError {
+        message,
+        completion_lease,
+        stale,
+        request_guard,
+    } = error;
+    let _request_guard = request_guard;
+    if stale {
+        log::warn!("[AgentChatAppService] 旧请求已被新请求替换");
+        return Ok(());
+    }
+    if let Some(lease) = completion_lease.as_ref() {
+        let mark_result = mark_message_as_error_guarded_with_channel(
+            app_handle,
+            &db_state.pool,
+            lease,
+            Some(message.clone()),
+            Some(stream_channel),
+        )
+        .await?;
+        if matches!(mark_result, GuardedTransition::Skipped) {
+            log::warn!("[AgentChatAppService] 请求错误终结已跳过旧请求");
+            return Ok(());
+        }
+    }
+    log::error!("[AgentChatAppService] 请求执行失败: {}", message);
+    Err(message)
 }
 
 fn build_model_config(agent_config: &AgentConfig) -> Value {
@@ -262,26 +320,6 @@ fn effective_system_prompt(agent_config: &AgentConfig) -> String {
 fn new_thinking_id(agent_id: &str) -> String {
     let timestamp = crate::vcp_modules::infra::utils::now_millis();
     format!("msg_{}_{}", agent_id, timestamp)
-}
-
-fn start_stream_service(app_handle: &AppHandle, agent_name: &str, source: &str) {
-    if let Err(error) =
-        tauri_plugin_vcp_mobile::stream::start_stream_service_inner(app_handle, agent_name)
-    {
-        log::warn!(
-            "[{}] Failed to start streaming service early: {}",
-            source,
-            error
-        );
-    }
-}
-
-fn stop_stream_service(app_handle: &AppHandle, agent_name: &str, source: &str) {
-    if let Err(error) =
-        tauri_plugin_vcp_mobile::stream::stop_stream_service_inner(app_handle, agent_name)
-    {
-        log::warn!("[{}] Failed to stop streaming service: {}", source, error);
-    }
 }
 
 fn finish_reason(result: &Value, is_aborted: bool) -> Option<String> {

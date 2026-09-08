@@ -18,6 +18,17 @@ describe("chat history and stream composite identity", () => {
     setActivePinia(createPinia());
     mockInvoke("append_single_message", () => undefined);
     mockInvoke("process_message_content", () => []);
+    mockInvoke("increment_topic_unread_count", (args = {}) => {
+      const markUnread = args.markUnread === true;
+      return {
+        ownerId: args.ownerId,
+        ownerType: args.ownerType,
+        topicId: args.topicId,
+        unread: markUnread,
+        unreadCount: markUnread ? 1 : 0,
+        ownerUnreadCount: markUnread ? 1 : 0,
+      };
+    });
   });
 
   it("keeps same topic/message ids isolated between Agent and Group", async () => {
@@ -52,16 +63,19 @@ describe("chat history and stream composite identity", () => {
     const streamStore = useChatStreamStore();
     await streamStore.processStreamEvent({
       type: "data",
+      generation: 1,
       messageId: "message",
       context: { ownerType: "agent", ownerId: "shared", topicId: "topic" },
       chunk: "agent",
     });
     await streamStore.processStreamEvent({
       type: "data",
+      generation: 1,
       messageId: "message",
       context: { ownerType: "group", groupId: "shared", topicId: "topic" },
       chunk: "group",
     });
+    await topicStore.flushUnreadMutations();
 
     expect(streamStore.activeStreamMessages.size).toBe(2);
     expect(
@@ -90,7 +104,11 @@ describe("chat history and stream composite identity", () => {
       ownerType: "agent",
       msgCount: 1,
     });
-    expect(topicStore.topics[0]).not.toHaveProperty("unreadCount");
+    expect(topicStore.topics[0]).toMatchObject({
+      ownerType: "agent",
+      unread: false,
+      unreadCount: 0,
+    });
     expect(topicStore.topics[1]).toMatchObject({
       ownerType: "group",
       msgCount: 1,
@@ -107,6 +125,7 @@ describe("chat history and stream composite identity", () => {
 
     await streamStore.processStreamEvent({
       type: "data",
+      generation: 1,
       messageId: "ambiguous",
       context: { ownerId: "owner", topicId: "topic" },
       chunk: "must be discarded",

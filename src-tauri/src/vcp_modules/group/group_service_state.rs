@@ -1,29 +1,24 @@
-use crate::vcp_modules::group_types::GroupConfig;
-use dashmap::DashMap;
+use crate::vcp_modules::owner_lock::{OwnerLockHandle, OwnerLockRegistry};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-/// GroupManagerState 的全局状态。
+/// Group 配置服务状态只负责串行化实体写入。
+///
+/// 配置不保存在内存缓存中；读取始终从 SQLite 事务快照组装完整配置。锁注册表仅在
+/// 写入路径使用，并在最后一个持有者释放后回收，避免缺失 ID 请求造成无界增长。
 pub struct GroupManagerState {
-    /// 配置缓存: group_id -> GroupConfig
-    pub caches: DashMap<String, GroupConfig>,
-    /// 任务队列锁: group_id -> Mutex
-    pub locks: DashMap<String, Arc<Mutex<()>>>,
+    owner_locks: Arc<OwnerLockRegistry>,
 }
 
 impl GroupManagerState {
     pub fn new() -> Self {
-        Self {
-            caches: DashMap::new(),
-            locks: DashMap::new(),
-        }
+        Self::with_owner_locks(OwnerLockRegistry::new())
     }
 
-    pub async fn acquire_lock(&self, group_id: &str) -> Arc<Mutex<()>> {
-        self.locks
-            .entry(group_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .value()
-            .clone()
+    pub(crate) fn with_owner_locks(owner_locks: Arc<OwnerLockRegistry>) -> Self {
+        Self { owner_locks }
+    }
+
+    pub(crate) async fn acquire_lock(&self, group_id: &str) -> OwnerLockHandle {
+        self.owner_locks.acquire_owner("group", group_id)
     }
 }

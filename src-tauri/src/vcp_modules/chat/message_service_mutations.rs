@@ -1,10 +1,30 @@
 use super::message_service_support::{ensure_attachments_locally, topic_key};
 use crate::vcp_modules::chat_manager::ChatMessage;
 use crate::vcp_modules::content_parser::ContentBlock;
+use crate::vcp_modules::infra::file_manager::attachment_gc_gate;
 use crate::vcp_modules::message_repository::{MessageRenderCompiler, MessageRepository};
 use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use tauri::{AppHandle, Manager};
+
+#[path = "message_service_edit.rs"]
+mod edit;
+
+/// 编辑重发在单一 SQLite 事务内返回的权威结果。
+///
+/// `deleted_ids`、`msg_count` 和 `anchor` 与截断 mutation 保持相同语义，
+/// `blocks` 是已提交锚点正文对应的渲染结果，供前端在一次提交后收敛。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditMessageMutationResult {
+    pub deleted_ids: Vec<String>,
+    pub active_ids: Vec<String>,
+    pub deleted_at: i64,
+    pub msg_count: i32,
+    pub anchor: Option<super::message_service_deletions::MessageMutationAnchor>,
+    pub blocks: Vec<ContentBlock>,
+}
 
 pub async fn append_single_message<R: tauri::Runtime>(
     app_handle: AppHandle<R>,
@@ -14,6 +34,9 @@ pub async fn append_single_message<R: tauri::Runtime>(
     topic_id: String,
     mut message: ChatMessage,
 ) -> Result<Vec<ContentBlock>, String> {
+    let gate = attachment_gc_gate().read().await;
+    let roots =
+        crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(&app_handle)?;
     ensure_attachments_locally(&app_handle, &mut message).await?;
     let key = topic_key(owner_id, owner_type, &topic_id)?;
     let blocks = if let Some(blocks) = &message.blocks {
@@ -23,14 +46,96 @@ pub async fn append_single_message<R: tauri::Runtime>(
     };
     let render_bytes = MessageRenderCompiler::serialize(&blocks)?;
     let mut tx = db_pool.begin().await.map_err(|error| error.to_string())?;
-    MessageRepository::upsert_message_for_topic(&mut tx, &message, &key, &render_bytes, false)
-        .await?;
+    MessageRepository::upsert_message_for_topic_with_attachment_gate_and_roots(
+        &mut tx,
+        &message,
+        &key,
+        &render_bytes,
+        false,
+        &gate,
+        Some(&roots),
+    )
+    .await?;
     if message.role == "assistant" && message.finish_reason.is_none() {
         register_active_generation(&mut tx, &key, &message).await?;
     }
     refresh_message_topic(&mut tx, &key, &message).await?;
     tx.commit().await.map_err(|error| error.to_string())?;
     Ok(blocks)
+}
+
+/// 编辑 user 锚点并删除其后的历史；正文、缓存、索引、附件关系、计数和
+/// 同步哈希都在同一 SQLite 事务中完成。
+pub async fn edit_message_and_truncate_history<R: tauri::Runtime>(
+    app_handle: AppHandle<R>,
+    db_pool: &sqlx::Pool<sqlx::Sqlite>,
+    owner_id: &str,
+    owner_type: &str,
+    topic_id: String,
+    anchor_message_id: String,
+    mut message: ChatMessage,
+) -> Result<EditMessageMutationResult, String> {
+    let gate = attachment_gc_gate().read().await;
+    let roots =
+        crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(&app_handle)?;
+    ensure_attachments_locally(&app_handle, &mut message).await?;
+    edit_message_and_truncate_history_with_loaded_attachments_with_gate(
+        db_pool,
+        owner_id,
+        owner_type,
+        topic_id,
+        anchor_message_id,
+        message,
+        Some(&roots),
+        &gate,
+    )
+    .await
+}
+
+/// 与生产编辑重发路径相同的事务实现；测试和已完成附件装载的调用方可直接复用。
+pub async fn edit_message_and_truncate_history_with_loaded_attachments(
+    db_pool: &sqlx::Pool<sqlx::Sqlite>,
+    owner_id: &str,
+    owner_type: &str,
+    topic_id: String,
+    anchor_message_id: String,
+    message: ChatMessage,
+) -> Result<EditMessageMutationResult, String> {
+    let gate = attachment_gc_gate().read().await;
+    edit_message_and_truncate_history_with_loaded_attachments_with_gate(
+        db_pool,
+        owner_id,
+        owner_type,
+        topic_id,
+        anchor_message_id,
+        message,
+        None,
+        &gate,
+    )
+    .await
+}
+
+async fn edit_message_and_truncate_history_with_loaded_attachments_with_gate(
+    db_pool: &sqlx::Pool<sqlx::Sqlite>,
+    owner_id: &str,
+    owner_type: &str,
+    topic_id: String,
+    anchor_message_id: String,
+    message: ChatMessage,
+    roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+    gate: &crate::vcp_modules::infra::file_manager::AttachmentReadGuard,
+) -> Result<EditMessageMutationResult, String> {
+    edit::edit_message_and_truncate_history_with_loaded_attachments_with_gate(
+        db_pool,
+        owner_id,
+        owner_type,
+        topic_id,
+        anchor_message_id,
+        message,
+        roots,
+        gate,
+    )
+    .await
 }
 
 async fn register_active_generation(
@@ -208,7 +313,56 @@ pub async fn patch_single_message<R: tauri::Runtime>(
     mut message: ChatMessage,
     skip_bubble: bool,
 ) -> Result<Vec<ContentBlock>, String> {
+    let gate = attachment_gc_gate().read().await;
+    let roots =
+        crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(&app_handle)?;
     ensure_attachments_locally(&app_handle, &mut message).await?;
+    patch_single_message_with_loaded_attachments_with_gate(
+        db_pool,
+        owner_id,
+        owner_type,
+        topic_id,
+        message,
+        skip_bubble,
+        Some(&roots),
+        &gate,
+    )
+    .await
+}
+
+/// 更新已完成附件装载的正文，并统一刷新哈希、渲染缓存和全文索引。
+pub async fn patch_single_message_with_loaded_attachments(
+    db_pool: &sqlx::Pool<sqlx::Sqlite>,
+    owner_id: &str,
+    owner_type: &str,
+    topic_id: String,
+    message: ChatMessage,
+    skip_bubble: bool,
+) -> Result<Vec<ContentBlock>, String> {
+    let gate = attachment_gc_gate().read().await;
+    patch_single_message_with_loaded_attachments_with_gate(
+        db_pool,
+        owner_id,
+        owner_type,
+        topic_id,
+        message,
+        skip_bubble,
+        None,
+        &gate,
+    )
+    .await
+}
+
+async fn patch_single_message_with_loaded_attachments_with_gate(
+    db_pool: &sqlx::Pool<sqlx::Sqlite>,
+    owner_id: &str,
+    owner_type: &str,
+    topic_id: String,
+    message: ChatMessage,
+    skip_bubble: bool,
+    roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+    gate: &crate::vcp_modules::infra::file_manager::AttachmentReadGuard,
+) -> Result<Vec<ContentBlock>, String> {
     let key = topic_key(owner_id, owner_type, &topic_id)?;
     let blocks = if let Some(blocks) = &message.blocks {
         serde_json::from_value(blocks.clone()).map_err(|error| error.to_string())?
@@ -217,12 +371,14 @@ pub async fn patch_single_message<R: tauri::Runtime>(
     };
     let render_bytes = MessageRenderCompiler::serialize(&blocks)?;
     let mut tx = db_pool.begin().await.map_err(|error| error.to_string())?;
-    MessageRepository::upsert_message_for_topic(
+    MessageRepository::upsert_message_for_topic_with_attachment_gate_and_roots(
         &mut tx,
         &message,
         &key,
         &render_bytes,
         skip_bubble,
+        gate,
+        roots,
     )
     .await?;
     sqlx::query(

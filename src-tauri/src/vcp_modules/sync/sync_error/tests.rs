@@ -1,6 +1,6 @@
 use super::codec::{
-    decode_wire_sync_error, encode_http_sync_error_body, encode_local_sync_error,
-    is_attempt_restart_code, WIRE_ERROR_MARKER,
+    attempt_restart_code, decode_wire_sync_error, encode_http_sync_error_body,
+    encode_local_sync_error, is_attempt_restart_code, WIRE_ERROR_MARKER,
 };
 use super::payload::{build_local_error_payload, build_wire_error_payload};
 use super::types::{SyncErrorCategory, SyncErrorOrigin, SyncErrorStage, SyncRetryAction};
@@ -260,4 +260,46 @@ fn only_snapshot_or_transport_recovery_can_restart_an_attempt() {
     assert!(is_attempt_restart_code("HTTP_TRANSPORT_FAILED"));
     assert!(!is_attempt_restart_code("PROTOCOL_INVALID"));
     assert!(!is_attempt_restart_code("SYNC_DB_QUERY_FAILED"));
+}
+
+#[test]
+fn attempt_restart_code_requires_explicit_code_or_strict_wire_envelope() {
+    let structured = encode_local_sync_error(
+        "SYNC_SNAPSHOT_STALE",
+        SyncErrorStage::Messages,
+        "snapshot changed",
+        vec!["topic-a".to_owned()],
+    );
+    assert_eq!(
+        attempt_restart_code("ENTITY_PULL_FAILED", &structured).as_deref(),
+        Some("SYNC_SNAPSHOT_STALE")
+    );
+    assert_eq!(
+        attempt_restart_code(
+            "ENTITY_PULL_FAILED",
+            "rusqlite execution error: SYNC_SNAPSHOT_STALE: local Agent changed"
+        ),
+        None
+    );
+    assert_eq!(
+        attempt_restart_code(
+            "ENTITY_PULL_FAILED",
+            r#"SYNC_WIRE_ERROR:{"code":"SYNC_SNAPSHOT_STALE","message":"snapshot changed"}"#
+        ),
+        None
+    );
+    let normal_wire = encode_local_sync_error(
+        "SYNC_DB_QUERY_FAILED",
+        SyncErrorStage::Messages,
+        "normal storage failure mentions SYNC_SNAPSHOT_STALE",
+        Vec::new(),
+    );
+    assert_eq!(
+        attempt_restart_code("ENTITY_PULL_FAILED", &normal_wire),
+        None
+    );
+    assert_eq!(
+        attempt_restart_code("ENTITY_PULL_FAILED", "normal idempotent upsert"),
+        None
+    );
 }

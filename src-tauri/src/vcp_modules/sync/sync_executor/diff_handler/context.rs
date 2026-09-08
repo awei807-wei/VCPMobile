@@ -3,6 +3,7 @@ use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_service::{SyncCommand, SyncTaskTracker};
 use crate::vcp_modules::sync_types::ManifestType;
 use crate::vcp_modules::topic_types::OwnerKey;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, AtomicU8};
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,7 @@ pub(crate) struct DiffContextParams<'a> {
     pub(crate) manifest_phase: &'a Arc<AtomicU8>,
     pub(crate) tx_internal: &'a mpsc::UnboundedSender<SyncCommand>,
     pub(crate) changed_owners: &'a Arc<tokio::sync::Mutex<HashSet<OwnerKey>>>,
+    pub(crate) owner_config_baselines: &'a Arc<tokio::sync::Mutex<HashMap<OwnerKey, String>>>,
     pub(crate) logger: &'a Arc<Mutex<SyncLogger>>,
     pub(crate) task_tracker: &'a Arc<SyncTaskTracker>,
     pub(crate) session_id: u64,
@@ -45,6 +47,7 @@ pub struct DiffContext {
     pub(crate) manifest_phase: Arc<AtomicU8>,
     pub(crate) tx_internal: mpsc::UnboundedSender<SyncCommand>,
     pub(crate) changed_owners: Arc<tokio::sync::Mutex<HashSet<OwnerKey>>>,
+    pub(crate) owner_config_baselines: Arc<tokio::sync::Mutex<HashMap<OwnerKey, String>>>,
     pub(crate) logger: Arc<Mutex<SyncLogger>>,
     pub(crate) task_tracker: Arc<SyncTaskTracker>,
     pub(crate) session_id: u64,
@@ -68,6 +71,7 @@ impl DiffContext {
             manifest_phase: params.manifest_phase.clone(),
             tx_internal: params.tx_internal.clone(),
             changed_owners: params.changed_owners.clone(),
+            owner_config_baselines: params.owner_config_baselines.clone(),
             logger: params.logger.clone(),
             task_tracker: params.task_tracker.clone(),
             session_id: params.session_id,

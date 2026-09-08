@@ -13,6 +13,22 @@ pub fn is_attempt_restart_code(code: &str) -> bool {
     matches!(code, "HTTP_TRANSPORT_FAILED" | "SYNC_SNAPSHOT_STALE")
 }
 
+/// Resolve a stable attempt-restart code from a command code and its native
+/// detail. Queue/storage layers may wrap a structured sync error in a driver
+/// message, so callers must inspect both fields before falling back to a
+/// non-restartable operation code.
+pub fn attempt_restart_code(code: &str, detail: &str) -> Option<String> {
+    if is_attempt_restart_code(code) {
+        return Some(code.to_owned());
+    }
+    if let Some(wire) = decode_wire_sync_error(detail) {
+        if is_attempt_restart_code(&wire.code) {
+            return Some(wire.code);
+        }
+    }
+    None
+}
+
 pub fn parse_wire_sync_error_frame(value: &Value) -> Result<WireSyncError, String> {
     let object = value
         .as_object()

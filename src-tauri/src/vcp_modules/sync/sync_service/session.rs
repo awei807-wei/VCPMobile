@@ -10,6 +10,7 @@ use super::session_support::{
 };
 use super::types::{NetworkAwareSemaphore, SyncCommand, SyncWebSocket};
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
+use crate::vcp_modules::sync_error::attempt_restart_code;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_pipeline::pipeline::{PipelineCommand, SyncPipeline};
 use std::sync::atomic::Ordering;
@@ -233,7 +234,6 @@ impl SessionRuntime {
         self.fatal = outcome.fatal;
         if !self.successful && !self.fatal {
             let flush_error = self.queue.flush().await.err();
-            crate::vcp_modules::sync::sync_finalize::invalidate_sync_entity_caches(&self.app);
             let retry = retry_reason_after_flush(outcome.retry, flush_error);
             if !self.schedule_retry(&retry.code, &retry.message).await {
                 self.fatal = true;
@@ -260,8 +260,10 @@ fn retry_reason_after_flush(
     flush_error: Option<String>,
 ) -> RetryReason {
     if let Some(error) = flush_error {
+        let code = attempt_restart_code("SYNC_DB_DRAIN_FAILED", &error)
+            .unwrap_or_else(|| "SYNC_DB_DRAIN_FAILED".to_string());
         return RetryReason {
-            code: "SYNC_DB_DRAIN_FAILED".to_string(),
+            code,
             message: format!("write queue drain before retry failed: {error}"),
         };
     }
@@ -275,6 +277,7 @@ fn retry_reason_after_flush(
 mod tests {
     use super::retry_reason_after_flush;
     use crate::vcp_modules::sync::sync_service::attempt::RetryReason;
+    use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
 
     #[test]
     fn queue_flush_error_overrides_transport_retry_reason() {
@@ -287,5 +290,22 @@ mod tests {
         );
         assert_eq!(retry.code, "SYNC_DB_DRAIN_FAILED");
         assert!(retry.message.contains("injected write failure"));
+    }
+
+    #[test]
+    fn stale_queue_flush_error_keeps_the_restartable_snapshot_code() {
+        let retry = retry_reason_after_flush(
+            None,
+            Some(format!(
+                "rusqlite execution error: {}",
+                encode_local_sync_error(
+                    "SYNC_SNAPSHOT_STALE",
+                    SyncErrorStage::OwnerMetadata,
+                    "local Group changed",
+                    Vec::new(),
+                )
+            )),
+        );
+        assert_eq!(retry.code, "SYNC_SNAPSHOT_STALE");
     }
 }

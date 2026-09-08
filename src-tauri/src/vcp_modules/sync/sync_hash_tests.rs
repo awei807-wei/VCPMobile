@@ -1,6 +1,6 @@
 use super::*;
 use crate::vcp_modules::sync_dto::{
-    AgentSyncDTO, AgentTopicSyncDTO, AttachmentSyncDTO, MessageSyncDTO,
+    AgentSyncDTO, AgentTopicSyncDTO, AttachmentSyncDTO, GroupSyncDTO, MessageSyncDTO,
 };
 use crate::vcp_modules::sync_types::compute_merkle_root;
 use crate::vcp_modules::topic_types::TopicKey;
@@ -191,6 +191,38 @@ fn agent_config_hash_rounds_temperature_to_two_decimals() {
 }
 
 #[test]
+fn group_config_hash_ignores_empty_and_invalid_member_tags() {
+    let base = GroupSyncDTO {
+        name: "群组".to_string(),
+        members: vec!["agent-a".to_string()],
+        mode: "round".to_string(),
+        member_tags: Some(json!({"agent-a": "主持人"})),
+        group_prompt: None,
+        invite_prompt: None,
+        use_unified_model: false,
+        unified_model: None,
+        tag_match_mode: None,
+        created_at: 1,
+    };
+    let mut noisy = base.clone();
+    noisy.member_tags = Some(json!({
+        "agent-a": "主持人",
+        "agent-empty": "   ",
+        "agent-invalid": 7,
+        "agent-null": null
+    }));
+
+    assert_eq!(
+        HashAggregator::compute_group_config_hash(&base),
+        HashAggregator::compute_group_config_hash(&noisy)
+    );
+    assert_eq!(
+        crate::vcp_modules::sync_dto::normalize_member_tags(noisy.member_tags.as_ref()),
+        Some(json!({"agent-a": "主持人"}))
+    );
+}
+
+#[test]
 fn topic_metadata_hash_excludes_owner_id_but_owner_root_is_scoped() {
     let topic_a = AgentTopicSyncDTO {
         id: "topic-1".to_string(),
@@ -356,6 +388,9 @@ async fn hash_initializer_accepts_legacy_null_hashes_without_panicking() {
              );
              CREATE TABLE group_members (
                 group_id TEXT, agent_id TEXT, member_tag TEXT, sort_order INTEGER
+             );
+             CREATE TABLE group_member_tags (
+                group_id TEXT, agent_id TEXT, member_tag TEXT, updated_at INTEGER
              );
              INSERT INTO agents VALUES
                 ('legacy-agent', 'Agent', '', 'model', 1, 100, 20, 1, NULL, NULL);

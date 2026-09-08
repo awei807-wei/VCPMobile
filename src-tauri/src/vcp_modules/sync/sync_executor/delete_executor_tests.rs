@@ -1,11 +1,16 @@
 use super::messages::soft_delete_messages_data;
 use super::storage::{soft_delete_owner_data, soft_delete_topic_data};
+use crate::vcp_modules::agent_service::AgentConfigState;
+use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::db_write_queue::ExpectedMessageStates;
+use crate::vcp_modules::group_service::GroupManagerState;
 use crate::vcp_modules::sync_types::{
     MessageDeleteDecision, MessageLiveState, MessageVersionState,
 };
 use crate::vcp_modules::topic_types::{MessageKey, OwnerKey, TopicKey};
 use sqlx::sqlite::SqlitePoolOptions;
+use std::path::PathBuf;
+use tauri::Manager;
 
 fn topic(owner_type: &str, owner_id: &str, topic_id: &str) -> TopicKey {
     TopicKey::new(owner_type, owner_id, topic_id)
@@ -47,6 +52,10 @@ async fn test_pool() -> sqlx::SqlitePool {
          );
          CREATE TABLE active_generations (
             owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT
+         );
+         CREATE TABLE group_member_tags (
+            group_id TEXT, agent_id TEXT, member_tag TEXT, updated_at INTEGER,
+            PRIMARY KEY(group_id, agent_id)
          );
          INSERT INTO agents VALUES ('agent-a', '', 'agent-before', NULL);
          INSERT INTO groups VALUES ('group-a', '', 'group-before', NULL);",
@@ -97,6 +106,14 @@ async fn test_pool() -> sqlx::SqlitePool {
         .await
         .expect("insert side tables");
     }
+    sqlx::query(
+        "INSERT INTO group_member_tags (group_id, agent_id, member_tag, updated_at)
+         VALUES ('group-a', 'agent-a', '群组标签', 1),
+                ('group-other', 'agent-a', '其他群组标签', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert group member tags");
     pool
 }
 
@@ -255,7 +272,7 @@ async fn message_delete_rejects_a_local_edit_after_the_phase3_snapshot() {
 }
 
 #[tokio::test]
-async fn message_delete_rolls_back_tombstone_and_cache_cleanup_on_hash_failure() {
+async fn message_delete_rolls_back_tombstone_and_hash_cleanup_on_hash_failure() {
     let pool = test_pool().await;
     sqlx::query(
         "CREATE TRIGGER fail_agent_hash
@@ -326,4 +343,76 @@ async fn owner_delete_cascades_only_its_namespace() {
     .await
     .expect("read unrelated message");
     assert_eq!(unrelated_deleted, None);
+}
+
+#[tokio::test]
+async fn group_owner_delete_clears_only_its_persistent_member_tags() {
+    let pool = test_pool().await;
+    sqlx::query("INSERT INTO groups VALUES ('group-other', '', 'other-before', NULL)")
+        .execute(&pool)
+        .await
+        .expect("insert unrelated group");
+
+    soft_delete_owner_data(&pool, &OwnerKey::new("group", "group-a"), 70)
+        .await
+        .expect("delete group owner");
+    let deleted: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM group_member_tags WHERE group_id = 'group-a'")
+            .fetch_one(&pool)
+            .await
+            .expect("count deleted group tags");
+    assert_eq!(deleted, 0);
+    let retained: String = sqlx::query_scalar(
+        "SELECT member_tag FROM group_member_tags
+         WHERE group_id = 'group-other' AND agent_id = 'agent-a'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read unrelated group tag");
+    assert_eq!(retained, "其他群组标签");
+}
+
+fn command_app(pool: sqlx::SqlitePool) -> tauri::App<tauri::test::MockRuntime> {
+    let app = tauri::test::mock_app();
+    app.manage(DbState {
+        pool,
+        path: PathBuf::from("test.sqlite"),
+    });
+    app.manage(AgentConfigState::new());
+    app.manage(GroupManagerState::new());
+    app
+}
+
+#[tokio::test]
+async fn owner_delete_wrapper_uses_owner_lock_for_agent() {
+    let app = command_app(test_pool().await);
+    super::DeleteExecutor::soft_delete_agent(&app.handle(), "agent-a", 80)
+        .await
+        .expect("同步 Agent 删除包装应成功");
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT deleted_at FROM agents WHERE agent_id = 'agent-a'",
+        )
+        .fetch_one(&app.state::<DbState>().pool)
+        .await
+        .unwrap(),
+        Some(80)
+    );
+}
+
+#[tokio::test]
+async fn owner_delete_wrapper_uses_owner_lock_for_group() {
+    let app = command_app(test_pool().await);
+    super::DeleteExecutor::soft_delete_group(&app.handle(), "group-a", 90)
+        .await
+        .expect("同步 Group 删除包装应成功");
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT deleted_at FROM groups WHERE group_id = 'group-a'",
+        )
+        .fetch_one(&app.state::<DbState>().pool)
+        .await
+        .unwrap(),
+        Some(90)
+    );
 }

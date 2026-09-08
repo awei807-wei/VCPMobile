@@ -9,11 +9,12 @@ use crate::vcp_modules::sync_dto::{
 use crate::vcp_modules::sync_types::OwnerType;
 use crate::vcp_modules::topic_types::TopicKey;
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn decode_entity_results(
     values: Vec<Value>,
     expected: &[ValidEntityRequest],
+    owner_config_baselines: &HashMap<crate::vcp_modules::topic_types::OwnerKey, String>,
 ) -> Result<Vec<DecodedEntityResult>, String> {
     let expected_set = expected
         .iter()
@@ -22,7 +23,7 @@ pub(super) fn decode_entity_results(
     let mut seen = HashSet::new();
     let mut decoded = Vec::with_capacity(values.len());
     for value in values {
-        let item = decode_entity_result(value, &expected_set, &mut seen)?;
+        let item = decode_entity_result(value, &expected_set, &mut seen, owner_config_baselines)?;
         decoded.push(item);
     }
     if seen != expected_set {
@@ -42,6 +43,7 @@ fn decode_entity_result(
     value: Value,
     expected: &HashSet<EntityIdentity>,
     seen: &mut HashSet<EntityIdentity>,
+    owner_config_baselines: &HashMap<crate::vcp_modules::topic_types::OwnerKey, String>,
 ) -> Result<DecodedEntityResult, String> {
     let object = value
         .as_object()
@@ -68,7 +70,7 @@ fn decode_entity_result(
     let allowed = result_keys(&identity, ok);
     super::require_exact_keys(object, &allowed)?;
     if ok {
-        decode_success_result(object, identity)
+        decode_success_result(object, identity, owner_config_baselines)
     } else {
         decode_failure_result(object, identity)
     }
@@ -94,12 +96,13 @@ fn result_keys(identity: &EntityIdentity, ok: bool) -> Vec<&'static str> {
 fn decode_success_result(
     object: &Map<String, Value>,
     identity: EntityIdentity,
+    owner_config_baselines: &HashMap<crate::vcp_modules::topic_types::OwnerKey, String>,
 ) -> Result<DecodedEntityResult, String> {
     let data = object
         .get("data")
         .cloned()
         .ok_or_else(|| format!("Entity pull result {} requires data", identity.label()))?;
-    let task = decode_entity_data(&identity, data)?;
+    let task = decode_entity_data(&identity, data, owner_config_baselines)?;
     Ok(DecodedEntityResult {
         identity,
         task: Some(task),
@@ -150,7 +153,11 @@ fn parse_result_identity(object: &Map<String, Value>) -> Result<EntityIdentity, 
     }
 }
 
-fn decode_entity_data(identity: &EntityIdentity, value: Value) -> Result<DbWriteTask, String> {
+fn decode_entity_data(
+    identity: &EntityIdentity,
+    value: Value,
+    owner_config_baselines: &HashMap<crate::vcp_modules::topic_types::OwnerKey, String>,
+) -> Result<DbWriteTask, String> {
     match identity {
         EntityIdentity::Owner {
             owner_type: OwnerType::Agent,
@@ -161,6 +168,11 @@ fn decode_entity_data(identity: &EntityIdentity, value: Value) -> Result<DbWrite
             Ok(DbWriteTask::Agent {
                 id: owner_id.clone(),
                 dto,
+                expected_config_hash: owner_config_baselines
+                    .get(&crate::vcp_modules::topic_types::OwnerKey::new(
+                        "agent", owner_id,
+                    ))
+                    .cloned(),
             })
         }
         EntityIdentity::Owner {
@@ -172,6 +184,11 @@ fn decode_entity_data(identity: &EntityIdentity, value: Value) -> Result<DbWrite
             Ok(DbWriteTask::Group {
                 id: owner_id.clone(),
                 dto,
+                expected_config_hash: owner_config_baselines
+                    .get(&crate::vcp_modules::topic_types::OwnerKey::new(
+                        "group", owner_id,
+                    ))
+                    .cloned(),
             })
         }
         EntityIdentity::Topic(key) if key.owner_type == "agent" => {

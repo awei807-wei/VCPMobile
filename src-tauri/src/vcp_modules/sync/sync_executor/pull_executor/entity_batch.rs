@@ -3,8 +3,9 @@ use super::PullExecutor;
 use crate::vcp_modules::db_write_queue::{DbWriteQueue, DbWriteTask};
 use crate::vcp_modules::sync::wire_protocol::parse_strict_json;
 use crate::vcp_modules::sync_types::OwnerType;
-use crate::vcp_modules::topic_types::TopicKey;
+use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::collections::HashSet;
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -55,6 +56,7 @@ impl PullExecutor {
         sync_token: &str,
         requests: Vec<Value>,
         write_queue: &DbWriteQueue,
+        owner_config_baselines: HashMap<OwnerKey, String>,
     ) -> Result<(), String> {
         let expected = parse_entity_requests(&requests)?;
         let body = serde_json::to_vec(&serde_json::json!({ "items": requests }))
@@ -80,7 +82,8 @@ impl PullExecutor {
             return Err(http_status_error("Entity pull", status, &bytes));
         }
         let response = parse_entity_response(&bytes)?;
-        let decoded = entity_results::decode_entity_results(response, &expected)?;
+        let decoded =
+            entity_results::decode_entity_results(response, &expected, &owner_config_baselines)?;
         let mut failures = Vec::new();
         for item in decoded {
             if let Some(error) = item.error {

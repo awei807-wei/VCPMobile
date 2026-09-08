@@ -32,6 +32,11 @@ async fn fixture_pool() -> sqlx::SqlitePool {
             group_id TEXT NOT NULL, agent_id TEXT NOT NULL, member_tag TEXT,
             sort_order INTEGER NOT NULL
          );
+         CREATE TABLE group_member_tags (
+            group_id TEXT NOT NULL, agent_id TEXT NOT NULL, member_tag TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (group_id, agent_id)
+         );
          CREATE TABLE topics (
             owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
             title TEXT NOT NULL, created_at INTEGER NOT NULL, locked INTEGER NOT NULL,
@@ -78,6 +83,10 @@ async fn fixture_pool() -> sqlx::SqlitePool {
     .await
     .unwrap();
     sqlx::query("INSERT INTO group_members VALUES ('group-a', 'agent-a', 'lead', 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO group_member_tags VALUES ('group-a', 'agent-a', 'lead', 1)")
         .execute(&pool)
         .await
         .unwrap();

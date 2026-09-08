@@ -3,6 +3,7 @@ use super::error::Phase3ProtocolError;
 use super::outcome::{validate_topic_batch_outcomes, TopicBatchFailure, TopicBatchOutcome};
 use super::plan::BatchPlan;
 use crate::vcp_modules::db_write_queue::SNAPSHOT_STALE_MARKER;
+use crate::vcp_modules::sync_error::decode_wire_sync_error;
 use crate::vcp_modules::sync_executor::{
     BatchPullResult, DeleteExecutor, MessageBatchPullRequest, PullExecutor, PullProgressContext,
     PushExecutor,
@@ -105,7 +106,7 @@ async fn apply_deletes(
             DeleteExecutor::soft_delete_messages(ctx.app, topic, tombstones, &expected_states).await
         {
             ctx.tracker.mark_failed(topic).await;
-            if error.contains(SNAPSHOT_STALE_MARKER) || error.contains("database is locked") {
+            if is_snapshot_stale_wire_error(&error) {
                 return Err(snapshot_stale_error(topic, &error));
             }
             return Err(Phase3ProtocolError::for_topic(
@@ -121,6 +122,10 @@ async fn apply_deletes(
         ctx.tracker.mark_modified(topic).await;
     }
     Ok(())
+}
+
+fn is_snapshot_stale_wire_error(error: &str) -> bool {
+    decode_wire_sync_error(error).is_some_and(|wire| wire.code == SNAPSHOT_STALE_MARKER)
 }
 
 fn snapshot_stale_error(topic: &TopicKey, detail: &str) -> Phase3ProtocolError {
@@ -285,4 +290,37 @@ fn log_batch_summary(plan: &BatchPlan) {
             .map(|(_, tombstones)| tombstones.len())
             .sum::<usize>()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_snapshot_stale_wire_error;
+    use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
+
+    #[test]
+    fn delete_error_classification_requires_a_strict_snapshot_error_envelope() {
+        assert!(!is_snapshot_stale_wire_error(
+            "rusqlite execution error: SYNC_SNAPSHOT_STALE: local message changed"
+        ));
+        assert!(!is_snapshot_stale_wire_error(
+            r#"SYNC_WIRE_ERROR:{"code":"SYNC_SNAPSHOT_STALE","message":"changed"}"#
+        ));
+        assert!(!is_snapshot_stale_wire_error("database is locked"));
+
+        let normal_wire = encode_local_sync_error(
+            "SYNC_DB_QUERY_FAILED",
+            SyncErrorStage::Messages,
+            "normal SQLite failure mentions SYNC_SNAPSHOT_STALE",
+            Vec::new(),
+        );
+        assert!(!is_snapshot_stale_wire_error(&normal_wire));
+
+        let stale_wire = encode_local_sync_error(
+            "SYNC_SNAPSHOT_STALE",
+            SyncErrorStage::Messages,
+            "local message changed",
+            Vec::new(),
+        );
+        assert!(is_snapshot_stale_wire_error(&stale_wire));
+    }
 }

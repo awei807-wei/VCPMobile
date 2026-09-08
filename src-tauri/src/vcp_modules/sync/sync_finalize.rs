@@ -9,7 +9,7 @@ use sqlx::{Row, Sqlite, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct SyncFinalizer;
 
@@ -240,19 +240,6 @@ async fn finalize_modified_topics(
     })
 }
 
-pub fn invalidate_sync_entity_caches<R: tauri::Runtime>(app_handle: &AppHandle<R>) {
-    if let Some(state) =
-        app_handle.try_state::<crate::vcp_modules::agent_service::AgentConfigState>()
-    {
-        state.caches.clear();
-    }
-    if let Some(state) =
-        app_handle.try_state::<crate::vcp_modules::group_service::GroupManagerState>()
-    {
-        state.caches.clear();
-    }
-}
-
 async fn finalize_and_report(
     app_handle: &AppHandle,
     db: &DbState,
@@ -311,14 +298,15 @@ impl SyncFinalizer {
         logger: &Arc<Mutex<SyncLogger>>,
         modified_topics: HashSet<TopicKey>,
     ) -> Result<(), String> {
-        write_queue
-            .flush()
-            .await
-            .map_err(|error| format!("同步写队列落盘失败: {error}"))?;
-        if !modified_topics.is_empty() {
-            finalize_and_report(app_handle, db, logger, &modified_topics).await?;
+        if let Err(error) = write_queue.flush().await {
+            return Err(format!("同步写队列落盘失败: {error}"));
         }
-        invalidate_sync_entity_caches(app_handle);
+        let finalize_result = if modified_topics.is_empty() {
+            Ok(())
+        } else {
+            finalize_and_report(app_handle, db, logger, &modified_topics).await
+        };
+        finalize_result?;
         pipeline
             .on_messages_done()
             .await

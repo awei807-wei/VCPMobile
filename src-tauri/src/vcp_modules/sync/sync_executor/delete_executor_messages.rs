@@ -1,10 +1,14 @@
 use super::storage::DeleteReceipt;
 use crate::vcp_modules::db_write_queue::{ExpectedMessageStates, SNAPSHOT_STALE_MARKER};
+use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
 use crate::vcp_modules::sync_types::MessageDeleteDecision;
 use crate::vcp_modules::sync_types::{MessageDeletedState, MessageLiveState, MessageVersionState};
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
+
+#[path = "delete_executor_message_unread.rs"]
+mod message_unread;
 
 const MAX_SAFE_TIMESTAMP: i64 = (1_i64 << 53) - 1;
 
@@ -90,19 +94,30 @@ async fn validate_message_snapshot(
     expected: &ExpectedMessageStates,
 ) -> Result<(), String> {
     if expected.len() != ids.len() || ids.keys().any(|id| !expected.contains_key(id)) {
-        return Err(format!(
-            "{SNAPSHOT_STALE_MARKER}: delete snapshot does not cover the tombstone batch"
+        return Err(snapshot_stale_error(
+            key,
+            "delete snapshot does not cover the tombstone batch",
         ));
     }
     for id in ids.keys() {
         let current = load_message_version(tx, key, id).await?;
         if current != expected[id] {
-            return Err(format!(
-                "{SNAPSHOT_STALE_MARKER}: local message changed after the Phase 3 snapshot"
+            return Err(snapshot_stale_error(
+                key,
+                "local message changed after the Phase 3 snapshot",
             ));
         }
     }
     Ok(())
+}
+
+fn snapshot_stale_error(key: &TopicKey, detail: &str) -> String {
+    encode_local_sync_error(
+        SNAPSHOT_STALE_MARKER,
+        SyncErrorStage::Messages,
+        detail,
+        vec![key.topic_id.clone()],
+    )
 }
 
 async fn load_message_version(
@@ -192,6 +207,7 @@ async fn delete_message_side_tables(
             .await
             .map_err(|error| format!("清理消息 {table} 关系失败: {error}"))?;
     }
+    message_unread::clear_message_unread_receipts(tx, key, ids).await?;
     Ok(())
 }
 
@@ -283,8 +299,9 @@ pub(super) async fn soft_delete_messages_data(
     let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
     if !topic_is_live(&mut tx, key).await? {
         if expected_states.is_some() {
-            return Err(format!(
-                "{SNAPSHOT_STALE_MARKER}: parent topic changed after the Phase 3 snapshot"
+            return Err(snapshot_stale_error(
+                key,
+                "parent topic changed after the Phase 3 snapshot",
             ));
         }
         return Ok(DeleteReceipt::default());

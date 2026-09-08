@@ -66,9 +66,7 @@ impl DeleteExecutor {
         deleted_at: i64,
     ) -> Result<(), String> {
         validate_deleted_at(deleted_at, "Owner")?;
-        let db = app.state::<DbState>();
-        let receipt = soft_delete_owner_data(&db.pool, key, deleted_at).await?;
-        invalidate_owner_cache(app, key);
+        let receipt = soft_delete_owner_locked(app, key, deleted_at).await?;
         cancel_active_requests(app, receipt.active_messages);
         Ok(())
     }
@@ -205,26 +203,36 @@ impl DeleteExecutor {
     }
 }
 
-fn invalidate_owner_cache<R: Runtime>(app: &AppHandle<R>, key: &OwnerKey) {
+async fn soft_delete_owner_locked<R: Runtime>(
+    app: &AppHandle<R>,
+    key: &OwnerKey,
+    deleted_at: i64,
+) -> Result<storage::DeleteReceipt, String> {
+    let db = app.state::<DbState>();
     match key.owner_type.as_str() {
         "agent" => {
             if let Some(state) =
                 app.try_state::<crate::vcp_modules::agent_service::AgentConfigState>()
             {
-                state.caches.remove(&key.owner_id);
-                state.locks.remove(&key.owner_id);
+                let owner_lock = state.acquire_lock(&key.owner_id).await;
+                let _owner_guard = owner_lock.lock().await;
+                let receipt = soft_delete_owner_data(&db.pool, key, deleted_at).await?;
+                return Ok(receipt);
             }
         }
         "group" => {
             if let Some(state) =
                 app.try_state::<crate::vcp_modules::group_service::GroupManagerState>()
             {
-                state.caches.remove(&key.owner_id);
-                state.locks.remove(&key.owner_id);
+                let owner_lock = state.acquire_lock(&key.owner_id).await;
+                let _owner_guard = owner_lock.lock().await;
+                let receipt = soft_delete_owner_data(&db.pool, key, deleted_at).await?;
+                return Ok(receipt);
             }
         }
         _ => {}
     }
+    soft_delete_owner_data(&db.pool, key, deleted_at).await
 }
 
 async fn insert_avatar_tombstone(

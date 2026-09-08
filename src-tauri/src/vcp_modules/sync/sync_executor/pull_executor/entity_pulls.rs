@@ -5,6 +5,7 @@ use crate::vcp_modules::sync::sync_types::OwnerType;
 use crate::vcp_modules::topic_types::TopicKey;
 use serde_json::json;
 use sqlx::Row;
+use std::collections::HashMap;
 use tauri::{AppHandle, Manager, Runtime};
 
 impl PullExecutor {
@@ -91,8 +92,16 @@ async fn pull_owner<R: Runtime>(
         "ownerType": owner_type.as_str(),
         "ownerId": owner_id,
     });
-    PullExecutor::pull_entities_batch(app, client, http_url, sync_token, vec![item], write_queue)
-        .await
+    PullExecutor::pull_entities_batch(
+        app,
+        client,
+        http_url,
+        sync_token,
+        vec![item],
+        write_queue,
+        HashMap::new(),
+    )
+    .await
 }
 
 async fn pull_topic<R: Runtime>(
@@ -109,8 +118,16 @@ async fn pull_topic<R: Runtime>(
         "ownerId": key.owner_id,
         "topicId": key.topic_id,
     });
-    PullExecutor::pull_entities_batch(app, client, http_url, sync_token, vec![item], write_queue)
-        .await
+    PullExecutor::pull_entities_batch(
+        app,
+        client,
+        http_url,
+        sync_token,
+        vec![item],
+        write_queue,
+        HashMap::new(),
+    )
+    .await
 }
 
 async fn resolve_topic_key<R: Runtime>(

@@ -13,7 +13,7 @@ use crate::vcp_modules::sync_types::ManifestType;
 use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
@@ -96,6 +96,7 @@ pub(crate) struct AttemptContext {
     pub(crate) pending_batches: Arc<AsyncMutex<VecDeque<PendingDiffBatch>>>,
     pub(crate) changed_topics: Arc<AsyncMutex<Vec<TopicKey>>>,
     pub(crate) changed_owners: Arc<AsyncMutex<HashSet<OwnerKey>>>,
+    pub(crate) owner_config_baselines: Arc<AsyncMutex<HashMap<OwnerKey, String>>>,
     pub(crate) expected_manifest_count: Arc<AtomicU32>,
     pub(crate) manifest_responses_received: Arc<AtomicU32>,
     pub(crate) expected_manifest_types: Arc<Mutex<HashSet<ManifestType>>>,
@@ -150,6 +151,7 @@ impl AttemptContext {
             pending_batches: Arc::new(AsyncMutex::new(VecDeque::new())),
             changed_topics: Arc::new(AsyncMutex::new(Vec::new())),
             changed_owners: Arc::new(AsyncMutex::new(HashSet::new())),
+            owner_config_baselines: Arc::new(AsyncMutex::new(HashMap::new())),
             expected_manifest_count: Arc::new(AtomicU32::new(0)),
             manifest_responses_received: Arc::new(AtomicU32::new(0)),
             expected_manifest_types: Arc::new(Mutex::new(HashSet::new())),

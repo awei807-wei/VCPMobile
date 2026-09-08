@@ -6,7 +6,9 @@ use crate::vcp_modules::db_write_queue::{
 use crate::vcp_modules::message_repository::{ContentCompressor, MessageRenderCompiler};
 use crate::vcp_modules::sync::sync_types::validate_safe_non_negative_u64;
 use crate::vcp_modules::sync_dto::MessageSyncDTO;
-use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
+use crate::vcp_modules::sync_error::{
+    decode_wire_sync_error, encode_local_sync_error, SyncErrorStage,
+};
 use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::TopicKey;
 use std::collections::HashSet;
@@ -61,7 +63,9 @@ pub(crate) async fn process_topic_messages<R: Runtime>(
 }
 
 fn map_write_error(topic: &TopicKey, error: String) -> String {
-    if !error.contains(SNAPSHOT_STALE_MARKER) {
+    let is_snapshot_stale =
+        decode_wire_sync_error(&error).is_some_and(|wire| wire.code == SNAPSHOT_STALE_MARKER);
+    if !is_snapshot_stale {
         return error;
     }
     encode_local_sync_error(
@@ -274,5 +278,47 @@ fn compile_render(message: &MessageSyncDTO, enabled: bool) -> Vec<u8> {
             );
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_write_error;
+    use crate::vcp_modules::sync_error::{
+        decode_wire_sync_error, encode_local_sync_error, SyncErrorStage,
+    };
+    use crate::vcp_modules::topic_types::TopicKey;
+
+    #[test]
+    fn map_write_error_requires_a_strict_snapshot_error_envelope() {
+        let topic = TopicKey::new("agent", "agent-a", "topic-a");
+        let raw = "rusqlite execution error: SYNC_SNAPSHOT_STALE: local message changed";
+        assert_eq!(map_write_error(&topic, raw.to_owned()), raw);
+
+        let pseudo = r#"SYNC_WIRE_ERROR:{"code":"SYNC_SNAPSHOT_STALE","message":"changed"}"#;
+        assert_eq!(map_write_error(&topic, pseudo.to_owned()), pseudo);
+
+        let normal_wire = encode_local_sync_error(
+            "SYNC_DB_QUERY_FAILED",
+            SyncErrorStage::Messages,
+            "normal SQLite failure mentions SYNC_SNAPSHOT_STALE",
+            Vec::new(),
+        );
+        assert_eq!(
+            map_write_error(&topic, normal_wire.clone()),
+            normal_wire,
+            "a non-restartable structured error must remain unchanged"
+        );
+
+        let stale_wire = encode_local_sync_error(
+            "SYNC_SNAPSHOT_STALE",
+            SyncErrorStage::Messages,
+            "local message changed",
+            Vec::new(),
+        );
+        let mapped = map_write_error(&topic, stale_wire);
+        let decoded = decode_wire_sync_error(&mapped).expect("mapped stale envelope");
+        assert_eq!(decoded.code, "SYNC_SNAPSHOT_STALE");
+        assert_eq!(decoded.failed_topic_ids, vec!["topic-a"]);
     }
 }

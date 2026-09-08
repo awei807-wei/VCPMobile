@@ -158,7 +158,8 @@ impl HashInitializer {
         group_id: &str,
     ) -> Result<Value, String> {
         let rows = sqlx::query(
-            "SELECT agent_id, member_tag FROM group_members WHERE group_id = ? AND member_tag IS NOT NULL",
+            "SELECT agent_id, member_tag FROM group_member_tags
+             WHERE group_id = ? ORDER BY agent_id ASC",
         )
         .bind(group_id)
         .fetch_all(&mut **tx)

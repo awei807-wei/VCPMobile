@@ -4,6 +4,7 @@ use super::phase::set_manifest_expectation_for_command;
 use super::protocol::{enforce_final_ack_deadline, send_ws_with_deadline, FINAL_ACK_TIMEOUT};
 use super::types::{FinalAckKey, SyncCommand};
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::sync_error::attempt_restart_code;
 use crate::vcp_modules::sync_pipeline::Phase1Metadata;
 use crate::vcp_modules::sync_types::{ManifestRequestFrame, ManifestType};
 use serde::Serialize;
@@ -37,6 +38,7 @@ async fn start_manual(ctx: &mut AttemptContext) -> AttemptAction {
         )
         .await;
     }
+    *ctx.owner_config_baselines.lock().await = Phase1Metadata::owner_config_baselines(&manifest);
     ctx.manifest_phase.store(1, Ordering::SeqCst);
     set_manifest_expectation_for_command(ctx, [ManifestType::Owner].into_iter().collect());
     ctx.pending_tasks.store(0, Ordering::SeqCst);
@@ -49,11 +51,11 @@ async fn start_manual(ctx: &mut AttemptContext) -> AttemptAction {
 }
 
 async fn start_avatar_metadata(ctx: &mut AttemptContext) -> AttemptAction {
-    if ctx.write_queue.flush().await.is_err() {
+    if let Err(error) = ctx.write_queue.flush().await {
         return fail(
             ctx,
             "OWNER_METADATA_DRAIN_FAILED",
-            "Agent/group metadata write drain failed".to_string(),
+            format!("Agent/group metadata write drain failed: {error}"),
             Vec::new(),
         )
         .await;
@@ -84,11 +86,11 @@ async fn start_avatar_metadata(ctx: &mut AttemptContext) -> AttemptAction {
 }
 
 async fn start_topic_metadata(ctx: &mut AttemptContext) -> AttemptAction {
-    if ctx.write_queue.flush().await.is_err() {
+    if let Err(error) = ctx.write_queue.flush().await {
         return fail(
             ctx,
             "OWNER_METADATA_DRAIN_FAILED",
-            "Owner metadata write drain failed".to_string(),
+            format!("Owner metadata write drain failed: {error}"),
             Vec::new(),
         )
         .await;
@@ -115,11 +117,11 @@ async fn start_topic_metadata(ctx: &mut AttemptContext) -> AttemptAction {
 }
 
 async fn start_topic_validation(ctx: &mut AttemptContext) -> AttemptAction {
-    if ctx.write_queue.flush().await.is_err() {
+    if let Err(error) = ctx.write_queue.flush().await {
         return fail(
             ctx,
             "TOPIC_METADATA_DRAIN_FAILED",
-            "Topic metadata write drain failed".to_string(),
+            format!("Topic metadata write drain failed: {error}"),
             Vec::new(),
         )
         .await;
@@ -146,11 +148,11 @@ async fn start_topic_validation(ctx: &mut AttemptContext) -> AttemptAction {
 }
 
 async fn start_messages(ctx: &mut AttemptContext) -> AttemptAction {
-    if ctx.write_queue.flush().await.is_err() {
+    if let Err(error) = ctx.write_queue.flush().await {
         return fail(
             ctx,
             "TOPIC_VALIDATION_DRAIN_FAILED",
-            "Topic validation write drain failed".to_string(),
+            format!("Topic validation write drain failed: {error}"),
             Vec::new(),
         )
         .await;
@@ -251,12 +253,21 @@ async fn send_value(ctx: &mut AttemptContext, value: serde_json::Value) -> Attem
     }
 }
 
+pub(crate) fn restart_code_for_failure(code: &str, detail: &str) -> Option<String> {
+    attempt_restart_code(code, detail)
+}
+
 pub(crate) async fn fail(
     ctx: &mut AttemptContext,
     code: &str,
     message: String,
     failed_topic_ids: Vec<String>,
 ) -> AttemptAction {
+    if let Some(restart_code) = restart_code_for_failure(code, &message) {
+        ctx.mark_retry(&restart_code, message);
+        ctx.close().await;
+        return AttemptAction::Stop;
+    }
     ctx.mark_fatal();
     super::logs::emit_sync_log(&ctx.app, "error", &message);
     publish_sync_error(
@@ -270,4 +281,47 @@ pub(crate) async fn fail(
     .await;
     ctx.close().await;
     AttemptAction::Stop
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restart_code_for_failure;
+    use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
+
+    #[test]
+    fn owner_cas_drain_failure_restarts_the_attempt_without_fatal_success() {
+        for owner_type in ["Agent", "Group"] {
+            let detail = format!(
+                "metadata write drain failed: {}",
+                encode_local_sync_error(
+                    "SYNC_SNAPSHOT_STALE",
+                    SyncErrorStage::OwnerMetadata,
+                    &format!("local {owner_type} changed"),
+                    Vec::new(),
+                )
+            );
+            assert_eq!(
+                restart_code_for_failure("OWNER_METADATA_DRAIN_FAILED", &detail).as_deref(),
+                Some("SYNC_SNAPSHOT_STALE")
+            );
+        }
+    }
+
+    #[test]
+    fn normal_idempotent_drain_failure_does_not_enter_attempt_restart() {
+        assert_eq!(
+            restart_code_for_failure(
+                "OWNER_METADATA_DRAIN_FAILED",
+                "metadata write drain failed: database is locked"
+            ),
+            None
+        );
+        assert_eq!(
+            restart_code_for_failure(
+                "OWNER_METADATA_DRAIN_FAILED",
+                "metadata write drain failed: SYNC_SNAPSHOT_STALE: local Agent changed"
+            ),
+            None
+        );
+    }
 }

@@ -86,7 +86,43 @@ async fn delete_owner_side_tables(
             .await
             .map_err(|error| format!("清理所有者 {table} 关系失败: {error}"))?;
     }
+    clear_owner_unread_receipts(tx, key).await?;
+    if key.owner_type == "group" {
+        sqlx::query("DELETE FROM group_member_tags WHERE group_id = ?")
+            .bind(&key.owner_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| format!("清理群组成员标签失败: {error}"))?;
+    }
     Ok(())
+}
+
+async fn clear_owner_unread_receipts(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &OwnerKey,
+) -> Result<(), String> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'message_unread_receipts'
+        )",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if !exists {
+        return Ok(());
+    }
+    sqlx::query(
+        "DELETE FROM message_unread_receipts
+         WHERE owner_type = ? AND owner_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 async fn bubble_owner_hash(tx: &mut Transaction<'_, Sqlite>, key: &OwnerKey) -> Result<(), String> {
@@ -234,7 +270,37 @@ async fn delete_topic_side_tables(
             .await
             .map_err(|error| format!("清理话题 {table} 关系失败: {error}"))?;
     }
+    clear_topic_unread_receipts(tx, key).await?;
     Ok(())
+}
+
+async fn clear_topic_unread_receipts(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &TopicKey,
+) -> Result<(), String> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'message_unread_receipts'
+        )",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if !exists {
+        return Ok(());
+    }
+    sqlx::query(
+        "DELETE FROM message_unread_receipts
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 async fn insert_topic_tombstone(

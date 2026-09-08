@@ -1,16 +1,19 @@
 use crate::vcp_modules::sync_types::{
-    is_valid_avatar_owner, AvatarManifestDeleted, AvatarManifestLive, AvatarManifestState,
-    AvatarOwnerType, ManifestRequest, OwnerManifestDeleted, OwnerManifestLive, OwnerManifestState,
-    OwnerType, TopicManifestDeleted, TopicManifestLive, TopicManifestState, MAX_MANIFEST_ITEMS,
+    ManifestRequest, OwnerManifestDeleted, OwnerManifestLive, OwnerManifestState, OwnerType,
+    TopicManifestDeleted, TopicManifestLive, TopicManifestState, MAX_MANIFEST_ITEMS,
 };
 use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
 use sqlx::Row;
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[path = "phase1_topic_fields.rs"]
 mod topic_fields;
 use topic_fields::decode_topic_live_fields;
+
+#[path = "phase1_avatar.rs"]
+mod avatar;
+use avatar::avatar_manifest_state;
 
 const SQLITE_BIND_CHUNK: usize = 400;
 const MAX_SAFE_TIMESTAMP: i64 = 9_007_199_254_740_991;
@@ -186,88 +189,26 @@ fn decode_topic_identity(
     Ok((owner_type, owner_id, topic_id))
 }
 
-async fn avatar_parent_is_live(
-    pool: &SqlitePool,
-    owner_type: AvatarOwnerType,
-    owner_id: &str,
-    deleted_at: Option<i64>,
-) -> Result<bool, String> {
-    if deleted_at.is_some() || owner_type == AvatarOwnerType::User {
-        return Ok(true);
-    }
-    let (table, column) = match owner_type {
-        AvatarOwnerType::Agent => ("agents", "agent_id"),
-        AvatarOwnerType::Group => ("groups", "group_id"),
-        AvatarOwnerType::User => unreachable!("user avatars return above"),
-    };
-    let sql =
-        format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = ? AND deleted_at IS NULL)");
-    sqlx::query_scalar::<_, i64>(&sql)
-        .bind(owner_id)
-        .fetch_one(pool)
-        .await
-        .map(|value| value != 0)
-        .map_err(|error| {
-            format!("Avatar manifest {owner_type} owner lookup failed for {owner_id}: {error}")
-        })
-}
-
-async fn avatar_manifest_state(
-    pool: &SqlitePool,
-    row: sqlx::sqlite::SqliteRow,
-) -> Result<AvatarManifestState, String> {
-    let raw_owner_type: String = row
-        .try_get("owner_type")
-        .map_err(|error| format!("Avatar manifest owner type decode failed: {error}"))?;
-    let owner_type = AvatarOwnerType::try_from(raw_owner_type.as_str())
-        .map_err(|_| format!("Avatar manifest has invalid owner {raw_owner_type}"))?;
-    let owner_id: String = row
-        .try_get("owner_id")
-        .map_err(|error| format!("Avatar manifest owner id decode failed: {error}"))?;
-    if !is_valid_avatar_owner(owner_type.as_str(), &owner_id) {
-        return Err(format!(
-            "Avatar manifest has invalid owner {owner_type}/{owner_id}"
-        ));
-    }
-    let deleted_at: Option<i64> = row
-        .try_get("deleted_at")
-        .map_err(|error| format!("Avatar manifest tombstone decode failed: {error}"))?;
-    let deleted_at = optional_timestamp(
-        deleted_at,
-        &format!("Avatar {owner_type}/{owner_id} deletedAt"),
-    )?;
-    if !avatar_parent_is_live(pool, owner_type, &owner_id, deleted_at).await? {
-        return Err(format!(
-            "Avatar manifest owner {owner_type}/{owner_id} is missing or deleted"
-        ));
-    }
-    if let Some(deleted_at) = deleted_at {
-        return Ok(AvatarManifestState::Deleted(AvatarManifestDeleted {
-            owner_type,
-            owner_id,
-            deleted_at,
-        }));
-    }
-    let avatar_hash: String = row.try_get("avatar_hash").map_err(|error| {
-        format!("Avatar manifest hash decode failed for {owner_type}/{owner_id}: {error}")
-    })?;
-    Ok(AvatarManifestState::Live(AvatarManifestLive {
-        owner_type,
-        owner_id,
-        binary_hash: required_hash(
-            avatar_hash,
-            &format!("Avatar {owner_type} binaryHash"),
-            false,
-        )?,
-        updated_at: required_timestamp(
-            row.try_get("updated_at")
-                .map_err(|error| format!("Avatar manifest timestamp decode failed: {error}"))?,
-            &format!("Avatar {owner_type} updatedAt"),
-        )?,
-    }))
-}
-
 impl Phase1Metadata {
+    /// Return the exact live owner hashes represented by an already-built
+    /// manifest. The sync pull CAS baseline must come from this snapshot,
+    /// rather than a later database read after the remote response arrives.
+    pub fn owner_config_baselines(manifest: &ManifestRequest) -> HashMap<OwnerKey, String> {
+        let ManifestRequest::Owner { items } = manifest else {
+            return HashMap::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| match item {
+                crate::vcp_modules::sync_types::OwnerManifestState::Live(value) => Some((
+                    OwnerKey::new(value.owner_type.as_str(), &value.owner_id),
+                    value.config_hash.clone(),
+                )),
+                crate::vcp_modules::sync_types::OwnerManifestState::Deleted(_) => None,
+            })
+            .collect()
+    }
+
     pub async fn build_owner_manifest(pool: &SqlitePool) -> Result<ManifestRequest, String> {
         let rows = sqlx::query(
             "SELECT 'agent' AS owner_type, agent_id AS owner_id, config_hash, content_hash,

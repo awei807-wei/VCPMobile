@@ -1,6 +1,6 @@
 use super::canonical::{compute_canonical_hash, object, string};
 use super::{HashAggregator, DEFAULT_INVITE_PROMPT};
-use crate::vcp_modules::sync_dto::{AgentSyncDTO, GroupSyncDTO};
+use crate::vcp_modules::sync_dto::{normalize_member_tags, AgentSyncDTO, GroupSyncDTO};
 use serde_json::Value;
 
 impl HashAggregator {
@@ -30,7 +30,7 @@ impl HashAggregator {
             ("mode", string(&dto.mode)),
             (
                 "memberTags",
-                dto.member_tags.clone().unwrap_or_else(|| object([])),
+                normalize_member_tags(dto.member_tags.as_ref()).unwrap_or_else(|| object([])),
             ),
             (
                 "groupPrompt",

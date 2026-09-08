@@ -10,7 +10,7 @@ use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::TopicKey;
 use sqlx::Transaction;
 use std::borrow::Cow;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +60,7 @@ pub async fn debug_get_wire14_scale_topic_hashes(
 /// builds because the whole module is guarded by `debug_assertions`.
 #[tauri::command]
 pub async fn debug_inject_invalid_attachment_for_wire14(
+    app_handle: AppHandle,
     db_state: State<'_, DbState>,
     owner_type: String,
     owner_id: String,
@@ -67,6 +68,11 @@ pub async fn debug_inject_invalid_attachment_for_wire14(
     msg_id: String,
     attachment_hash: String,
 ) -> Result<(), String> {
+    let _gate = crate::vcp_modules::file_manager::attachment_gc_gate()
+        .read()
+        .await;
+    let roots =
+        crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(&app_handle)?;
     validate_target(&owner_type, &owner_id, &topic_id, &msg_id, &attachment_hash)?;
 
     let connection = db_state
@@ -83,6 +89,12 @@ pub async fn debug_inject_invalid_attachment_for_wire14(
     ensure_live_topic(&mut tx, &key).await?;
     let update = prepare_invalid_attachment(&mut tx, &key, &msg_id, &attachment_hash).await?;
     insert_attachment_relation(&mut tx, &key, &msg_id, &attachment_hash, &update).await?;
+    crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
+        &mut *tx,
+        &attachment_hash,
+        &roots,
+    )
+    .await?;
     update_message_hash(&mut tx, &key, &msg_id, &update).await?;
     update_render_hash(&mut tx, &key, &msg_id, &update).await?;
     update_topic_clock(&mut tx, &key, &update).await?;

@@ -122,6 +122,7 @@ async fn handle_manifest_result(ctx: &mut AttemptContext, payload: Value) -> Att
         manifest_phase: &ctx.manifest_phase,
         tx_internal: &ctx.tx,
         changed_owners: &ctx.changed_owners,
+        owner_config_baselines: &ctx.owner_config_baselines,
         logger: &ctx.logger,
         task_tracker: &ctx.task_tracker,
         session_id: ctx.session_id,
@@ -333,7 +334,7 @@ async fn complete_after_final_ack(ctx: &mut AttemptContext) -> AttemptAction {
         return fail(
             ctx,
             "FINAL_WRITE_DRAIN_FAILED",
-            error.to_string(),
+            format!("Final write drain failed: {error}"),
             Vec::new(),
         )
         .await;

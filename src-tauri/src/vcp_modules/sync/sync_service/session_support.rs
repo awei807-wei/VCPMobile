@@ -50,7 +50,18 @@ pub(crate) async fn create_session_resources(
     session_id: u64,
 ) -> Result<(Arc<DbWriteQueue>, Arc<std::sync::Mutex<SyncLogger>>), String> {
     let db = app.state::<DbState>();
-    let mut queue = DbWriteQueue::new(db.pool.clone(), db.path.clone());
+    let owner_locks = app
+        .state::<std::sync::Arc<crate::vcp_modules::owner_lock::OwnerLockRegistry>>()
+        .inner()
+        .clone();
+    let attachment_roots =
+        crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(app)?;
+    let mut queue = DbWriteQueue::new_with_owner_locks_and_attachment_roots(
+        db.pool.clone(),
+        db.path.clone(),
+        owner_locks,
+        Some(attachment_roots),
+    );
     let settings_state = app.state::<crate::vcp_modules::settings_manager::SettingsState>();
     let configured =
         crate::vcp_modules::settings_manager::read_settings(app.clone(), settings_state)
@@ -334,7 +345,6 @@ pub(crate) async fn shutdown_session(
         .flush()
         .await
         .map_err(|error| format!("Sync session shutdown write drain failed: {error}"));
-    crate::vcp_modules::sync::sync_finalize::invalidate_sync_entity_caches(app);
     let state = app.state::<SyncState>();
     let _owner = state.owner_commit.lock().await;
     if state.current_session_id.load(Ordering::SeqCst) == session_id {

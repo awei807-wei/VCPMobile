@@ -3,6 +3,7 @@ use crate::vcp_modules::group_types::GroupConfig;
 use crate::vcp_modules::sync_types::{deserialize_timestamp, serialize_timestamp};
 use crate::vcp_modules::topic_types::Topic;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// Agent configuration exposed by the sync contract.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -62,7 +63,7 @@ impl From<&GroupConfig> for GroupSyncDTO {
             name: config.name.clone(),
             members: config.members.clone(),
             mode: config.mode.clone(),
-            member_tags: config.member_tags.clone(),
+            member_tags: normalize_member_tags(config.member_tags.as_ref()),
             group_prompt: config.group_prompt.clone(),
             invite_prompt: config.invite_prompt.clone(),
             use_unified_model: config.use_unified_model,
@@ -71,6 +72,22 @@ impl From<&GroupConfig> for GroupSyncDTO {
             created_at: config.created_at,
         }
     }
+}
+
+/// 规范化 Wire 中的成员标签；空字符串、空白字符串和非字符串值都表示无标签。
+/// 这样配置哈希只覆盖真正可执行的标签，避免数据库与 DTO 产生不同摘要。
+pub fn normalize_member_tags(value: Option<&Value>) -> Option<Value> {
+    let object = value?.as_object()?;
+    let mut tags = Map::new();
+    for (agent_id, tag) in object {
+        let Some(tag) = tag.as_str() else {
+            continue;
+        };
+        if !tag.trim().is_empty() {
+            tags.insert(agent_id.clone(), Value::String(tag.to_string()));
+        }
+    }
+    Some(Value::Object(tags))
 }
 
 /// Agent topic sync DTO, including its lock and unread state.

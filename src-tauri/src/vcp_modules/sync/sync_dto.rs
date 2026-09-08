@@ -9,7 +9,9 @@ mod entities;
 
 pub use attachments::AttachmentSyncDTO;
 pub use canonical::MessageSyncDTO;
-pub use entities::{AgentSyncDTO, AgentTopicSyncDTO, GroupSyncDTO, GroupTopicSyncDTO};
+pub use entities::{
+    normalize_member_tags, AgentSyncDTO, AgentTopicSyncDTO, GroupSyncDTO, GroupTopicSyncDTO,
+};
 
 #[cfg(test)]
 #[path = "sync_dto_tests.rs"]

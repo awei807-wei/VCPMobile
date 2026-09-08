@@ -2,6 +2,7 @@ use super::delete_dispatch;
 use super::manifest::ManifestDecision;
 use super::topic_push::{spawn_topic_push, TopicPushRequest};
 use super::{context::DiffContext, phase};
+use crate::vcp_modules::sync_error::attempt_restart_code;
 use crate::vcp_modules::sync_executor::{PullExecutor, PushExecutor};
 use crate::vcp_modules::sync_service::SyncCommand;
 use crate::vcp_modules::sync_types::{EntitySelector, ManifestAction, ManifestType, OwnerType};
@@ -131,13 +132,25 @@ async fn spawn_batch_pull(ctx: &DiffContext, requests: Vec<EntitySelector>) {
                     &context.token,
                     sub_batch,
                     &context.write_queue,
+                    context.owner_config_baselines.lock().await.clone(),
                 )
                 .await
                 {
+                    let code = entity_pull_failure_code(&error);
                     send_failure(
                         &context,
-                        "ENTITY_PULL_FAILED",
+                        code,
                         format!("Batch pull failed: {error}"),
+                        failed_ids(chunk),
+                    );
+                    return;
+                }
+                if let Err(error) = context.write_queue.flush().await {
+                    let code = entity_pull_failure_code(&error);
+                    send_failure(
+                        &context,
+                        code,
+                        format!("Batch pull write drain failed: {error}"),
                         failed_ids(chunk),
                     );
                     return;
@@ -146,6 +159,11 @@ async fn spawn_batch_pull(ctx: &DiffContext, requests: Vec<EntitySelector>) {
             }
         })
         .await;
+}
+
+pub(crate) fn entity_pull_failure_code(error: &str) -> String {
+    attempt_restart_code("ENTITY_PULL_FAILED", error)
+        .unwrap_or_else(|| "ENTITY_PULL_FAILED".to_string())
 }
 
 pub(crate) fn failed_ids(items: &[EntitySelector]) -> Vec<String> {
@@ -277,4 +295,40 @@ pub(crate) fn send_failure(
         message,
         failed_topic_ids,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::entity_pull_failure_code;
+    use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
+
+    #[test]
+    fn entity_pull_drain_maps_agent_and_group_cas_to_restartable_code() {
+        for owner_type in ["Agent", "Group"] {
+            let error = format!(
+                "rusqlite execution error: {}",
+                encode_local_sync_error(
+                    "SYNC_SNAPSHOT_STALE",
+                    SyncErrorStage::OwnerMetadata,
+                    &format!("local {owner_type} changed"),
+                    Vec::new(),
+                )
+            );
+            assert_eq!(entity_pull_failure_code(&error), "SYNC_SNAPSHOT_STALE");
+        }
+    }
+
+    #[test]
+    fn entity_pull_only_reports_generic_failures_as_non_restartable() {
+        assert_eq!(
+            entity_pull_failure_code("HTTP 400 without a Wire error"),
+            "ENTITY_PULL_FAILED"
+        );
+        assert_eq!(
+            entity_pull_failure_code(
+                "rusqlite execution error: SYNC_SNAPSHOT_STALE: local Agent changed"
+            ),
+            "ENTITY_PULL_FAILED"
+        );
+    }
 }

@@ -70,6 +70,7 @@ temp
 # logcat excerpts, or system state and must remain local.
 /.agent/android-debug/
 tests/perf/reports/
+tests/e2e-android/scripts/__pycache__/
 
 # Project Markdown is generally ignored, but tracked test tool guides are part
 # of the reproducible Android tooling contract.

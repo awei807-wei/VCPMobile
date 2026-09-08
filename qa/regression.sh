@@ -72,11 +72,31 @@ for file in \
   src/App.vue \
   src/core/router/index.ts \
   src/core/composables/useNotificationProcessor.ts \
+  src/tests/unit/appLifecyclePermissions.test.ts \
+  tests/e2e-android/b4-search-perf-gates.test.cjs \
+  tests/e2e-android/b4-search-perf-memory.test.cjs \
+  tests/e2e-android/b4-search-perf-evidence.test.cjs \
+  tests/e2e-android/b4-search-perf-readiness.test.cjs \
+  tests/e2e-android/b4-search-perf-rebuild.test.cjs \
+  tests/e2e-android/b4-search-perf-restart.test.cjs \
+  tests/e2e-android/b4-search-perf-runner.test.cjs \
+  tests/e2e-android/b4-search-perf-device.test.cjs \
+  tests/e2e-android/b4-search-perf-main.test.cjs \
+  tests/e2e-android/b4-search-perf-fixture-cli.test.cjs \
+  tests/e2e-android/scripts/adb-env.test.cjs \
+  tests/e2e-android/helper-stream-e2e-runner.test.cjs \
+  tests/e2e-android/wire14/android-cdp.test.cjs \
+  tests/e2e-android/wire14/run-wire14-gates.test.cjs \
+  tests/e2e-android/wire14/scale-gate.test.cjs \
+  tests/e2e-android/wire14/sync-attempt.test.cjs \
   src/core/utils/agentMessagePayload.ts \
   src/core/utils/safeMessageHtml.ts \
   src/core/utils/runtimeDiagnostics.ts \
   src-tauri/Cargo.toml \
   src-tauri/src/lib.rs \
+  src-tauri/src/bootstrap.rs \
+  src-tauri/src/vcp_modules/infra/invoke_dispatch.rs \
+  src-tauri/src/vcp_modules/infra/invoke_dispatch_tests.rs \
   src-tauri/src/vcp_modules/infra/invoke_guard.rs \
   src-tauri/src/vcp_modules/infra/runtime_diagnostics.rs \
   src-tauri/src/vcp_modules/infra/runtime_diagnostics/export.rs \
@@ -113,6 +133,15 @@ require_pattern "register_oneshot\\(topic_sponsor::TopicSponsorTool\\)" src-taur
 require_pattern "MobileTopicSponsor" src-tauri/src/distributed/tools/topic_sponsor.rs
 require_pattern "register_streaming\\(device_status_summary::DeviceStatusSummaryTool\\)" src-tauri/src/distributed/tools/mod.rs
 
+log "中央 IPC 分派链静态回归"
+require_pattern "macro_rules! build_invoke_handler" src-tauri/src/lib.rs
+require_pattern "vcp_modules::infra::invoke_dispatch::central_invoke_handler\\(handler\\)" src-tauri/src/lib.rs
+require_pattern "pub fn central_invoke_handler<R: Runtime>" src-tauri/src/vcp_modules/infra/invoke_dispatch.rs
+require_pattern "reject_before_db_ready = invoke_guard::should_reject_before_db_ready" src-tauri/src/vcp_modules/infra/invoke_dispatch.rs
+require_pattern "configure_builder\\(handler\\)" src-tauri/src/bootstrap.rs
+require_pattern "\\.invoke_handler\\(handler\\)" src-tauri/src/bootstrap.rs
+require_pattern 'panic = "abort"' src-tauri/Cargo.toml
+
 log "移动端线路切换静态回归"
 require_pattern "useConnectionProfilesStore" src/components/layout/RightSidebar.vue
 require_pattern "输出中不可切换" src/components/layout/RightSidebar.vue
@@ -136,10 +165,10 @@ require_pattern "syncActiveConnectionProfileFromSettings\\(settings\\)" src/core
 require_pattern "modelStore\\.invalidatePersistedCache\\(\\)" src/core/stores/connectionProfiles.ts
 require_pattern "modelStore\\.isLoading" src/core/stores/connectionProfiles.ts
 require_pattern "cacheGeneration" src/core/stores/modelStore.ts
-require_pattern "hasActiveStreams" src/core/stores/chatStreamStore.ts
-require_pattern "globalActiveStreamMessageIds" src/core/stores/chatStreamStore.ts
+require_pattern "hasActiveStreams" src/core/stores/chatStreamStoreActivity.ts
+require_pattern "globalActiveStreamMessageIds" src/core/stores/chatStreamStoreActivity.ts
 require_pattern "isMessageInAnyActiveStream" src/features/chat/MessageRenderer.vue
-require_pattern "pendingGenerationRequests" src/core/stores/chatStreamStore.ts
+require_pattern "pendingGenerationRequests" src/core/stores/chatStreamStoreState.ts
 require_pattern "dailyNoteConfigKey" src/features/dailynote/DailyNoteView.vue
 require_pattern "检测到线路或管理员配置变化" src/features/dailynote/DailyNoteView.vue
 require_pattern "apiBase: currentDailyNoteApiBase\\.value" src/features/dailynote/DailyNoteView.vue
@@ -147,14 +176,14 @@ require_pattern "refresh_lock" src-tauri/src/vcp_modules/infra/model_manager.rs
 require_pattern "connection_profiles: Vec<ConnectionProfile>" src-tauri/src/vcp_modules/infra/settings_manager.rs
 
 log "插件与后端互通静态回归"
-require_pattern "tauri_plugin_vcp_mobile::init\\(\\)" src-tauri/src/lib.rs
+require_pattern "tauri_plugin_vcp_mobile::init\\(\\)" src-tauri/src/bootstrap.rs
 require_pattern "register_android_plugin\\(\"com.vcp.mobile\", \"VcpMobilePlugin\"\\)" src-tauri/plugins/vcp-mobile/src/lib.rs
 require_pattern "\"showSystemNotification\"" src-tauri/plugins/vcp-mobile/src/system.rs
 require_pattern "\"checkAllPermissions\"" src-tauri/plugins/vcp-mobile/src/system.rs
 require_pattern "\"startSensorCollection\"" src-tauri/plugins/vcp-mobile/src/system.rs
-require_pattern "fun showSystemNotification\\(invoke: Invoke\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern "fun checkAllPermissions\\(invoke: Invoke\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern "fun startSensorCollection\\(invoke: Invoke\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "fun showSystemNotification\\(invoke: Invoke\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobileNotificationCommands.kt
+require_pattern "fun checkAllPermissions\\(invoke: Invoke\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePermissionCommands.kt
+require_pattern "fun startSensorCollection\\(invoke: Invoke\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobileStreamCommands.kt
 require_pattern "tauri_plugin_vcp_mobile::system::dispatch_system_notification" src-tauri/src/distributed/tools/notification.rs
 require_pattern "tauri_plugin_vcp_mobile::system::dispatch_system_notification" src-tauri/src/distributed/tools/agent_message.rs
 require_pattern "\"distributed-notification\"" src-tauri/src/distributed/tools/notification.rs
@@ -182,11 +211,18 @@ require_pattern "必须开启后才能继续引导" src/components/layout/Permis
 reject_pattern "ringRecommendedMissing" src/components/layout/PermissionGate.vue
 require_pattern "vcp-lifecycle" src/components/layout/PermissionGate.vue
 require_pattern "permission-gate-bottom-action" src/components/layout/PermissionGate.vue
-require_pattern "Object\\.values\\(permissions\\)\\.every\\(Boolean\\)" src/core/stores/appLifecycle.ts
+require_pattern "export function hasRequiredStartupPermissions" src/core/stores/appLifecycle.ts
+require_pattern "hasRequiredStartupPermissions\\(permissions, listener\\)" src/core/stores/appLifecycle.ts
+require_pattern "permissions\\?\\.notification === true" src/core/stores/appLifecycle.ts
+require_pattern "permissions\\?\\.ring === true" src/core/stores/appLifecycle.ts
+require_pattern "permissions\\?\\.storage === true" src/core/stores/appLifecycle.ts
+require_pattern "permissions\\?\\.battery === true" src/core/stores/appLifecycle.ts
+require_pattern "listener\\?\\.enabled === true" src/core/stores/appLifecycle.ts
+reject_pattern "Object\\.values\\(permissions\\)\\.every\\(Boolean\\)" src/core/stores/appLifecycle.ts
 reject_pattern "continuing bootstrap with silent" src/core/stores/appLifecycle.ts
-require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern "ACTION_APP_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern "\"ring\"" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "hasAgentMessageRingCapability" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePermissionCommands.kt
+require_pattern "ACTION_APP_NOTIFICATION_SETTINGS" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePermissionCommands.kt
+require_pattern "\"ring\"" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePermissionCommands.kt
 require_pattern "select_apk_asset" src-tauri/src/vcp_modules/updater/update_manager.rs
 require_pattern "打开 Release" src/components/ui/UpdatePrompt.vue
 require_pattern "awei807-wei/VCPMobile" src/features/settings/components/AboutSection.vue
@@ -200,7 +236,8 @@ require_pattern 'features = \[[^]]*"custom-protocol"' src-tauri/Cargo.toml
 require_pattern "Notification requested but Android delivery failed" src-tauri/src/distributed/tools/notification.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_memo_support.rs
 require_pattern "LIKE \\? ESCAPE '\\\\\\\\'" src-tauri/src/distributed/tools/topic_sponsor_support.rs
-require_pattern "bubble_from_topic_for_key" src-tauri/src/distributed/tools/topic_sponsor_handlers.rs
+require_pattern "record_topic_unread_for_message_in_tx" src-tauri/src/distributed/tools/topic_sponsor_handlers.rs
+require_pattern "HashAggregator::bubble_from_topic_for_key" src-tauri/src/vcp_modules/chat/topic_service_unread.rs
 require_pattern "contentCorrupted" src-tauri/src/distributed/tools/topic_sponsor_support.rs
 require_pattern "parseAndroidNotification" src/core/utils/agentMessagePayload.ts
 require_pattern "MAX_AGENT_PAYLOAD_DEPTH = 6" src/core/utils/agentMessagePayload.ts
@@ -216,22 +253,22 @@ require_pattern "dispatch_system_notification" src-tauri/src/distributed/tools/a
 require_pattern "Agent message event emit failed after notification dispatch" src-tauri/src/distributed/tools/agent_message.rs
 require_pattern "attempted: false" src-tauri/plugins/vcp-mobile/src/system.rs
 reject_pattern "Failed to emit agent message event" src-tauri/src/distributed/tools/agent_message.rs
-reject_pattern 'title=\$title' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern 'bodyLength=\$\{body.length\}' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern 'AGENT_MESSAGE_CHANNEL_ID = "agent_message_alerts_v2"' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern "setSound\\(agentMessageSoundUri, soundAttributes\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern "enableVibration\\(true\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
-require_pattern "schema_version: u32" src-tauri/src/distributed/tool_registry.rs
-require_pattern "Unsupported disabled tools schemaVersion" src-tauri/src/distributed/tool_registry.rs
+reject_pattern 'title=\$title' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobileNotificationCommands.kt
+require_pattern '正文长度=\$\{body.length\}' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobileNotificationCommands.kt
+require_pattern 'AGENT_MESSAGE_CHANNEL_ID = "agent_message_alerts_v2"' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePluginCore.kt
+require_pattern "setSound\\(agentMessageSoundUri, soundAttributes\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePluginCore.kt
+require_pattern "enableVibration\\(true\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePluginCore.kt
+require_pattern "ENABLED_CONFIG_SCHEMA_VERSION: u32" src-tauri/src/distributed/tool_registry_config.rs
+require_pattern "不支持的工具配置 schemaVersion" src-tauri/src/distributed/tool_registry_config.rs
 require_pattern "MAX_CHECK_NEW_TOPICS_DAYS" src-tauri/src/distributed/tools/topic_sponsor.rs
 require_pattern "saturating_sub\\(days.saturating_mul\\(MILLIS_PER_DAY\\)\\)" src-tauri/src/distributed/tools/topic_sponsor_handlers.rs
 require_pattern "DISTRIBUTED_HEARTBEAT_INTERVAL" src-tauri/src/distributed/client.rs
 require_pattern "DISTRIBUTED_HEARTBEAT_TIMEOUT" src-tauri/src/distributed/client.rs
-require_pattern "Message::Ping\\(Vec::new\\(\\)\\.into\\(\\)\\)" src-tauri/src/distributed/client.rs
-require_pattern "Heartbeat timeout: no inbound WebSocket frame" src-tauri/src/distributed/client.rs
+require_pattern "Message::Ping\\(Vec::new\\(\\)\\.into\\(\\)\\)" src-tauri/src/distributed/client_session.rs
+require_pattern "没有收到 WebSocket 帧" src-tauri/src/distributed/client_session.rs
 require_pattern "is_distributed_connection_stale" src-tauri/src/distributed/client.rs
 require_pattern "recover_distributed_node_after_network_restore" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs
-require_pattern "recover_distributed_node_after_network_restore\\(&h\\)" src-tauri/src/lib.rs
+require_pattern "recover_distributed_node_after_network_restore\\(&handle\\)" src-tauri/src/bootstrap.rs
 require_pattern "renderMessageRawHtml" src/core/utils/astRenderer.ts
 require_pattern "shouldRenderMessageHtml" src/core/utils/astExecutor.ts
 require_pattern "test_unknown_html_like_tags_remain_visible_text" src-tauri/src/vcp_modules/chat/pre_renderer/markdown_parser.rs
@@ -239,27 +276,30 @@ require_pattern "find_matching_fence_end" src-tauri/src/vcp_modules/chat/stream_
 require_pattern "installRuntimeDiagnostics" src/main.ts
 require_pattern "export_runtime_diagnostics" src/features/settings/components/MaintenanceSection.vue
 require_pattern "record_frontend_diagnostic" src-tauri/src/lib.rs
-require_pattern "install_panic_hook" src-tauri/src/lib.rs
-require_pattern "should_reject_before_db_ready" src-tauri/src/lib.rs
+require_pattern "install_panic_hook" src-tauri/src/bootstrap.rs
+require_pattern "should_reject_before_db_ready" src-tauri/src/vcp_modules/infra/invoke_dispatch.rs
 require_pattern "database_commands_fail_closed_until_db_state_exists" src-tauri/src/vcp_modules/infra/invoke_guard.rs
 require_pattern "require_db_state\(&app_handle\)\?" src-tauri/src/vcp_modules/infra/settings_manager.rs
-require_pattern "Network restored before DbState registration" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs
+require_pattern "网络恢复时数据库尚未注册" src-tauri/src/vcp_modules/infra/lifecycle_manager.rs
 require_pattern "getHistoricalProcessExitReasons" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/CrashDiagnostics.kt
 require_pattern 'File\(context\.dataDir, "diagnostics"\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/CrashDiagnostics.kt
 require_pattern "CrashDiagnostics.install\(this\)" src-tauri/gen/android/app/src/main/java/com/vcp/avatar/VcpApplication.kt
 require_pattern 'android:name="\.VcpApplication"' src-tauri/gen/android/app/src/main/AndroidManifest.xml
-require_pattern "oomGuardExecutor.scheduleWithFixedDelay" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "oomGuardExecutor.scheduleWithFixedDelay" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePermissionCommands.kt
 require_pattern "share_file_native" src-tauri/plugins/vcp-mobile/src/lib.rs
 reject_pattern 'console\.warn\(`\[AST createDomFromNode\]' src/core/utils/astExecutor.ts
-require_pattern "ForegroundServiceStartNotAllowedException/IllegalStateException" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt
+require_pattern "private fun start\\(context: Context\\): Boolean" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundServiceLifecycleCoordinator.kt
+require_pattern "ForegroundServiceLifecycleCoordinator" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern "startPending = false" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundServiceLifecycleCoordinator.kt
+require_pattern "Log\\.e\\(TAG, \"startFgs 失败\", error\\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundServiceLifecycleCoordinator.kt
 require_pattern "onTaskRemoved" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
 require_pattern "createRecoveryIntent" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
 require_pattern "distributed_keepalive_active" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
 require_pattern "promoteToForeground\(buildBootstrapNotification\(\)\)" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt
-require_pattern "foregroundStartPending" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern "startPending" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundServiceLifecycleCoordinator.kt
 require_pattern "onAppForegroundChanged" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
-require_pattern "deferring foreground-service launch until background transition" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
-require_pattern "ACTION_REFRESH_NOTIFICATION" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern "前台服务启动延迟到进入后台" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundGuardian.kt
+require_pattern "ACTION_REFRESH_NOTIFICATION" src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/ForegroundServiceLifecycleCoordinator.kt
 require_pattern 'android:stopWithTask="false"' src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml
 require_file src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/receiver/BootReceiver.kt
 require_pattern "RECEIVE_BOOT_COMPLETED" src-tauri/plugins/vcp-mobile/android/src/main/AndroidManifest.xml
@@ -268,18 +308,19 @@ require_pattern "expected-abi arm64-v8a" scripts/build_android_phone.sh
 require_pattern "read_elf_load_alignments" scripts/verify_android_apk.py
 require_pattern "normalize_message_content\(&pool\)\.await\?" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs
 require_pattern "normalize_legacy_message_content\(pool\)" src-tauri/src/vcp_modules/persistence/database_lifecycle.rs
-require_pattern 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client_active.rs
-require_pattern 'ContentCompressor::compress\(&final_content\)' src-tauri/src/vcp_modules/infra/vcp_client_active.rs
-require_pattern 'ContentCompressor::compress\(content\)' src-tauri/src/vcp_modules/infra/vcp_client_resume.rs
+require_pattern 'decode_message_content\(&row, "content"\)' src-tauri/src/vcp_modules/infra/vcp_client_active_error.rs
+require_pattern "finalize_stream_message" src-tauri/src/vcp_modules/infra/vcp_client_active_error.rs
+require_pattern 'ContentCompressor::compress\(&message.content\)' src-tauri/src/vcp_modules/persistence/message_repository_upsert.rs
+require_pattern "update_existing_message_content" src-tauri/src/vcp_modules/infra/vcp_client_resume.rs
 require_pattern 'ContentCompressor::compress\("\[已清空\]"\)' src-tauri/src/vcp_modules/sync/sync_executor/delete_executor.rs
 reject_pattern 'get::<Option<String>, _>\("content"\)' src-tauri/src/vcp_modules/infra
 reject_pattern "decompress_database_migration" src-tauri/src/vcp_modules/persistence
-if rg -U -q 'registerActivityLifecycleCallbacks\(activityLifecycleCallbacks\)\s*startHelperServiceInternal\(\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt; then
+if rg -U -q 'registerActivityLifecycleCallbacks\(activityLifecycleCallbacks\)\s*startHelperServiceInternal\(\)' src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePluginCore.kt; then
   printf 'SseProxyService 不得在插件初始化阶段无条件启动\n' >&2
   exit 1
 fi
 if rg -q 'setSmallIcon\(applicationInfo\.icon\)' \
-  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobilePlugin.kt \
+  src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/VcpMobileNotificationCommands.kt \
   src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/StreamKeepaliveService.kt \
   src-tauri/plugins/vcp-mobile/android/src/main/java/com/vcp/mobile/service/SseProxyService.kt; then
   printf 'Android 通知不得把自适应 launcher icon 用作 small icon\n' >&2
@@ -291,6 +332,31 @@ reject_pattern "event.payload.title.length" src/features/distributed/ToolInterac
 reject_pattern "event.payload.body.length" src/features/distributed/ToolInteractionOverlay.vue
 reject_pattern "findAgentMessagePayload\\(event.payload\\)" src/features/distributed/ToolInteractionOverlay.vue
 require_pattern "最后更新：2026-06-15 \\| VCP Mobile v1\\.0\\.6" docs/vue_docs/features/distributed/19_分布式能力前端交互.md
+
+log "前端单元测试"
+run pnpm test:unit -- --maxWorkers=1 --no-file-parallelism --maxConcurrency=1
+
+log "B4 Node 结构测试"
+run node --test \
+  tests/e2e-android/b4-search-perf-gates.test.cjs \
+  tests/e2e-android/b4-search-perf-memory.test.cjs \
+  tests/e2e-android/b4-search-perf-evidence.test.cjs \
+  tests/e2e-android/b4-search-perf-readiness.test.cjs \
+  tests/e2e-android/b4-search-perf-rebuild.test.cjs \
+  tests/e2e-android/b4-search-perf-restart.test.cjs \
+  tests/e2e-android/b4-search-perf-runner.test.cjs \
+  tests/e2e-android/b4-search-perf-device.test.cjs \
+  tests/e2e-android/b4-search-perf-main.test.cjs \
+  tests/e2e-android/b4-search-perf-fixture-cli.test.cjs \
+  tests/e2e-android/scripts/adb-env.test.cjs \
+  tests/e2e-android/helper-stream-e2e-runner.test.cjs \
+  tests/e2e-android/wire14/android-cdp.test.cjs \
+  tests/e2e-android/wire14/run-wire14-gates.test.cjs \
+  tests/e2e-android/wire14/scale-gate.test.cjs \
+  tests/e2e-android/wire14/sync-attempt.test.cjs
+
+log "B4 fixture Python 测试"
+run python3 tests/e2e-android/scripts/b4_fixture_test.py
 
 log "前端类型检查"
 run pnpm exec vue-tsc --noEmit
@@ -310,7 +376,7 @@ if [[ "$RUN_ANDROID" == "1" ]]; then
     printf '缺少 Android Gradle wrapper: src-tauri/gen/android/gradlew\n' >&2
     exit 1
   fi
-  (cd src-tauri/gen/android && run bash ./gradlew :app:compileUniversalDebugKotlin)
+  (cd src-tauri/gen/android && run bash ./gradlew :tauri-plugin-vcp-mobile:testDebugUnitTest :app:compileUniversalDebugKotlin)
 else
   log "跳过 Android Kotlin 编译"
   printf '如需覆盖 Android 原生插件编译，请运行: RUN_ANDROID=1 bash qa/regression.sh\n'

@@ -28,6 +28,8 @@ describe("全局搜索适配器", () => {
       available: true,
       schemaValid: true,
       tokenizerValid: true,
+      topicCount: 1,
+      liveTopicRowCount: 1,
       liveCount: 4,
       indexedCount: 4,
       missingCount: 0,
@@ -35,6 +37,7 @@ describe("全局搜索适配器", () => {
       duplicateCount: 0,
       staleCount: 0,
       decodeErrorCount: 1,
+      decodedContentBytes: 1024,
       healthy: false,
       diagnostic: "FTS_CONTENT_DECODE_FAILED",
     });

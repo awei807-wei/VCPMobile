@@ -52,6 +52,8 @@ export interface FtsIndexStatus {
   available: boolean;
   schemaValid: boolean;
   tokenizerValid: boolean;
+  topicCount: number;
+  liveTopicRowCount: number;
   liveCount: number;
   indexedCount: number;
   missingCount: number;
@@ -59,6 +61,7 @@ export interface FtsIndexStatus {
   duplicateCount: number;
   staleCount: number;
   decodeErrorCount: number;
+  decodedContentBytes: number;
   healthy: boolean;
   diagnostic: string | null;
 }

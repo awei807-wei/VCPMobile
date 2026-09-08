@@ -13,6 +13,18 @@ const EVENT_NAMES = [
   "vcp-sync-completed",
   "vcp-log",
 ];
+const DEFAULT_CDP_TIMEOUT_MS = 15_000;
+const PID_SOCKET_PREFIX = "webview_devtools_remote_";
+
+function resolveTimeoutMs(timeoutOrOptions) {
+  const candidate =
+    typeof timeoutOrOptions === "number"
+      ? timeoutOrOptions
+      : timeoutOrOptions?.timeoutMs ?? timeoutOrOptions?.timeout;
+  return Number.isFinite(candidate) && candidate > 0
+    ? Math.max(1, Math.floor(candidate))
+    : DEFAULT_CDP_TIMEOUT_MS;
+}
 
 async function freePort() {
   const server = net.createServer();
@@ -25,8 +37,8 @@ async function freePort() {
   return port;
 }
 
-function packagePid() {
-  const output = runAdb(["shell", "pidof", "-s", DEBUG_PACKAGE], {
+function packagePid(adb = runAdb) {
+  const output = adb(["shell", "pidof", "-s", DEBUG_PACKAGE], {
     allowFailure: true,
   }).trim();
   const pid = Number(output.split(/\s+/)[0]);
@@ -36,29 +48,56 @@ function packagePid() {
   return pid;
 }
 
-function forwardSocket(localPort, pid) {
-  const candidates = [
-    `webview_devtools_remote_${pid}`,
-    "webview_devtools_remote",
-  ];
-  let lastError = null;
-  for (const socketName of candidates) {
-    try {
-      runAdb(["forward", `tcp:${localPort}`, `localabstract:${socketName}`]);
-      return socketName;
-    } catch (error) {
-      lastError = error;
-    }
+function pidSocketName(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw codedError(
+      "ANDROID_CDP_PID_UNAVAILABLE",
+      "无法为 Android WebView CDP 确定有效进程 PID",
+    );
   }
-  throw new Error(
-    `无法建立 Android WebView 调试转发（${lastError?.code || "未知原因"}）`,
-  );
+  return `${PID_SOCKET_PREFIX}${pid}`;
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`CDP 端点返回 HTTP ${response.status}`);
-  return response.json();
+function forwardSocket(localPort, pid, adb = runAdb) {
+  const socketName = pidSocketName(pid);
+  try {
+    adb(["forward", `tcp:${localPort}`, `localabstract:${socketName}`]);
+  } catch (error) {
+    throw codedError(
+      "ANDROID_CDP_PID_SOCKET_FORWARD_FAILED",
+      `无法绑定 Android WebView 当前 PID 的 CDP socket（pid=${pid}）`,
+      error,
+    );
+  }
+  return { socketName, boundPid: pid, verified: true };
+}
+
+function codedError(code, message, cause) {
+  const error = new Error(message, cause ? { cause } : undefined);
+  error.code = code;
+  return error;
+}
+
+async function fetchJson(url, timeoutOrOptions, dependencies = {}) {
+  const timeoutMs = resolveTimeoutMs(timeoutOrOptions);
+  const fetchImpl = dependencies.fetch || fetch;
+  const setTimer = dependencies.setTimeout || setTimeout;
+  const clearTimer = dependencies.clearTimeout || clearTimeout;
+  const controller = new AbortController();
+  let timer = null;
+  try {
+    timer = setTimer(() => controller.abort(), timeoutMs);
+    const response = await fetchImpl(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`CDP 端点返回 HTTP ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw codedError("CDP_JSON_TIMEOUT", `CDP JSON 请求超时（${timeoutMs}ms）`, error);
+    }
+    throw error;
+  } finally {
+    if (timer !== null) clearTimer(timer);
+  }
 }
 
 function normalizeWsUrl(rawUrl, localPort) {
@@ -68,8 +107,12 @@ function normalizeWsUrl(rawUrl, localPort) {
   return url.toString();
 }
 
-async function findPage(localPort) {
-  const targets = await fetchJson(`http://127.0.0.1:${localPort}/json/list`);
+async function findPage(localPort, timeoutOrOptions, dependencies = {}) {
+  const targets = await fetchJson(
+    `http://127.0.0.1:${localPort}/json/list`,
+    timeoutOrOptions,
+    dependencies,
+  );
   const page = Array.isArray(targets)
     ? targets.find(
         (target) => target.type === "page" && target.webSocketDebuggerUrl,
@@ -84,36 +127,68 @@ async function findPage(localPort) {
 }
 
 class CdpClient {
-  constructor(wsUrl) {
+  constructor(wsUrl, dependencies = {}) {
     this.wsUrl = wsUrl;
+    this.WebSocketImpl = dependencies.WebSocket || WebSocket;
     this.ws = null;
     this.nextId = 0;
     this.pending = new Map();
   }
 
-  async connect() {
-    const ws = new WebSocket(this.wsUrl);
+  async connect(timeoutOrOptions) {
+    const timeoutMs = resolveTimeoutMs(timeoutOrOptions);
+    const ws = new this.WebSocketImpl(this.wsUrl);
     this.ws = ws;
-    ws.addEventListener("message", (event) => this.receive(event.data));
-    ws.addEventListener("error", () =>
-      this.rejectPending(new Error("CDP WebSocket 错误")),
-    );
-    ws.addEventListener("close", () =>
-      this.rejectPending(new Error("CDP WebSocket 已关闭")),
-    );
     await new Promise((resolve, reject) => {
-      const onOpen = () => {
-        ws.removeEventListener("open", onOpen);
+      let settled = false;
+      let timer = null;
+      const onMessage = (event) => this.receive(event.data);
+      const removeListeners = () => {
+        ws.removeEventListener("message", onMessage);
         ws.removeEventListener("error", onError);
+        ws.removeEventListener("close", onClose);
+        ws.removeEventListener("open", onOpen);
+      };
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        removeListeners();
+        if (this.ws === ws) this.ws = null;
+        try {
+          ws.close();
+        } catch {}
+        reject(error);
+      };
+      const onOpen = () => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        ws.removeEventListener("open", onOpen);
         resolve();
       };
       const onError = () => {
-        ws.removeEventListener("open", onOpen);
-        ws.removeEventListener("error", onError);
-        reject(new Error("无法连接 Android WebView CDP"));
+        this.rejectPending(new Error("CDP WebSocket 错误"));
+        fail(new Error("无法连接 Android WebView CDP"));
       };
-      ws.addEventListener("open", onOpen);
+      const onClose = () => {
+        this.rejectPending(new Error("CDP WebSocket 已关闭"));
+        fail(new Error("无法连接 Android WebView CDP：WebSocket 已关闭"));
+      };
+      ws.addEventListener("message", onMessage);
       ws.addEventListener("error", onError);
+      ws.addEventListener("close", onClose);
+      ws.addEventListener("open", onOpen);
+      timer = setTimeout(
+        () =>
+          fail(
+            codedError(
+              "CDP_WEBSOCKET_CONNECT_TIMEOUT",
+              `Android WebView CDP 握手超时（${timeoutMs}ms）`,
+            ),
+          ),
+        timeoutMs,
+      );
     });
   }
 
@@ -142,13 +217,14 @@ class CdpClient {
     this.pending.clear();
   }
 
-  call(method, params = {}) {
+  call(method, params = {}, timeoutOrOptions) {
     const id = ++this.nextId;
+    const timeoutMs = resolveTimeoutMs(timeoutOrOptions);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`CDP 调用超时：${method}`));
-      }, 15_000);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => {
           clearTimeout(timer);
@@ -163,20 +239,20 @@ class CdpClient {
     });
   }
 
-  async evaluate(expression) {
+  async evaluate(expression, timeoutOrOptions) {
     const result = await this.call("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
       userGesture: true,
-    });
+    }, timeoutOrOptions);
     if (result?.exceptionDetails) {
       throw new Error("WebView JavaScript 执行失败");
     }
     return result?.result?.value;
   }
 
-  async invoke(command, args = {}) {
+  async invoke(command, args = {}, timeoutOrOptions) {
     const expression = `(async () => {
       const internals = window.__TAURI_INTERNALS__;
       if (!internals || typeof internals.invoke !== 'function') {
@@ -184,7 +260,7 @@ class CdpClient {
       }
       return await internals.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)});
     })()`;
-    return this.evaluate(expression);
+    return this.evaluate(expression, timeoutOrOptions);
   }
 
   async installEventBuffer() {
@@ -255,38 +331,69 @@ class CdpClient {
   }
 }
 
-async function connectAndroidCdp() {
-  const device = ensureSingleDevice();
-  const pid = packagePid();
-  const localPort = await freePort();
-  const socketName = forwardSocket(localPort, pid);
+async function connectAndroidCdp(timeoutOrOptions, dependencies = {}) {
+  const timeoutMs = resolveTimeoutMs(timeoutOrOptions);
+  const adb = dependencies.runAdb || runAdb;
+  const ensureDevice = dependencies.ensureSingleDevice || ensureSingleDevice;
+  const readPid = dependencies.packagePid || (() => packagePid(adb));
+  const reservePort = dependencies.freePort || freePort;
+  const forward =
+    dependencies.forwardSocket || ((localPort, pid) => forwardSocket(localPort, pid, adb));
+  const find = dependencies.findPage || ((localPort, timeout) =>
+    findPage(localPort, timeout, dependencies));
+  const device = await ensureDevice();
+  const pid = await readPid();
+  const localPort = await reservePort();
   try {
-    const page = await findPage(localPort);
-    const cdp = new CdpClient(page.wsUrl);
-    await cdp.connect();
+    const binding = await forward(localPort, pid);
+    const expectedSocketName = pidSocketName(pid);
+    if (
+      !binding ||
+      binding.verified !== true ||
+      binding.boundPid !== pid ||
+      binding.socketName !== expectedSocketName
+    ) {
+      throw codedError(
+        "ANDROID_CDP_PID_SOCKET_UNVERIFIED",
+        `Android WebView CDP 未证明绑定当前 PID-specific socket（pid=${pid}）`,
+      );
+    }
+    const socketName = binding.socketName;
+    const page = await find(localPort, timeoutMs);
+    const CdpClientImpl = dependencies.CdpClient || CdpClient;
+    const cdp = new CdpClientImpl(page.wsUrl);
+    await cdp.connect(timeoutMs);
     return {
       deviceSerial: device.serial,
       pid,
+      boundPid: binding.boundPid,
       localPort,
       socketName,
+      socketBindingVerified: binding.verified,
       page,
       cdp,
       async close() {
         await cdp.removeEventBuffer().catch(() => {});
         await cdp.close();
-        runAdb(["forward", "--remove", `tcp:${localPort}`], {
+        adb(["forward", "--remove", `tcp:${localPort}`], {
           allowFailure: true,
         });
       },
     };
   } catch (error) {
-    runAdb(["forward", "--remove", `tcp:${localPort}`], { allowFailure: true });
+    adb(["forward", "--remove", `tcp:${localPort}`], { allowFailure: true });
     throw error;
   }
 }
 
 module.exports = {
   CdpClient,
+  DEFAULT_CDP_TIMEOUT_MS,
   EVENT_NAMES,
   connectAndroidCdp,
+  fetchJson,
+  forwardSocket,
+  findPage,
+  pidSocketName,
+  resolveTimeoutMs,
 };

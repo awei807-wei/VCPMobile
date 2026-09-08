@@ -86,6 +86,8 @@ jni = "0.21"
 tauri = { version = "2.11.2", features = ["custom-protocol"] }
 
 [dev-dependencies]
+# MockRuntime 用于真实 Tauri IPC wrapper 的回调与并发测试。
+tauri = { version = "2.11.2", features = ["test"] }
 # Local Criterion harness used by tests/perf/scripts/run_rust_bench.cjs.
 criterion = { version = "0.5", features = ["html_reports"] }
 

@@ -111,6 +111,14 @@ function normalizeIndexStatus(raw: unknown): FtsIndexStatus {
       value.tokenizerValid ?? value.tokenizer_valid,
       "tokenizerValid",
     ),
+    topicCount: readRequiredCount(
+      value.topicCount ?? value.topic_count,
+      "topicCount",
+    ),
+    liveTopicRowCount: readRequiredCount(
+      value.liveTopicRowCount ?? value.live_topic_row_count,
+      "liveTopicRowCount",
+    ),
     liveCount: readRequiredCount(
       value.liveCount ?? value.live_count,
       "liveCount",
@@ -138,6 +146,10 @@ function normalizeIndexStatus(raw: unknown): FtsIndexStatus {
     decodeErrorCount: readRequiredCount(
       value.decodeErrorCount ?? value.decode_error_count,
       "decodeErrorCount",
+    ),
+    decodedContentBytes: readRequiredCount(
+      value.decodedContentBytes ?? value.decoded_content_bytes,
+      "decodedContentBytes",
     ),
     healthy: readRequiredBoolean(value.healthy, "healthy"),
     diagnostic: readOptionalNullableString(value, "diagnostic"),

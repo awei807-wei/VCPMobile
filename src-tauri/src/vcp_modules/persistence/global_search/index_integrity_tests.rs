@@ -1,7 +1,50 @@
 use super::{get_fts_index_status, rebuild_messages_fts, FtsIndexStatus, FtsRebuildResult};
 use crate::vcp_modules::persistence::message_repository::ContentCompressor;
-use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    Connection, Row, SqliteConnection, SqlitePool,
+};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use tokio::time::{timeout, Duration};
+
+#[path = "status_scan_tests.rs"]
+mod status_scan_tests;
+
+const INDEX_TEST_SCHEMA: &str = "CREATE TABLE messages (
+         owner_type TEXT NOT NULL,
+         owner_id TEXT NOT NULL,
+         topic_id TEXT NOT NULL,
+         msg_id TEXT NOT NULL,
+         content BLOB NOT NULL,
+         timestamp INTEGER NOT NULL DEFAULT 0,
+         deleted_at INTEGER,
+         PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
+     );
+     CREATE TABLE topics (
+         owner_type TEXT NOT NULL,
+         owner_id TEXT NOT NULL,
+         topic_id TEXT NOT NULL,
+         deleted_at INTEGER,
+         PRIMARY KEY(owner_type, owner_id, topic_id)
+     );
+     CREATE VIRTUAL TABLE messages_fts USING fts5(
+         msg_id UNINDEXED,
+         topic_id UNINDEXED,
+         content,
+         owner_type UNINDEXED,
+         owner_id UNINDEXED,
+         tokenize = 'trigram'
+     );";
+
+async fn 创建索引结构(pool: &SqlitePool) {
+    sqlx::raw_sql(INDEX_TEST_SCHEMA)
+        .execute(pool)
+        .await
+        .expect("应创建索引完整性测试结构");
+}
 
 async fn 创建索引测试数据库(max_connections: u32) -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -9,30 +52,39 @@ async fn 创建索引测试数据库(max_connections: u32) -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .expect("应打开索引完整性测试数据库");
-    sqlx::raw_sql(
-        "CREATE TABLE messages (
-            owner_type TEXT NOT NULL,
-            owner_id TEXT NOT NULL,
-            topic_id TEXT NOT NULL,
-            msg_id TEXT NOT NULL,
-            content BLOB NOT NULL,
-            timestamp INTEGER NOT NULL DEFAULT 0,
-            deleted_at INTEGER,
-            PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
-         );
-         CREATE VIRTUAL TABLE messages_fts USING fts5(
-            msg_id UNINDEXED,
-            topic_id UNINDEXED,
-            content,
-            owner_type UNINDEXED,
-            owner_id UNINDEXED,
-            tokenize = 'trigram'
-         );",
-    )
-    .execute(&pool)
-    .await
-    .expect("应创建索引完整性测试结构");
+    创建索引结构(&pool).await;
     pool
+}
+
+fn 共享测试数据库路径() -> PathBuf {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "vcp-global-search-status-{}-{id}.db",
+        std::process::id()
+    ))
+}
+
+async fn 创建共享索引测试数据库() -> (SqlitePool, PathBuf) {
+    let path = 共享测试数据库路径();
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    let pool = SqlitePoolOptions::new()
+        .min_connections(2)
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("应打开共享索引完整性测试数据库");
+    创建索引结构(&pool).await;
+    (pool, path)
+}
+
+fn 清理共享索引测试数据库(path: &PathBuf) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
 async fn 插入测试消息(pool: &SqlitePool, id: &str, content: &str) {
@@ -58,6 +110,45 @@ async fn 插入测试索引行(pool: &SqlitePool, id: &str, content: &str) {
     .execute(pool)
     .await
     .expect("应插入全文索引行");
+}
+
+async fn 提交新增消息和索引(connection: &mut SqliteConnection, id: &str, content: &str) {
+    let compressed = ContentCompressor::compress(content).expect("应压缩新增消息正文");
+    let mut transaction = connection.begin().await.expect("应开始新增事务");
+    sqlx::query(
+        "INSERT INTO messages(owner_type, owner_id, topic_id, msg_id, content)
+         VALUES ('agent', 'owner', 'topic', ?, ?)",
+    )
+    .bind(id)
+    .bind(compressed)
+    .execute(&mut *transaction)
+    .await
+    .expect("应插入新消息");
+    sqlx::query(
+        "INSERT INTO messages_fts(msg_id, topic_id, content, owner_type, owner_id)
+         VALUES (?, 'topic', ?, 'agent', 'owner')",
+    )
+    .bind(id)
+    .bind(content)
+    .execute(&mut *transaction)
+    .await
+    .expect("应插入新全文索引行");
+    transaction.commit().await.expect("应提交新增事务");
+}
+
+async fn 提交删除消息和索引(connection: &mut SqliteConnection, id: &str) {
+    let mut transaction = connection.begin().await.expect("应开始删除事务");
+    sqlx::query("DELETE FROM messages_fts WHERE msg_id = ?")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .expect("应删除全文索引行");
+    sqlx::query("DELETE FROM messages WHERE msg_id = ?")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .expect("应删除消息");
+    transaction.commit().await.expect("应提交删除事务");
 }
 
 fn assert_counts(status: &FtsIndexStatus, expected: [i64; 8]) {

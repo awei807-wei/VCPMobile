@@ -2,6 +2,8 @@
 mod rebuild;
 #[path = "status.rs"]
 mod status;
+#[path = "status_scan.rs"]
+mod status_scan;
 
 #[cfg(test)]
 #[path = "index_integrity_tests.rs"]

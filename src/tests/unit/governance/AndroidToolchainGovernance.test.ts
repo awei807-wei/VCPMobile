@@ -62,12 +62,18 @@ describe("Android toolchain governance", () => {
     );
   });
 
-  it("generates Tauri Android module settings from locked Cargo metadata", () => {
+  it("generates ignored Tauri Android build files from locked Cargo metadata", () => {
     expect(androidSettingsGenerator).toMatch(
       /"metadata",\s*"--locked",\s*"--manifest-path"/,
     );
     expect(androidSettingsGenerator).toContain("metadata.resolve?.root");
     expect(androidSettingsGenerator).toContain("tauri.build.gradle.kts");
+    expect(androidSettingsGenerator).toMatch(
+      /writeFileSync\(appGradlePath,.*appGradleLines/s,
+    );
+    expect(androidSettingsGenerator).not.toContain(
+      "readFileSync(appGradlePath",
+    );
     expect(androidSettingsGenerator).not.toMatch(/\/home\/|[A-Za-z]:\\\\/);
   });
 });

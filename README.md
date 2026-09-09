@@ -343,7 +343,7 @@ VCPMobile/
 | `src-tauri/plugins/vcp-mobile/android/.../StreamKeepaliveService.kt` | Android 14+ 前台保活服务 |
 | `docs/SYNC_ARCHITECTURE.md` | 增量同步协议完整规范 |
 | `docs/UI_LAYER_ARCHITECTURE.md` | 全局 UI 层级与 Z-Index 语义化规范 |
-| `scripts/tauri_android_dev.cjs` | WiFi/USB 双模式真机调试启动器 |
+| `tests/e2e-android/scripts/android-debug-agent.cjs` | USB/HMR 真机调试与诊断入口 |
 | `uno.config.ts` | UnoCSS 主题色、快捷类、断点配置 |
 | `vite.config.ts` | Vite 插件链、Tauri 感知开发服务器 |
 

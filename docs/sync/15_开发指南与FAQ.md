@@ -492,7 +492,7 @@ VCP Mobile 采用「先写消息、后补附件」的懒加载策略：
 
 1. 运行 `pnpm check`（`vue-tsc --noEmit && cargo check`）。
 2. 若修改了 DTO 或 Hash 计算，执行双端全量同步测试，验证相同配置的哈希值是否一致。
-3. 若修改了 `plans/` 目录，执行 `pnpm memory:refresh`。
+3. 若修改了同步方案文档，提交前检查目录索引和交叉引用一致性。
 4. 若涉及超过 500 行的文件重构，先执行 `git add . && git commit -m "save"`。
 
 ### Q12: 桌面端 `sync_state.db` 可以删除吗？

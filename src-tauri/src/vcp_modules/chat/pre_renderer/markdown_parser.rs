@@ -652,7 +652,7 @@ fn extract_html_tag_name(fragment: &str) -> Option<&str> {
     (cursor > start).then_some(&trimmed[start..cursor])
 }
 
-fn is_supported_message_html(fragment: &str) -> bool {
+pub(crate) fn is_supported_message_html(fragment: &str) -> bool {
     let trimmed = fragment.trim();
     if trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
         return true;
@@ -1884,7 +1884,7 @@ mod tests {
                         ..
                     } = child
                     {
-                        if strong_children.len() > 0 {
+                        if !strong_children.is_empty() {
                             if let InlineNode::Text { value, .. } = &strong_children[0] {
                                 if value.contains("自愈判定阀") {
                                     found = true;

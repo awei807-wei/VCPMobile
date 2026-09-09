@@ -121,8 +121,7 @@ export const useConnectionProfilesStore = defineStore(
         !switching.value &&
         !chatStreamStore.hasActiveStreams &&
         !hasFloatingAssistantGenerating.value &&
-        !modelStore.isLoading &&
-        !hasActiveSyncSession.value,
+        !modelStore.isLoading,
     );
 
     const notifyBlocked = (message: string) => {
@@ -203,14 +202,6 @@ export const useConnectionProfilesStore = defineStore(
         return "模型列表刷新中不可切换，请等待刷新结束后再试";
       }
 
-      if (hasActiveSyncSession.value) {
-        return "数据同步中不可切换，请等待同步结束后再试";
-      }
-
-      if (await hasBackendActiveSyncSession()) {
-        return "数据同步中不可切换，请等待同步结束后再试";
-      }
-
       return null;
     };
 
@@ -223,99 +214,130 @@ export const useConnectionProfilesStore = defineStore(
       return false;
     };
 
+    const loadSettingsForSwitch = async () => {
+      if (!settingsStore.settings) {
+        await settingsStore.fetchSettings();
+      }
+
+      const settings = settingsStore.settings;
+      if (!settings) {
+        notifyBlocked("设置尚未加载完成，请稍后重试");
+      }
+      return settings;
+    };
+
+    const prepareProfileSwitch = (
+      settings: AppSettings,
+      profileId: ConnectionProfileId,
+    ) => {
+      const currentProfileId = normalizeConnectionProfileId(
+        settings.activeConnectionProfileId,
+      );
+      if (profileId === currentProfileId) {
+        return null;
+      }
+
+      syncActiveConnectionProfileFromSettings(settings);
+      const nextProfiles = normalizeConnectionProfiles(settings);
+      const target = nextProfiles.find((profile) => profile.id === profileId);
+      if (!target) {
+        notifyBlocked("目标线路不存在，请进入设置页补全");
+        return null;
+      }
+
+      const validationError = validateProfile(target, settings);
+      if (validationError) {
+        notifyBlocked(`${validationError}，请进入设置页补全`);
+        return null;
+      }
+
+      return { nextProfiles, target };
+    };
+
+    const stopSyncBeforeProfileSwitch = async () => {
+      // 线路切换是同步会话的明确终止边界：目标配置校验通过后，先等待
+      // 旧会话退出，再提交 profile，避免旧事件污染新线路。
+      const backendSyncActive = await hasBackendActiveSyncSession();
+      if (hasActiveSyncSession.value || backendSyncActive) {
+        await syncSessionStore.stopForProfileSwitch(backendSyncActive);
+      }
+    };
+
+    const commitProfileSwitch = async (
+      profileId: ConnectionProfileId,
+      nextProfiles: ConnectionProfile[],
+      target: ConnectionProfile,
+    ) => {
+      await settingsStore.updateSettings({
+        connectionProfiles: nextProfiles,
+        activeConnectionProfileId: profileId,
+        vcpServerUrl: target.vcpServerUrl,
+        vcpApiKey: target.vcpApiKey,
+        vcpLogUrl: target.vcpLogUrl,
+        vcpLogKey: target.vcpLogKey,
+        syncServerUrl: target.syncServerUrl,
+        syncHttpUrl: target.syncHttpUrl,
+        syncToken: target.syncToken,
+        distributedWsUrl: target.distributedWsUrl,
+        distributedVcpKey: target.distributedVcpKey,
+      });
+
+      try {
+        await modelStore.invalidatePersistedCache();
+      } catch (error) {
+        console.error(
+          "[ConnectionProfiles] Failed to invalidate model cache after committed switch:",
+          error,
+        );
+        notificationStore.addNotification({
+          type: "warning",
+          title: "模型缓存清理失败",
+          message: `线路已切换到${getProfileName(target)}，但旧模型缓存清理失败；下次刷新会重新拉取`,
+          toastOnly: true,
+        });
+      }
+
+      notificationStore.addNotification({
+        type: "success",
+        title: "线路已切换",
+        message: `当前线路：${getProfileName(target)}，模型列表将在下次刷新时更新`,
+        toastOnly: true,
+      });
+    };
+
+    const runSwitch = async (profileId: ConnectionProfileId) => {
+      await switchGuardStore.beginSwitch();
+      try {
+        const settings = await loadSettingsForSwitch();
+        if (!settings || (await blockIfBusy())) {
+          return;
+        }
+
+        const prepared = prepareProfileSwitch(settings, profileId);
+        if (!prepared) {
+          return;
+        }
+
+        await stopSyncBeforeProfileSwitch();
+        await commitProfileSwitch(
+          profileId,
+          prepared.nextProfiles,
+          prepared.target,
+        );
+      } catch (error: any) {
+        notifySwitchFailed(error);
+        throw error;
+      } finally {
+        await switchGuardStore.endSwitch();
+      }
+    };
+
     const switchTo = async (profileId: ConnectionProfileId) => {
       if (switchGuardStore.switching && activeSwitchPromise) {
         return activeSwitchPromise;
       }
 
-      const run = async () => {
-        await switchGuardStore.beginSwitch();
-        try {
-          if (!settingsStore.settings) {
-            await settingsStore.fetchSettings();
-          }
-
-          const settings = settingsStore.settings;
-          if (!settings) {
-            notifyBlocked("设置尚未加载完成，请稍后重试");
-            return;
-          }
-
-          if (await blockIfBusy()) {
-            return;
-          }
-
-          const currentProfileId = normalizeConnectionProfileId(
-            settings.activeConnectionProfileId,
-          );
-          if (profileId === currentProfileId) {
-            return;
-          }
-
-          syncActiveConnectionProfileFromSettings(settings);
-          const nextProfiles = normalizeConnectionProfiles(settings);
-          const target = nextProfiles.find(
-            (profile) => profile.id === profileId,
-          );
-          if (!target) {
-            notifyBlocked("目标线路不存在，请进入设置页补全");
-            return;
-          }
-
-          const validationError = validateProfile(target, settings);
-          if (validationError) {
-            notifyBlocked(`${validationError}，请进入设置页补全`);
-            return;
-          }
-
-          if (await blockIfBusy()) {
-            return;
-          }
-
-          await settingsStore.updateSettings({
-            connectionProfiles: nextProfiles,
-            activeConnectionProfileId: profileId,
-            vcpServerUrl: target.vcpServerUrl,
-            vcpApiKey: target.vcpApiKey,
-            vcpLogUrl: target.vcpLogUrl,
-            vcpLogKey: target.vcpLogKey,
-            syncServerUrl: target.syncServerUrl,
-            syncHttpUrl: target.syncHttpUrl,
-            syncToken: target.syncToken,
-            distributedWsUrl: target.distributedWsUrl,
-            distributedVcpKey: target.distributedVcpKey,
-          });
-
-          try {
-            await modelStore.invalidatePersistedCache();
-          } catch (error) {
-            console.error(
-              "[ConnectionProfiles] Failed to invalidate model cache after committed switch:",
-              error,
-            );
-            notificationStore.addNotification({
-              type: "warning",
-              title: "模型缓存清理失败",
-              message: `线路已切换到${getProfileName(target)}，但旧模型缓存清理失败；下次刷新会重新拉取`,
-              toastOnly: true,
-            });
-          }
-
-          notificationStore.addNotification({
-            type: "success",
-            title: "线路已切换",
-            message: `当前线路：${getProfileName(target)}，模型列表将在下次刷新时更新`,
-            toastOnly: true,
-          });
-        } catch (error: any) {
-          notifySwitchFailed(error);
-          throw error;
-        } finally {
-          await switchGuardStore.endSwitch();
-        }
-      };
-
-      activeSwitchPromise = run().finally(() => {
+      activeSwitchPromise = runSwitch(profileId).finally(() => {
         activeSwitchPromise = null;
       });
       return activeSwitchPromise;

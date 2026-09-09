@@ -2,28 +2,13 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import AttachmentViewer from "./AttachmentViewer.vue";
-import AttachmentRenderer from './AttachmentRenderer.vue';
+import AttachmentRenderer from "./AttachmentRenderer.vue";
 
 import { useChatHistoryStore } from "../../../core/stores/chatHistoryStore";
 import { useNotificationStore } from "../../../core/stores/notification";
 import { useOverlayStore } from "../../../core/stores/overlay";
-
-interface Attachment {
-  type: string;
-  src: string;
-  resolvedSrc?: string;
-  name: string;
-  size: number;
-  hash?: string;
-  extractedText?: string;
-  thumbnailPath?: string;
-  id?: string;
-  progress?: number;
-  status?: string;
-  internalPath?: string;
-  imageFrames?: string[];
-  createdAt?: number;
-}
+import type { Attachment } from "../../../core/types/chat";
+import { isDesktopOnlyAttachment } from "./utils/attachmentAvailability";
 
 const props = defineProps<{
   attachments: Attachment[];
@@ -36,25 +21,62 @@ const activeFile = ref<Attachment | null>(null);
 const notificationStore = useNotificationStore();
 const overlayStore = useOverlayStore();
 
-const IMAGE_WHITELIST = ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "avif"];
+const IMAGE_WHITELIST = [
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "heic",
+  "heif",
+  "avif",
+];
 const TEXT_WHITELIST = [
-  "txt", "md", "csv", "json", "js", "ts", "py", "rs", "java", "c", "cpp",
-  "h", "go", "rb", "php", "swift", "kt", "html", "css", "xml", "yaml",
-  "yml", "toml", "ini", "log", "sql", "vue", "jsx", "tsx"
+  "txt",
+  "md",
+  "csv",
+  "json",
+  "js",
+  "ts",
+  "py",
+  "rs",
+  "java",
+  "c",
+  "cpp",
+  "h",
+  "go",
+  "rb",
+  "php",
+  "swift",
+  "kt",
+  "html",
+  "css",
+  "xml",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "log",
+  "sql",
+  "vue",
+  "jsx",
+  "tsx",
 ];
 
 const isPreviewableText = (att: Attachment): boolean => {
   const ext = att.name.split(".").pop()?.toLowerCase() || "";
-  
+
   // 核心加固：若存在后缀且完全不属于文本白名单，绝不判定为文本（杜绝 MIME 误判）
   if (ext && !TEXT_WHITELIST.includes(ext)) {
     return false;
   }
-  
+
   if (TEXT_WHITELIST.includes(ext)) {
     return true;
   }
-  
+
   const type = (att.type || "").toLowerCase();
   return (
     type.startsWith("text/") ||
@@ -65,8 +87,13 @@ const isPreviewableText = (att: Attachment): boolean => {
 };
 
 const openViewer = (att: Attachment) => {
+  if (isDesktopOnlyAttachment(att)) {
+    notifyDesktopOnly();
+    return;
+  }
   const ext = att.name.split(".").pop()?.toLowerCase() || "";
-  const isImage = IMAGE_WHITELIST.includes(ext) || (att.type || "").startsWith("image/");
+  const isImage =
+    IMAGE_WHITELIST.includes(ext) || (att.type || "").startsWith("image/");
   const isText = isPreviewableText(att);
 
   if (isImage || isText) {
@@ -78,11 +105,24 @@ const openViewer = (att: Attachment) => {
   }
 };
 
-const openExternal = async (path: string) => {
+const notifyDesktopOnly = () => {
+  notificationStore.addNotification({
+    type: "warning",
+    title: "附件仅支持桌面端",
+    message: "请在桌面端打开此附件。",
+    toastOnly: true,
+  });
+};
+
+const openExternal = async (path?: string) => {
+  if (isDesktopOnlyAttachment(activeFile.value) || !path) {
+    if (isDesktopOnlyAttachment(activeFile.value)) notifyDesktopOnly();
+    return;
+  }
   try {
     await invoke("open_file", { path });
   } catch (e) {
-    console.error("[AttachmentPreview] Open failed:", e);
+    console.error("[附件预览] 打开失败:", e);
   }
 };
 
@@ -100,9 +140,13 @@ const removeAttachment = async (index: number) => {
 
   try {
     const historyStore = useChatHistoryStore();
-    await historyStore.deleteAttachment(props.topicId, props.messageId, att.hash);
+    await historyStore.deleteAttachment(
+      props.topicId,
+      props.messageId,
+      att.hash,
+    );
   } catch (err) {
-    console.error("[AttachmentPreview] Failed to delete attachment:", err);
+    console.error("[附件预览] 删除附件失败:", err);
     notificationStore.addNotification({
       type: "error",
       title: "移除附件失败",

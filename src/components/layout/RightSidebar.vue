@@ -30,10 +30,11 @@ const connectionSwitchTitle = computed(() => {
   if (chatStreamStore.hasActiveStreams) return "输出中不可切换";
   if (connectionProfilesStore.hasFloatingAssistantGenerating)
     return "划词助手输出中不可切换";
-  if (connectionProfilesStore.hasActiveSyncSession) return "数据同步中不可切换";
   if (connectionProfilesStore.hasModelRefreshInFlight)
     return "模型刷新中不可切换";
   if (connectionProfilesStore.switching) return "正在切换线路";
+  if (connectionProfilesStore.hasActiveSyncSession)
+    return "切换前将先停止当前同步";
   return `切换到${connectionProfilesStore.targetProfileName}`;
 });
 
@@ -270,7 +271,13 @@ watch(
             :class="{ 'animate-spin': connectionProfilesStore.switching }"
           />
           <span class="font-bold text-[11px] leading-none truncate">
-            线路：{{ connectionProfilesStore.activeProfileName }}
+            {{
+              connectionProfilesStore.switching
+                ? "正在切换线路"
+                : connectionProfilesStore.hasActiveSyncSession
+                  ? "停止同步并切换"
+                  : `线路：${connectionProfilesStore.activeProfileName}`
+            }}
           </span>
         </button>
         <button

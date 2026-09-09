@@ -1,0 +1,11 @@
+.group-settings-view {
+  background-color: var(--primary-bg);
+}
+
+.card-modern {
+  @apply bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-2xl p-4 shadow-sm;
+}
+
+textarea::-webkit-scrollbar {
+  display: none;
+}

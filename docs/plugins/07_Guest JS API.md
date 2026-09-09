@@ -25,8 +25,8 @@ src-tauri/plugins/vcp-mobile/guest-js/index.ts (42 lines)
 │   ├── setKeepScreenOn(): Promise<void>
 │   └── clearKeepScreenOn(): Promise<void>
 ├── Stream Service
-│   ├── startStreamService(agentName: string): Promise<void>
-│   └── stopStreamService(): Promise<void>
+│   ├── startStreamService(agentName: string, identity?): Promise<number | null>
+│   └── stopStreamService(agentName: string, identity?, expectedGeneration?): Promise<void>
 └── Native File Picker
     └── pickFile(): Promise<PickedFile>
 ```
@@ -59,24 +59,46 @@ export function clearKeepScreenOn(): Promise<void> {
 ### 3.2 流式保活服务
 
 ```typescript
-export function startStreamService(agentName: string): Promise<void> {
-  return invoke('plugin:vcp-mobile|start_streaming_service', { agentName });
+export interface StreamIdentity {
+  ownerType: string;
+  ownerId: string;
+  topicId: string;
+  messageId: string;
 }
 
-export function stopStreamService(): Promise<void> {
-  return invoke('plugin:vcp-mobile|stop_streaming_service');
+export function startStreamService(
+  agentName: string,
+  identity?: StreamIdentity,
+): Promise<number | null> {
+  return invoke<number | null>('plugin:vcp-mobile|start_streaming_service', {
+    agentName,
+    identity,
+  });
+}
+
+export function stopStreamService(
+  agentName: string,
+  identity?: StreamIdentity,
+  expectedGeneration?: number,
+): Promise<void> {
+  return invoke('plugin:vcp-mobile|stop_streaming_service', {
+    agentName,
+    identity,
+    expectedGeneration,
+  });
 }
 ```
 
 | 函数 | Tauri 命令 | 参数 | 返回值 | 对应 Rust 函数 |
 |------|-----------|------|--------|---------------|
-| `startStreamService(agentName)` | `plugin:vcp-mobile\|start_streaming_service` | `{ agentName: string }` | `Promise<void>` | `stream::start_streaming_service` |
-| `stopStreamService()` | `plugin:vcp-mobile\|stop_streaming_service` | 无 | `Promise<void>` | `stream::stop_streaming_service` |
+| `startStreamService(agentName, identity?)` | `plugin:vcp-mobile\|start_streaming_service` | `{ agentName: string, identity?: StreamIdentity }` | `Promise<number \| null>` | `stream::start_streaming_service` |
+| `stopStreamService(agentName, identity?, expectedGeneration?)` | `plugin:vcp-mobile\|stop_streaming_service` | `{ agentName: string, identity?: StreamIdentity, expectedGeneration?: number }` | `Promise<void>` | `stream::stop_streaming_service` |
 
 #### 参数说明
 
-- **`agentName`**：当前正在流式输出的 Agent 名称。支持多 Agent 同时流式输出，Rust 侧通过引用计数管理。
-- **调用约定**：`startStreamService` 与 `stopStreamService` 必须成对调用。异常路径中应确保 `stopStreamService` 被调用，否则服务将永久驻留。
+- **`agentName`**：当前正在流式输出的 Agent 名称；无 `identity` 时，停止调用必须传入同一个名称。
+- **`identity`**：可选的完整复合消息身份。传入后启动返回正整数 generation，停止时必须原样传入 identity 和该 generation。
+- **调用约定**：`startStreamService` 与 `stopStreamService` 必须成对调用；完整身份调用应把启动返回的 generation 传给停止调用。
 
 ---
 
@@ -154,11 +176,11 @@ async function beginLongRunningTask() {
 import { startStreamService, stopStreamService } from 'tauri-plugin-vcp-mobile-api';
 
 async function streamResponse(agentName: string) {
-  await startStreamService(agentName);
+  const generation = await startStreamService(agentName);
   try {
     // ... SSE 流式读取与渲染
   } finally {
-    await stopStreamService();
+    await stopStreamService(agentName, undefined, generation ?? undefined);
   }
 }
 ```

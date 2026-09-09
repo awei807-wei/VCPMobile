@@ -3,15 +3,8 @@ import { computed, watch, ref } from "vue";
 import { useModalHistory } from "../../../core/composables/useModalHistory";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { X, ExternalLink } from "lucide-vue-next";
-
-interface Attachment {
-  type: string;
-  src: string;
-  name: string;
-  size: number;
-  extractedText?: string;
-  internalPath?: string;
-}
+import type { Attachment } from "../../../core/types/chat";
+import { isDesktopOnlyAttachment } from "./utils/attachmentAvailability";
 
 const props = defineProps<{
   file: Attachment | null;
@@ -21,38 +14,79 @@ const props = defineProps<{
 const emit = defineEmits(["close", "open-external"]);
 
 const { registerModal, unregisterModal } = useModalHistory();
-const modalId = 'AttachmentViewer';
+const modalId = "AttachmentViewer";
 
 const previewText = ref("");
 const isTextTruncated = ref(false);
 const isLoading = ref(false);
+const isDesktopOnly = computed(() => isDesktopOnlyAttachment(props.file));
 
-const IMAGE_WHITELIST = ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "avif"];
+const IMAGE_WHITELIST = [
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "heic",
+  "heif",
+  "avif",
+];
 const TEXT_WHITELIST = [
-  "txt", "md", "csv", "json", "js", "ts", "py", "rs", "java", "c", "cpp",
-  "h", "go", "rb", "php", "swift", "kt", "html", "css", "xml", "yaml",
-  "yml", "toml", "ini", "log", "sql", "vue", "jsx", "tsx"
+  "txt",
+  "md",
+  "csv",
+  "json",
+  "js",
+  "ts",
+  "py",
+  "rs",
+  "java",
+  "c",
+  "cpp",
+  "h",
+  "go",
+  "rb",
+  "php",
+  "swift",
+  "kt",
+  "html",
+  "css",
+  "xml",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "log",
+  "sql",
+  "vue",
+  "jsx",
+  "tsx",
 ];
 
 const isImage = computed(() => {
   if (!props.file) return false;
   const ext = props.file.name.split(".").pop()?.toLowerCase() || "";
-  return IMAGE_WHITELIST.includes(ext) || (props.file.type || "").startsWith("image/");
+  return (
+    IMAGE_WHITELIST.includes(ext) ||
+    (props.file.type || "").startsWith("image/")
+  );
 });
 
 const isText = computed(() => {
   if (!props.file) return false;
   const ext = props.file.name.split(".").pop()?.toLowerCase() || "";
-  
+
   // 核心加固：若存在后缀且完全不属于文本白名单，绝不判定为文本（与 Preview 判定主权一致）
   if (ext && !TEXT_WHITELIST.includes(ext)) {
     return false;
   }
-  
+
   if (TEXT_WHITELIST.includes(ext)) {
     return true;
   }
-  
+
   const type = (props.file.type || "").toLowerCase();
   return (
     type.startsWith("text/") ||
@@ -62,71 +96,111 @@ const isText = computed(() => {
   );
 });
 
-watch(() => props.isOpen, async (newVal) => {
-  if (newVal) {
-    registerModal(modalId, close);
-    previewText.value = "";
-    isTextTruncated.value = false;
-    
-    // 如果是可预览的文本，开始流式读取物理文件的前 128KB 进行预览
-    if (isText.value && props.file) {
-      isLoading.value = true;
-      try {
-        const sourcePath = props.file.internalPath || props.file.src;
-        if (sourcePath) {
-          let fetchUrl = sourcePath;
-          if (
-            !sourcePath.startsWith("http") &&
-            !sourcePath.startsWith("blob:") &&
-            !sourcePath.startsWith("data:")
-          ) {
-            fetchUrl = convertFileSrc(sourcePath.replace("file://", ""));
-          }
-          
-          const response = await fetch(fetchUrl);
-          const reader = response.body?.getReader();
-          if (reader) {
-            const chunks: Uint8Array[] = [];
-            let receivedLength = 0;
-            const LIMIT = 128 * 1024; // 128KB
-            
-            while (receivedLength < LIMIT) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              chunks.push(value);
-              receivedLength += value.length;
-            }
-            
-            // 合并并解码为 UTF-8
-            const allChunks = new Uint8Array(receivedLength);
-            let position = 0;
-            for (const chunk of chunks) {
-              allChunks.set(chunk, position);
-              position += chunk.length;
-            }
-            
-            previewText.value = new TextDecoder("utf-8").decode(allChunks);
-            if (receivedLength >= LIMIT) {
-              isTextTruncated.value = true;
-            }
-          }
-        }
-      } catch (e) {
-        console.error('[AttachmentViewer] Failed to load text preview:', e);
-        previewText.value = "⚠️ 本地文件预览失败，请使用外部应用打开。";
-      } finally {
-        isLoading.value = false;
-      }
-    }
-  } else {
-    unregisterModal(modalId);
-    previewText.value = "";
-    isTextTruncated.value = false;
+async function cancelPreviewReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+) {
+  try {
+    await reader.cancel();
+  } catch (error) {
+    console.warn("[附件预览] 取消文本读取流失败:", error);
   }
-});
+}
+
+async function readTextPreview(file: Attachment): Promise<{
+  text: string;
+  truncated: boolean;
+}> {
+  const sourcePath = file.internalPath || file.src;
+  if (!sourcePath) return { text: "", truncated: false };
+  let fetchUrl = sourcePath;
+  if (
+    !sourcePath.startsWith("http") &&
+    !sourcePath.startsWith("blob:") &&
+    !sourcePath.startsWith("data:")
+  ) {
+    fetchUrl = convertFileSrc(sourcePath.replace("file://", ""));
+  }
+  const response = await fetch(fetchUrl);
+  if (!response.ok) throw new Error(`预览请求失败（HTTP ${response.status}）`);
+  const reader = response.body?.getReader();
+  if (!reader) return { text: "", truncated: false };
+
+  const chunks: Uint8Array[] = [];
+  let receivedLength = 0;
+  let truncated = false;
+  const limit = 128 * 1024;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    const remaining = limit - receivedLength;
+    if (remaining <= 0) {
+      truncated = true;
+      await cancelPreviewReader(reader);
+      break;
+    }
+    const accepted =
+      value.length > remaining ? value.slice(0, remaining) : value;
+    chunks.push(accepted);
+    receivedLength += accepted.length;
+    if (value.length > remaining) {
+      truncated = true;
+      await cancelPreviewReader(reader);
+      break;
+    }
+  }
+  const allChunks = new Uint8Array(receivedLength);
+  let position = 0;
+  for (const chunk of chunks) {
+    allChunks.set(chunk, position);
+    position += chunk.length;
+  }
+  return {
+    text: new TextDecoder("utf-8").decode(allChunks),
+    truncated,
+  };
+}
+
+async function loadTextPreview(file: Attachment) {
+  isLoading.value = true;
+  try {
+    const result = await readTextPreview(file);
+    previewText.value = result.text;
+    isTextTruncated.value = result.truncated;
+  } catch (error) {
+    console.error("[附件预览] 加载文本预览失败:", error);
+    previewText.value = "⚠️ 本地文件预览失败，请使用外部应用打开。";
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+watch(
+  () => props.isOpen,
+  async (newVal) => {
+    if (newVal) {
+      registerModal(modalId, close);
+      previewText.value = "";
+      isTextTruncated.value = false;
+      isLoading.value = false;
+
+      if (isDesktopOnly.value) return;
+
+      // 如果是可预览的文本，开始流式读取物理文件的前 128KB 进行预览
+      if (isText.value && props.file) {
+        await loadTextPreview(props.file);
+      }
+    } else {
+      unregisterModal(modalId);
+      previewText.value = "";
+      isTextTruncated.value = false;
+      isLoading.value = false;
+    }
+  },
+);
 
 const renderSrc = computed(() => {
-  if (!props.file?.src) return "";
+  if (isDesktopOnly.value || !props.file?.src) return "";
   if (
     props.file.src.startsWith("http") ||
     props.file.src.startsWith("data:") ||
@@ -134,7 +208,9 @@ const renderSrc = computed(() => {
   )
     return props.file.src;
   try {
-    return convertFileSrc(props.file.src.replace("file://", "").replace("file://", ""));
+    return convertFileSrc(
+      props.file.src.replace("file://", "").replace("file://", ""),
+    );
   } catch (e) {
     return "";
   }
@@ -155,15 +231,18 @@ const close = () => emit("close");
         class="flex items-center justify-between px-4 pt-[calc(env(safe-area-inset-top,24px)+8px)] pb-3 border-b border-black/5 dark:border-white/5 shrink-0 z-10"
       >
         <div class="flex flex-col overflow-hidden mr-4 min-w-0">
-          <span class="text-sm font-bold text-gray-800 dark:text-gray-200 truncate">{{
-            file?.name
-          }}</span>
-          <span class="text-[10px] text-gray-400 dark:text-gray-500 uppercase tracking-widest">{{
-            file?.type
-          }}</span>
+          <span
+            class="text-sm font-bold text-gray-800 dark:text-gray-200 truncate"
+            >{{ file?.name }}</span
+          >
+          <span
+            class="text-[10px] text-gray-400 dark:text-gray-500 uppercase tracking-widest"
+            >{{ file?.type }}</span
+          >
         </div>
         <div class="flex items-center gap-1">
           <button
+            v-if="!isDesktopOnly"
             @click="$emit('open-external', file?.internalPath || file?.src)"
             class="p-2 -mr-1 rounded-full text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition-colors active:bg-black/5 dark:active:bg-white/5"
           >
@@ -181,11 +260,20 @@ const close = () => emit("close");
       <!-- Main Content -->
       <div
         class="flex-1 overflow-auto vcp-scrollable no-rubber-band"
-        :style="{ paddingBottom: 'var(--vcp-safe-bottom, env(safe-area-inset-bottom, 0px))' }"
+        :style="{
+          paddingBottom:
+            'var(--vcp-safe-bottom, env(safe-area-inset-bottom, 0px))',
+        }"
       >
         <!-- Text/Code/MD Viewer -->
         <div
-          v-if="isText"
+          v-if="isDesktopOnly"
+          class="h-full flex items-center justify-center px-6 text-center text-sm text-gray-500 dark:text-gray-400"
+        >
+          此附件仅支持桌面端打开，当前设备不会读取本地文件。
+        </div>
+        <div
+          v-else-if="isText"
           class="w-full px-4 py-4 flex flex-col gap-3 min-h-full"
         >
           <!-- 截断友好提示 -->
@@ -193,9 +281,17 @@ const close = () => emit("close");
             v-if="isTextTruncated"
             class="px-3 py-2 bg-yellow-500/10 border border-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-xs rounded-lg flex items-center justify-between shrink-0"
           >
-            <span>📄 当前文件过大，已自动为您预览前 128KB。要阅读全文，请使用外部应用打开。</span>
+            <span
+              >📄 当前文件过大，已自动为您预览前
+              128KB。要阅读全文，请使用外部应用打开。</span
+            >
             <button
-              @click="$emit('open-external', props.file?.internalPath || props.file?.src)"
+              @click="
+                $emit(
+                  'open-external',
+                  props.file?.internalPath || props.file?.src,
+                )
+              "
               class="px-2 py-1 bg-yellow-500/20 hover:bg-yellow-500/30 rounded text-[10px] font-bold active:scale-95 transition-transform shrink-0 ml-2"
             >
               外部打开
@@ -203,15 +299,21 @@ const close = () => emit("close");
           </div>
 
           <!-- Loading state -->
-          <div v-if="isLoading" class="flex-1 flex items-center justify-center p-12">
-            <span class="text-xs text-gray-400 animate-pulse font-mono">正在加载预览流...</span>
+          <div
+            v-if="isLoading"
+            class="flex-1 flex items-center justify-center p-12"
+          >
+            <span class="text-xs text-gray-400 animate-pulse font-mono"
+              >正在加载预览流...</span
+            >
           </div>
 
           <!-- Text content container -->
           <pre
             v-else
             class="flex-1 font-mono text-[13px] whitespace-pre-wrap select-text leading-relaxed opacity-90 p-4 break-all overflow-x-auto"
-          >{{ previewText }}</pre>
+            >{{ previewText }}</pre
+          >
         </div>
 
         <!-- Image Viewer -->
@@ -225,8 +327,6 @@ const close = () => emit("close");
             @click.stop
           />
         </div>
-
-
       </div>
     </div>
   </Transition>

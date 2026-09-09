@@ -1,7 +1,6 @@
 use crate::vcp_modules::db_manager::DbState;
-use crate::vcp_modules::sync_service::{SyncCommand, SyncState};
-use crate::vcp_modules::sync_types::SyncDataType;
 
+use sqlx::Row;
 use tauri::{AppHandle, Manager, Runtime};
 
 /// Tauri IPC Command: 保存头像二进制数据到数据库
@@ -56,16 +55,8 @@ pub async fn save_avatar_data<R: Runtime>(
         dominant_color
     );
 
-    // 4. 通知同步中心：本地数据已变动
-    if let Some(sync_state) = app_handle.try_state::<SyncState>() {
-        let _ = sync_state.ws_sender.send(SyncCommand::NotifyLocalChange {
-            id: format!("{}:{}", owner_type, owner_id),
-            data_type: SyncDataType::Avatar,
-            hash: avatar_hash.clone(),
-            ts: now,
-        });
-    }
-
+    // Wire 1.4 通过下一次 avatar manifest 声明该哈希，
+    // 桌面端再通过 HTTP 拉取二进制内容。
     Ok(avatar_hash)
 }
 
@@ -85,19 +76,26 @@ pub async fn get_avatar<R: Runtime>(
     owner_id: String,
 ) -> Result<Option<AvatarResult>, String> {
     let db_state = app_handle.state::<DbState>();
-    let pool = &db_state.pool;
+    get_avatar_from_pool(&db_state.pool, &owner_type, &owner_id).await
+}
 
+async fn get_avatar_from_pool(
+    pool: &sqlx::SqlitePool,
+    owner_type: &str,
+    owner_id: &str,
+) -> Result<Option<AvatarResult>, String> {
     let row_res = sqlx::query(
-        "SELECT mime_type, image_data, dominant_color, updated_at FROM avatars WHERE owner_type = ? AND owner_id = ?"
+        "SELECT mime_type, image_data, dominant_color, updated_at
+         FROM avatars
+         WHERE owner_type = ? AND owner_id = ? AND deleted_at IS NULL",
     )
-    .bind(&owner_type)
-    .bind(&owner_id)
+    .bind(owner_type)
+    .bind(owner_id)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
 
     if let Some(row) = row_res {
-        use sqlx::Row;
         Ok(Some(AvatarResult {
             mime_type: row.get("mime_type"),
             image_data: row.get("image_data"),
@@ -126,12 +124,16 @@ pub async fn batch_get_avatars<R: Runtime>(
     app_handle: AppHandle<R>,
 ) -> Result<Vec<BatchAvatarItem>, String> {
     let db_state = app_handle.state::<DbState>();
-    let pool = &db_state.pool;
+    batch_get_avatars_from_pool(&db_state.pool).await
+}
 
+async fn batch_get_avatars_from_pool(
+    pool: &sqlx::SqlitePool,
+) -> Result<Vec<BatchAvatarItem>, String> {
     let rows = sqlx::query(
-        "SELECT owner_type, owner_id, mime_type, image_data, dominant_color, updated_at 
-         FROM avatars 
-         WHERE owner_type IN ('agent', 'group', 'user')",
+        "SELECT owner_type, owner_id, mime_type, image_data, dominant_color, updated_at
+         FROM avatars
+         WHERE owner_type IN ('agent', 'group', 'user') AND deleted_at IS NULL",
     )
     .fetch_all(pool)
     .await
@@ -139,7 +141,6 @@ pub async fn batch_get_avatars<R: Runtime>(
 
     let mut results = Vec::with_capacity(rows.len());
     for row in rows {
-        use sqlx::Row;
         results.push(BatchAvatarItem {
             owner_type: row.get("owner_type"),
             owner_id: row.get("owner_id"),
@@ -186,4 +187,51 @@ pub async fn store_dominant_color(
 #[allow(dead_code)]
 pub fn extract_dominant_color_from_bytes(_data: &[u8]) -> Result<String, String> {
     Ok("#808080".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{batch_get_avatars_from_pool, get_avatar_from_pool};
+
+    #[tokio::test]
+    async fn 头像读取接口排除墓碑记录() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("创建头像测试数据库");
+        sqlx::raw_sql(
+            "CREATE TABLE avatars (
+                owner_type TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                image_data BLOB NOT NULL,
+                dominant_color TEXT,
+                updated_at INTEGER NOT NULL,
+                deleted_at INTEGER,
+                PRIMARY KEY(owner_type, owner_id)
+             );
+             INSERT INTO avatars VALUES
+                ('agent', 'live-agent', 'image/png', X'01', '#111111', 10, NULL),
+                ('group', 'deleted-group', 'image/png', X'02', '#222222', 20, 20);",
+        )
+        .execute(&pool)
+        .await
+        .expect("写入头像测试数据");
+
+        assert!(get_avatar_from_pool(&pool, "agent", "live-agent")
+            .await
+            .expect("读取存活头像")
+            .is_some());
+        assert!(get_avatar_from_pool(&pool, "group", "deleted-group")
+            .await
+            .expect("读取头像墓碑")
+            .is_none());
+
+        let items = batch_get_avatars_from_pool(&pool)
+            .await
+            .expect("批量读取头像");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].owner_id, "live-agent");
+    }
 }

@@ -1,156 +1,331 @@
-use crate::vcp_modules::sync_types::{EntityState, SyncDataType, SyncManifest};
+use crate::vcp_modules::sync_types::{
+    ManifestRequest, OwnerManifestDeleted, OwnerManifestLive, OwnerManifestState, OwnerType,
+    TopicManifestDeleted, TopicManifestLive, TopicManifestState, MAX_MANIFEST_ITEMS,
+};
+use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
 use sqlx::Row;
 use sqlx::SqlitePool;
+use std::collections::{HashMap, HashSet};
+
+#[path = "phase1_topic_fields.rs"]
+mod topic_fields;
+use topic_fields::decode_topic_live_fields;
+
+#[path = "phase1_avatar.rs"]
+mod avatar;
+use avatar::avatar_manifest_state;
+
+const SQLITE_BIND_CHUNK: usize = 400;
+const MAX_SAFE_TIMESTAMP: i64 = 9_007_199_254_740_991;
 
 pub struct Phase1Metadata;
 
+fn valid_sha256(value: &str, allow_empty: bool) -> bool {
+    (allow_empty && value.is_empty())
+        || (value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+}
+
+fn required_hash(value: String, label: &str, allow_empty: bool) -> Result<String, String> {
+    if !valid_sha256(&value, allow_empty) {
+        return Err(format!("{label} must be a lowercase SHA-256 hash"));
+    }
+    Ok(value)
+}
+
+fn required_timestamp(value: i64, label: &str) -> Result<i64, String> {
+    if !(0..=MAX_SAFE_TIMESTAMP).contains(&value) {
+        return Err(format!("{label} must be a non-negative safe integer"));
+    }
+    Ok(value)
+}
+
+fn optional_timestamp(value: Option<i64>, label: &str) -> Result<Option<i64>, String> {
+    value
+        .map(|value| required_timestamp(value, label))
+        .transpose()
+}
+
+fn validate_count(count: usize, label: &str) -> Result<(), String> {
+    if count > MAX_MANIFEST_ITEMS {
+        return Err(format!("{label} exceeds the item budget"));
+    }
+    Ok(())
+}
+
+fn validate_targeted_owners(owners: &[OwnerKey]) -> Result<HashSet<OwnerKey>, String> {
+    validate_count(owners.len(), "targetedOwners")?;
+    let expected = owners.iter().cloned().collect::<HashSet<_>>();
+    if expected.len() != owners.len() || expected.iter().any(|owner| !owner.is_valid()) {
+        return Err("targetedOwners requires unique agent/group identities".into());
+    }
+    Ok(expected)
+}
+
+fn owner_manifest_state(row: &sqlx::sqlite::SqliteRow) -> Result<OwnerManifestState, String> {
+    let raw_owner_type: String = row
+        .try_get("owner_type")
+        .map_err(|error| format!("Owner manifest type decode failed: {error}"))?;
+    let owner_type = OwnerType::try_from(raw_owner_type.as_str())
+        .map_err(|_| format!("Owner manifest has unsupported owner type {raw_owner_type}"))?;
+    let owner_id: String = row
+        .try_get("owner_id")
+        .map_err(|error| format!("Owner manifest id decode failed: {error}"))?;
+    if owner_id.is_empty() {
+        return Err("Owner manifest has an empty owner id".to_string());
+    }
+    let deleted_at: Option<i64> = row
+        .try_get("deleted_at")
+        .map_err(|error| format!("Owner manifest tombstone decode failed: {error}"))?;
+    let deleted_at = optional_timestamp(
+        deleted_at,
+        &format!("Owner {owner_type}/{owner_id} deletedAt"),
+    )?;
+    if let Some(deleted_at) = deleted_at {
+        return Ok(OwnerManifestState::Deleted(OwnerManifestDeleted {
+            owner_type,
+            owner_id,
+            deleted_at,
+        }));
+    }
+    let config_hash: String = row.try_get("config_hash").map_err(|error| {
+        format!("Owner manifest config hash decode failed for {owner_type}/{owner_id}: {error}")
+    })?;
+    let content_hash: String = row.try_get("content_hash").map_err(|error| {
+        format!("Owner manifest content hash decode failed for {owner_type}/{owner_id}: {error}")
+    })?;
+    Ok(OwnerManifestState::Live(OwnerManifestLive {
+        owner_type,
+        owner_id,
+        config_hash: required_hash(
+            config_hash,
+            &format!("Owner {owner_type} configHash"),
+            false,
+        )?,
+        content_hash: required_hash(
+            content_hash,
+            &format!("Owner {owner_type} contentHash"),
+            true,
+        )?,
+        updated_at: required_timestamp(
+            row.try_get("updated_at")
+                .map_err(|error| format!("Owner manifest timestamp decode failed: {error}"))?,
+            &format!("Owner {owner_type} updatedAt"),
+        )?,
+    }))
+}
+
+fn topic_manifest_state(
+    row: &sqlx::sqlite::SqliteRow,
+    expected_owners: &HashSet<OwnerKey>,
+) -> Result<TopicManifestState, String> {
+    let (owner_type, owner_id, topic_id) = decode_topic_identity(row, expected_owners)?;
+    let deleted_at: Option<i64> = row.try_get("deleted_at").map_err(|error| {
+        format!("Topic manifest tombstone decode failed for {owner_type}/{owner_id}/{topic_id}: {error}")
+    })?;
+    let deleted_at = optional_timestamp(
+        deleted_at,
+        &format!("Topic {owner_type}/{owner_id}/{topic_id} deletedAt"),
+    )?;
+    if let Some(deleted_at) = deleted_at {
+        return Ok(TopicManifestState::Deleted(TopicManifestDeleted {
+            owner_type,
+            owner_id,
+            topic_id,
+            deleted_at,
+        }));
+    }
+    let (config_hash, content_hash, updated_at) =
+        decode_topic_live_fields(row, &owner_type, &owner_id, &topic_id)?;
+    Ok(TopicManifestState::Live(TopicManifestLive {
+        owner_type,
+        owner_id,
+        topic_id,
+        config_hash: required_hash(
+            config_hash,
+            &format!("Topic {owner_type} configHash"),
+            false,
+        )?,
+        content_hash: required_hash(
+            content_hash,
+            &format!("Topic {owner_type} contentHash"),
+            true,
+        )?,
+        updated_at: required_timestamp(updated_at, &format!("Topic {owner_type} updatedAt"))?,
+    }))
+}
+
+fn decode_topic_identity(
+    row: &sqlx::sqlite::SqliteRow,
+    expected_owners: &HashSet<OwnerKey>,
+) -> Result<(OwnerType, String, String), String> {
+    let topic_id: String = row
+        .try_get("topic_id")
+        .map_err(|error| format!("Topic manifest id decode failed: {error}"))?;
+    if topic_id.is_empty() {
+        return Err("Topic manifest has an empty topic id".to_string());
+    }
+    let raw_owner_type: String = row.try_get("owner_type").map_err(|error| {
+        format!("Topic manifest owner type decode failed for {topic_id}: {error}")
+    })?;
+    let owner_type = OwnerType::try_from(raw_owner_type.as_str()).map_err(|_| {
+        format!("Topic manifest {topic_id} has unsupported owner type {raw_owner_type}")
+    })?;
+    let owner_id: String = row.try_get("owner_id").map_err(|error| {
+        format!("Topic manifest owner id decode failed for {topic_id}: {error}")
+    })?;
+    let owner = OwnerKey::new(owner_type.as_str(), &owner_id);
+    if !owner.is_valid() || !expected_owners.contains(&owner) {
+        return Err(format!(
+            "Topic manifest {topic_id} returned unexpected owner {owner_type}/{owner_id}"
+        ));
+    }
+    let key = TopicKey::new(owner_type.as_str(), &owner_id, &topic_id);
+    if !key.is_valid() {
+        return Err(format!("Topic manifest returned invalid identity {key:?}"));
+    }
+    Ok((owner_type, owner_id, topic_id))
+}
+
 impl Phase1Metadata {
-    pub async fn build_agent_manifest(pool: &SqlitePool) -> Result<SyncManifest, String> {
-        let rows = sqlx::query(
-            "SELECT agent_id, config_hash, content_hash, updated_at, deleted_at 
-             FROM agents",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let mut items = Vec::new();
-        for r in rows {
-            let conf_h: String = r.get("config_hash");
-            let cont_h: String = r.get("content_hash");
-            items.push(EntityState {
-                id: r.get("agent_id"),
-                hash: conf_h.clone(), // 兼容旧版，默认使用 config_hash
-                config_hash: Some(conf_h),
-                content_hash: Some(cont_h),
-                ts: r.get("updated_at"),
-                deleted_at: r.get("deleted_at"),
-                owner_type: None,
-            });
-        }
-
-        Ok(SyncManifest {
-            data_type: SyncDataType::Agent,
-            items,
-        })
+    /// Return the exact live owner hashes represented by an already-built
+    /// manifest. The sync pull CAS baseline must come from this snapshot,
+    /// rather than a later database read after the remote response arrives.
+    pub fn owner_config_baselines(manifest: &ManifestRequest) -> HashMap<OwnerKey, String> {
+        let ManifestRequest::Owner { items } = manifest else {
+            return HashMap::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| match item {
+                crate::vcp_modules::sync_types::OwnerManifestState::Live(value) => Some((
+                    OwnerKey::new(value.owner_type.as_str(), &value.owner_id),
+                    value.config_hash.clone(),
+                )),
+                crate::vcp_modules::sync_types::OwnerManifestState::Deleted(_) => None,
+            })
+            .collect()
     }
 
-    pub async fn build_group_manifest(pool: &SqlitePool) -> Result<SyncManifest, String> {
+    pub async fn build_owner_manifest(pool: &SqlitePool) -> Result<ManifestRequest, String> {
         let rows = sqlx::query(
-            "SELECT group_id, config_hash, content_hash, updated_at, deleted_at 
-             FROM groups",
+            "SELECT 'agent' AS owner_type, agent_id AS owner_id, config_hash, content_hash,
+                    updated_at, deleted_at
+             FROM agents
+             UNION ALL
+             SELECT 'group' AS owner_type, group_id AS owner_id, config_hash, content_hash,
+                    updated_at, deleted_at
+             FROM groups
+             ORDER BY owner_type, owner_id",
         )
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
-
-        let mut items = Vec::new();
-        for r in rows {
-            let conf_h: String = r.get("config_hash");
-            let cont_h: String = r.get("content_hash");
-            items.push(EntityState {
-                id: r.get("group_id"),
-                hash: conf_h.clone(),
-                config_hash: Some(conf_h),
-                content_hash: Some(cont_h),
-                ts: r.get("updated_at"),
-                deleted_at: r.get("deleted_at"),
-                owner_type: None,
-            });
-        }
-
-        Ok(SyncManifest {
-            data_type: SyncDataType::Group,
-            items,
-        })
+        .map_err(|error| format!("Owner manifest query failed: {error}"))?;
+        validate_count(rows.len(), "owner manifest")?;
+        let items = rows
+            .iter()
+            .map(owner_manifest_state)
+            .collect::<Result<Vec<_>, _>>()?;
+        let manifest = ManifestRequest::Owner { items };
+        manifest.validate()?;
+        Ok(manifest)
     }
 
     pub async fn build_targeted_topic_manifest(
         pool: &SqlitePool,
-        owners: &[String],
-    ) -> Result<SyncManifest, String> {
+        owners: &[OwnerKey],
+    ) -> Result<ManifestRequest, String> {
+        let expected_owners = validate_targeted_owners(owners)?;
         if owners.is_empty() {
-            return Ok(SyncManifest {
-                data_type: SyncDataType::Topic,
+            return Ok(ManifestRequest::Topic {
                 items: Vec::new(),
+                targeted_owners: Vec::new(),
             });
         }
-
-        let placeholders = owners.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let query_str = format!(
-            "SELECT topic_id, config_hash, content_hash, updated_at, owner_type, deleted_at 
-             FROM topics WHERE owner_id IN ({})",
-            placeholders
-        );
-
-        let mut q = sqlx::query(&query_str);
-        for owner_id in owners {
-            q = q.bind(owner_id);
-        }
-
-        let rows = q.fetch_all(pool).await.map_err(|e| e.to_string())?;
-
         let mut items = Vec::new();
-        for r in rows {
-            let id: String = r.get("topic_id");
-            if id == "default" {
-                continue;
+        let mut seen_topics = HashSet::new();
+        for owner_chunk in owners.chunks(SQLITE_BIND_CHUNK) {
+            let predicates = owner_chunk
+                .iter()
+                .map(|_| "(owner_type = ? AND owner_id = ?)")
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let query_sql = format!(
+                "SELECT topic_id, config_hash, content_hash, updated_at, owner_type, owner_id, deleted_at
+                 FROM topics WHERE {predicates}
+                 ORDER BY owner_type, owner_id, topic_id"
+            );
+            let mut query = sqlx::query(&query_sql);
+            for owner in owner_chunk {
+                query = query.bind(&owner.owner_type).bind(&owner.owner_id);
             }
-            let conf_h: String = r.get("config_hash");
-            let cont_h: String = r.get("content_hash");
-
-            items.push(EntityState {
-                id,
-                hash: conf_h.clone(),
-                config_hash: Some(conf_h),
-                content_hash: Some(cont_h),
-                ts: r.get("updated_at"),
-                deleted_at: r.get("deleted_at"),
-                owner_type: r.get("owner_type"),
-            });
+            for row in query
+                .fetch_all(pool)
+                .await
+                .map_err(|error| format!("Topic manifest query failed: {error}"))?
+            {
+                let state = topic_manifest_state(&row, &expected_owners)?;
+                let identity = match &state {
+                    TopicManifestState::Live(value) => {
+                        TopicKey::new(value.owner_type.as_str(), &value.owner_id, &value.topic_id)
+                    }
+                    TopicManifestState::Deleted(value) => {
+                        TopicKey::new(value.owner_type.as_str(), &value.owner_id, &value.topic_id)
+                    }
+                };
+                if !seen_topics.insert(identity.clone()) {
+                    return Err(format!(
+                        "Targeted topic manifest returned duplicate topic {identity:?}"
+                    ));
+                }
+                items.push(state);
+            }
         }
-
-        Ok(SyncManifest {
-            data_type: SyncDataType::Topic,
+        validate_count(items.len(), "topic manifest")?;
+        let manifest = ManifestRequest::Topic {
             items,
-        })
+            targeted_owners: owners.to_vec(),
+        };
+        manifest.validate()?;
+        Ok(manifest)
     }
 
-    pub async fn build_avatar_manifest(pool: &SqlitePool) -> Result<SyncManifest, String> {
+    pub async fn build_avatar_manifest(pool: &SqlitePool) -> Result<ManifestRequest, String> {
         let rows = sqlx::query(
-            "SELECT owner_id, owner_type, avatar_hash, updated_at 
-             FROM avatars",
+            "SELECT av.owner_id, av.owner_type, av.avatar_hash, av.updated_at, av.deleted_at,
+                    CASE
+                        WHEN av.deleted_at IS NOT NULL THEN 1
+                        WHEN av.owner_type = 'user' THEN 1
+                        WHEN av.owner_type = 'agent' AND agent.agent_id IS NOT NULL THEN 1
+                        WHEN av.owner_type = 'group' AND owner_group.group_id IS NOT NULL THEN 1
+                        ELSE 0
+                    END AS parent_is_live
+             FROM avatars av
+             LEFT JOIN agents agent
+               ON av.owner_type = 'agent'
+              AND agent.agent_id = av.owner_id
+              AND agent.deleted_at IS NULL
+             LEFT JOIN groups owner_group
+               ON av.owner_type = 'group'
+              AND owner_group.group_id = av.owner_id
+              AND owner_group.deleted_at IS NULL
+             ORDER BY av.owner_type, av.owner_id",
         )
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())?;
-
-        let mut items = Vec::new();
-        for r in rows {
-            let owner_type: String = r.get("owner_type");
-            let owner_id: String = r.get("owner_id");
-            items.push(EntityState {
-                id: format!("{}:{}", owner_type, owner_id),
-                hash: r.get("avatar_hash"),
-                config_hash: None,
-                content_hash: None,
-                ts: r.get("updated_at"),
-                deleted_at: None,
-                owner_type: None,
-            });
+        .map_err(|error| format!("Avatar manifest query failed: {error}"))?;
+        validate_count(rows.len(), "avatar manifest")?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            items.push(avatar_manifest_state(pool, row).await?);
         }
-
-        Ok(SyncManifest {
-            data_type: SyncDataType::Avatar,
-            items,
-        })
-    }
-
-    pub async fn build_phase1_manifests(pool: &SqlitePool) -> Result<Vec<SyncManifest>, String> {
-        let mut manifests = Vec::new();
-        manifests.push(Self::build_agent_manifest(pool).await?);
-        manifests.push(Self::build_group_manifest(pool).await?);
-        manifests.push(Self::build_avatar_manifest(pool).await?);
-        Ok(manifests)
+        let manifest = ManifestRequest::Avatar { items };
+        manifest.validate()?;
+        Ok(manifest)
     }
 }
+#[cfg(test)]
+#[path = "phase1_metadata_tests.rs"]
+mod tests;

@@ -1,0 +1,73 @@
+/* 全局基础样式保持不变 */
+:root {
+  --vcp-safe-top: 0px;
+  --vcp-safe-bottom: 0px;
+  --vcp-navigation-bottom: 0px;
+  --vcp-keyboard-bottom: 0px;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #000;
+}
+
+.vcp-app-root {
+  background-color: transparent;
+  color: var(--primary-text);
+  height: 100%;
+}
+
+.vcp-background-layer {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: none;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.bg-fade-enter-active,
+.bg-fade-leave-active {
+  transition: opacity 0.35s ease-in-out;
+}
+
+.bg-fade-enter-from,
+.bg-fade-leave-to {
+  opacity: 0;
+}
+
+.pt-safe {
+  padding-top: var(--vcp-safe-top, 24px);
+}
+
+.mb-safe {
+  margin-bottom: var(--vcp-safe-bottom, 20px);
+}
+
+@supports (padding-top: env(safe-area-inset-top)) {
+  :root {
+    --vcp-safe-top: env(safe-area-inset-top);
+    --vcp-safe-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+.vcp-paused-animations *,
+.vcp-paused-animations *::before,
+.vcp-paused-animations *::after {
+  animation-play-state: paused !important;
+}

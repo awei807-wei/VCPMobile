@@ -1,206 +1,363 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   acquireScreenKeep,
   releaseScreenKeep,
 } from "../composables/useScreenKeeper";
 import { useConnectionSwitchGuardStore } from "./connectionSwitchGuard";
+import { normalizeConnectionProfileId, useSettingsStore } from "./settings";
+import {
+  MAX_BUFFERED_SESSION_EVENTS,
+  parseCommandError,
+} from "./syncSession/contract";
+import {
+  buildDiagnostics,
+  copyTextToClipboard,
+  sanitizeDiagnosticText,
+} from "./syncSession/diagnostics";
+import { createSyncEventHandler } from "./syncSession/events";
+import { registerSyncListeners } from "./syncSession/listeners";
+import { startSyncAttempt } from "./syncSession/start";
+import { stopSyncForSwitch } from "./syncSession/stop";
+import { closeSyncSession } from "./syncSession/close";
+import {
+  emptyProgress,
+  emptySummary,
+  type BufferedSessionEvent,
+  type SessionEventKind,
+  type SyncProgress,
+  type SyncStatus,
+  type SyncTerminalError,
+} from "./syncSession/types";
+
+const readSessionId = (payload: Record<string, unknown>) => {
+  const value = payload.sessionId;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+};
+
+const readAttemptId = (payload: Record<string, unknown>) => {
+  const value = payload.attemptId;
+  if (value === undefined) return 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+};
 
 export const useSyncSessionStore = defineStore("syncSession", () => {
+  const settingsStore = useSettingsStore();
   const switchGuardStore = useConnectionSwitchGuardStore();
 
-  // --- 视图状态 ---
   const isOpen = ref(false);
   const canDismiss = ref(true);
-
-  // --- 连接状态机 ---
-  const status = ref<
-    "idle" | "connecting" | "connected" | "error" | "completed"
-  >("idle");
-  const isActive = computed(
-    () => status.value === "connecting" || status.value === "connected",
-  );
-
-  // --- 面板视图 ---
+  const status = ref<SyncStatus>("idle");
+  const activeSessionId = ref<number | null>(null);
+  const activeAttemptId = ref(0);
+  const summary = ref(emptySummary());
+  const terminalError = ref<SyncTerminalError | null>(null);
+  const retryInFlight = ref(false);
   const activeTab = ref<"live" | "history">("live");
-
-  // --- 同步完成后需刷新标志（once-set，不受断连等异常状态影响） ---
   const needsReload = ref(false);
-
-  // --- 日志与进度 ---
   const logs = ref<
     { id: string; level: string; message: string; time: string }[]
   >([]);
-  const progressData = ref({
-    phase: "initialization",
-    total: 0,
-    completed: 0,
-    message: "",
+  const progressData = ref<SyncProgress>(emptyProgress());
+
+  let unlistenFns: UnlistenFn[] = [];
+  let listenerSetup: Promise<void> | null = null;
+  let viewGeneration = 0;
+  let startAttempt = 0;
+  let awaitingSessionId = false;
+  let bufferedSessionEvents: BufferedSessionEvent[] = [];
+  let runProfileId: string | null = null;
+  let screenKeepHeld = false;
+
+  const isActive = computed(() =>
+    ["connecting", "connected", "retrying", "stopping"].includes(status.value),
+  );
+  const isTerminal = () =>
+    ["error", "completed", "completed_with_warnings", "stopped"].includes(
+      status.value,
+    );
+  const currentProfileId = () =>
+    normalizeConnectionProfileId(
+      settingsStore.settings?.activeConnectionProfileId,
+    );
+  const isCurrentProfile = () =>
+    runProfileId === null || runProfileId === currentProfileId();
+  const isCurrentView = (generation: number) =>
+    isOpen.value && generation === viewGeneration && isCurrentProfile();
+  const isCurrentRun = (generation: number, attempt: number) =>
+    isCurrentView(generation) && attempt === startAttempt;
+
+  const retainScreen = () => {
+    if (screenKeepHeld) return;
+    screenKeepHeld = true;
+    acquireScreenKeep();
+  };
+
+  const releaseScreen = () => {
+    if (!screenKeepHeld) return;
+    screenKeepHeld = false;
+    releaseScreenKeep();
+  };
+
+  const pushLog = (level: string, message: string) => {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    logs.value.push({
+      id,
+      level,
+      message: sanitizeDiagnosticText(message.trim()).slice(0, 400),
+      time: new Date().toLocaleTimeString(),
+    });
+    if (logs.value.length > 200) logs.value.shift();
+  };
+
+  const eventHandler = createSyncEventHandler({
+    status,
+    canDismiss,
+    activeSessionId,
+    activeAttemptId,
+    summary,
+    terminalError,
+    needsReload,
+    logs,
+    progressData,
+    pushLog,
+    releaseScreen,
   });
 
-  // --- 监听器引用 ---
-  let unlistenFns: UnlistenFn[] = [];
+  const resetRunState = (preserveLogs: boolean) => {
+    if (!preserveLogs) logs.value = [];
+    summary.value = emptySummary();
+    terminalError.value = null;
+    progressData.value = emptyProgress();
+    activeSessionId.value = null;
+    activeAttemptId.value = 0;
+    awaitingSessionId = false;
+    bufferedSessionEvents = [];
+    eventHandler.reset();
+  };
+
+  const setTerminalError = (error: SyncTerminalError) => {
+    terminalError.value = error;
+    status.value = "error";
+    canDismiss.value = true;
+    releaseScreen();
+  };
 
   const open = () => {
+    viewGeneration += 1;
+    startAttempt += 1;
+    cleanupListeners();
     isOpen.value = true;
     canDismiss.value = true;
     status.value = "idle";
     activeTab.value = "live";
-    logs.value = [];
-    progressData.value = {
-      phase: "initialization",
-      total: 0,
-      completed: 0,
-      message: "",
-    };
-    registerListeners();
+    needsReload.value = false;
+    retryInFlight.value = false;
+    runProfileId = null;
+    resetRunState(false);
+    listenerSetup = registerSyncListeners(
+      viewGeneration,
+      isCurrentView,
+      routeSessionEvent,
+      (unlisten) => unlistenFns.push(unlisten),
+    );
   };
 
-  const startSync = async () => {
-    if (switchGuardStore.switching) return;
-    if (status.value !== "idle") return;
-
-    // 首先清空上一轮的面板日志
-    logs.value = [];
-    progressData.value = {
-      phase: "initialization",
-      total: 0,
-      completed: 0,
-      message: "",
-    };
-
-    status.value = "connecting";
-    acquireScreenKeep();
-
-    // 原生设备电量与省电检测保障
-    try {
-      const battery = await invoke<{ level: number; isPowerSaveMode: boolean }>(
-        "plugin:vcp-mobile|get_battery_status",
-      );
-      if (battery) {
-        // 绿色日志（success级别）以便排查
-        pushLog(
-          "success",
-          `[设备健康检测] 电量百分比: ${battery.level}%, 省电模式: ${battery.isPowerSaveMode ? "开启" : "关闭"}`,
-        );
-
-        if (battery.isPowerSaveMode) {
-          pushLog(
-            "error",
-            "当前设备处于系统省电模式，已智能拦截同步，请关闭省电模式或充电后重试。",
-          );
-          status.value = "error";
-          canDismiss.value = true;
-          releaseScreenKeep();
-          return;
-        }
-        if (battery.level > 0 && battery.level < 30) {
-          pushLog(
-            "error",
-            `当前设备电量过低 (${battery.level}%)，低于 30% 限制，已智能拦截同步以保护电池与数据安全。`,
-          );
-          status.value = "error";
-          canDismiss.value = true;
-          releaseScreenKeep();
-          return;
-        }
+  const routeSessionEvent = (kind: SessionEventKind, rawPayload: unknown) => {
+    if (
+      !rawPayload ||
+      typeof rawPayload !== "object" ||
+      Array.isArray(rawPayload)
+    )
+      return;
+    const payload = rawPayload as Record<string, unknown>;
+    if (!isCurrentProfile()) return;
+    const sessionId = readSessionId(payload);
+    if (sessionId === null) return;
+    if (activeSessionId.value === sessionId) {
+      const attemptId = readAttemptId(payload);
+      if (attemptId !== null && eventHandler.acceptAttempt(attemptId)) {
+        eventHandler.apply(kind, payload);
       }
-    } catch (e: any) {
-      // 容错：将真实错误打印到日志面板中以便真机排查！
-      pushLog("error", `[电量检测异常] 无法获取设备电量状态: ${e}`);
-      console.warn("Get battery status failed, bypassing security block:", e);
+      return;
     }
-
-    invoke("start_manual_sync").catch((e: any) => {
-      pushLog("error", `启动失败: ${e}`);
-      status.value = "error";
-      canDismiss.value = true;
-      releaseScreenKeep();
-    });
-  };
-
-  const close = () => {
-    if (!canDismiss.value) return;
-    isOpen.value = false;
-    activeTab.value = "live";
-    cleanupListeners();
-    releaseScreenKeep();
-    invoke("stop_sync").catch(() => {});
-  };
-
-  const copyLogs = async () => {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const files = await invoke<Array<{ filename: string }>>(
-        "list_sync_log_files",
-      );
-      if (files && files.length > 0) {
-        const content = await invoke<string>("read_sync_log_file", {
-          filename: files[0].filename,
-        });
-        await navigator.clipboard.writeText(content);
-        pushLog("success", "完整日志已复制到剪贴板");
-      } else {
-        const text = logs.value
-          .map((l) => `[${l.time}] ${l.message}`)
-          .join("\n");
-        await navigator.clipboard.writeText(text);
-        pushLog("success", "会话日志已复制到剪贴板");
+    if (activeSessionId.value === null && awaitingSessionId) {
+      bufferedSessionEvents.push({ kind, payload });
+      if (bufferedSessionEvents.length > MAX_BUFFERED_SESSION_EVENTS) {
+        bufferedSessionEvents.shift();
       }
-    } catch (e: any) {
-      pushLog("error", `复制失败: ${e}`);
     }
-  };
-
-  const registerListeners = () => {
-    cleanupListeners();
-    listen("vcp-log", (event: any) => {
-      const { level, category, message } = event.payload;
-      if (category === "sync") pushLog(level || "info", message);
-    }).then((fn) => unlistenFns.push(fn));
-
-    listen("vcp-sync-progress", (event: any) => {
-      progressData.value = event.payload;
-    }).then((fn) => unlistenFns.push(fn));
-
-    listen("vcp-sync-status", (event: any) => {
-      const s = event.payload.status;
-      if (s === "open") {
-        status.value = "connected";
-        canDismiss.value = false;
-      }
-      if (s === "error") {
-        status.value = "error";
-        canDismiss.value = true;
-        releaseScreenKeep();
-      }
-    }).then((fn) => unlistenFns.push(fn));
-
-    listen("vcp-sync-completed", () => {
-      status.value = "completed";
-      canDismiss.value = true;
-      needsReload.value = true;
-      releaseScreenKeep();
-      pushLog("success", "同步已全部完成，点击关闭以刷新数据");
-    }).then((fn) => unlistenFns.push(fn));
   };
 
   const cleanupListeners = () => {
-    unlistenFns.forEach((fn) => fn());
+    unlistenFns.forEach((unlisten) => unlisten());
     unlistenFns = [];
   };
 
-  const pushLog = (level: string, message: string) => {
-    const id = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    logs.value.push({
-      id,
-      level,
-      message,
-      time: new Date().toLocaleTimeString(),
+  const beginSync = (preserveLogs: boolean) => {
+    if (status.value !== "idle") return Promise.resolve();
+    const generation = viewGeneration;
+    const attempt = ++startAttempt;
+    return startSyncAttempt({
+      preserveLogs,
+      generation,
+      attempt,
+      listenerSetup,
+      isCurrentRun,
+      currentProfileId,
+      setRunProfileId: (profileId) => {
+        runProfileId = profileId;
+      },
+      resetRunState,
+      setStatus: (nextStatus) => {
+        status.value = nextStatus;
+      },
+      setCanDismiss: (value) => {
+        canDismiss.value = value;
+      },
+      retainScreen,
+      pushLog,
+      setTerminalError,
+      setAwaitingSessionId: (value) => {
+        awaitingSessionId = value;
+      },
+      setBufferedSessionEvents: (events) => {
+        bufferedSessionEvents = events;
+      },
+      getBufferedSessionEvents: () => bufferedSessionEvents,
+      setActiveSessionId: (sessionId) => {
+        activeSessionId.value = sessionId;
+      },
+      readSessionId,
+      readAttemptId,
+      eventHandler,
     });
-    if (logs.value.length > 200) logs.value.shift();
+  };
+
+  const startSync = () => {
+    if (switchGuardStore.switching || status.value !== "idle") {
+      return Promise.resolve();
+    }
+    return beginSync(false);
+  };
+
+  const stopForProfileSwitch = async (force = false) => {
+    return stopSyncForSwitch({
+      force,
+      shouldStop: isActive.value || activeSessionId.value !== null,
+      isOpen: isOpen.value,
+      setStartAttempt: () => {
+        startAttempt += 1;
+      },
+      clearSession: () => {
+        activeSessionId.value = null;
+        activeAttemptId.value = 0;
+        awaitingSessionId = false;
+        bufferedSessionEvents = [];
+      },
+      setStatus: (nextStatus) => {
+        status.value = nextStatus;
+      },
+      setCanDismiss: (value) => {
+        canDismiss.value = value;
+      },
+      releaseScreen,
+      pushLog,
+      setTerminalError,
+    });
+  };
+
+  const retrySync = async () => {
+    if (retryInFlight.value || !isTerminal() || status.value === "stopped")
+      return;
+    if (
+      status.value === "error" &&
+      terminalError.value &&
+      !["manual", "after_user_action"].includes(terminalError.value.retryAction)
+    )
+      return;
+    retryInFlight.value = true;
+    startAttempt += 1;
+    activeSessionId.value = null;
+    activeAttemptId.value = 0;
+    awaitingSessionId = false;
+    bufferedSessionEvents = [];
+    status.value = "retrying";
+    canDismiss.value = false;
+    releaseScreen();
+    try {
+      await invoke("stop_sync");
+      if (!isOpen.value) return;
+      pushLog("info", "──────── 新同步尝试 ────────");
+      status.value = "idle";
+      resetRunState(true);
+      await beginSync(true);
+    } catch (error: unknown) {
+      if (isOpen.value) {
+        const terminal = parseCommandError(error, "STOP_SYNC_FAILED");
+        pushLog("error", terminal.message);
+        setTerminalError(terminal);
+      }
+    } finally {
+      if (isOpen.value) retryInFlight.value = false;
+    }
+  };
+
+  const close = async () => {
+    return closeSyncSession({
+      isOpen: isOpen.value,
+      canDismiss: canDismiss.value,
+      needsReload: needsReload.value,
+      invalidate: () => {
+        needsReload.value = false;
+        viewGeneration += 1;
+        startAttempt += 1;
+        isOpen.value = false;
+        activeSessionId.value = null;
+        activeAttemptId.value = 0;
+        awaitingSessionId = false;
+        bufferedSessionEvents = [];
+        retryInFlight.value = false;
+      },
+      cleanupListeners,
+      releaseScreen,
+      setListenerSetup: (setup) => {
+        listenerSetup = setup;
+      },
+    });
+  };
+
+  const copyDiagnostics = async () => {
+    const diagnostic = await buildDiagnostics(
+      status.value,
+      activeSessionId.value,
+      summary.value,
+      terminalError.value,
+    );
+    await copyTextToClipboard(
+      diagnostic,
+      "脱敏诊断信息已复制到剪贴板",
+      "复制诊断失败，请稍后再试",
+      pushLog,
+    );
+  };
+
+  const copyLogs = async () => {
+    const text = logs.value
+      .map((entry) => `[${entry.time}] ${entry.message}`)
+      .join("\n");
+    await copyTextToClipboard(
+      text,
+      "会话日志已复制到剪贴板",
+      "复制日志失败，请稍后再试",
+      pushLog,
+    );
   };
 
   const markReloaded = () => {
@@ -208,7 +365,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
   };
 
   const switchTab = (tab: "live" | "history") => {
-    if (status.value === "connected") return;
+    if (isActive.value) return;
     activeTab.value = tab;
   };
 
@@ -217,6 +374,11 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
     canDismiss,
     status,
     isActive,
+    activeSessionId,
+    activeAttemptId,
+    summary,
+    terminalError,
+    retryInFlight,
     needsReload,
     logs,
     progressData,
@@ -224,6 +386,9 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
     open,
     close,
     startSync,
+    stopForProfileSwitch,
+    retrySync,
+    copyDiagnostics,
     copyLogs,
     markReloaded,
     switchTab,

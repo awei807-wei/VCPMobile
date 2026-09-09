@@ -1,6 +1,7 @@
 pub mod file_extractor;
 pub mod file_manager;
 pub mod high_speed_channel;
+pub mod invoke_dispatch;
 pub mod invoke_guard;
 pub mod lifecycle_controller;
 pub mod lifecycle_manager;

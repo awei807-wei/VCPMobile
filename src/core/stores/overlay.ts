@@ -63,6 +63,7 @@ export const useOverlayStore = defineStore('overlay', () => {
   const isDistributedOpen = computed(() => pageStack.value.some(p => p.type === 'distributed'));
   const isDailyNoteOpen = computed(() => pageStack.value.some(p => p.type === 'dailyNote'));
   const isRagObserverOpen = computed(() => pageStack.value.some(p => p.type === 'ragObserver'));
+  const isGlobalSearchOpen = computed(() => pageStack.value.some(p => p.type === 'globalSearch'));
 
   const agentSettingsId = computed(() => {
     const page = pageStack.value.find(p => p.type === 'agentSettings');
@@ -220,6 +221,14 @@ export const useOverlayStore = defineStore('overlay', () => {
     popPage();
   };
 
+  const openGlobalSearch = () => {
+    pushPage('globalSearch');
+  };
+
+  const closeGlobalSearch = () => {
+    if (pageStackTop.value?.type === 'globalSearch') popPage();
+  };
+
   // --- Modal API (unchanged) ---
   const openPrompt = (config: PromptConfig) => {
     promptConfig.value = config;
@@ -341,6 +350,7 @@ export const useOverlayStore = defineStore('overlay', () => {
     isDistributedOpen,
     isDailyNoteOpen,
     isRagObserverOpen,
+    isGlobalSearchOpen,
     // Legacy open/close (now backed by page stack)
     openSettings,
     closeSettings,
@@ -360,6 +370,8 @@ export const useOverlayStore = defineStore('overlay', () => {
     closeDailyNote,
     openRagObserver,
     closeRagObserver,
+    openGlobalSearch,
+    closeGlobalSearch,
     // Modals
     promptConfig,
     confirmConfig,

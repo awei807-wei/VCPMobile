@@ -85,6 +85,16 @@ jni = "0.21"
 # Tauri 在未启用 custom-protocol 时会把 debug 构建判定为 dev 模式并打开 build.devUrl。
 tauri = { version = "2.11.2", features = ["custom-protocol"] }
 
+[dev-dependencies]
+# MockRuntime 用于真实 Tauri IPC wrapper 的回调与并发测试。
+tauri = { version = "2.11.2", features = ["test"] }
+# Local Criterion harness used by tests/perf/scripts/run_rust_bench.cjs.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "ast_tail_bench"
+harness = false
+
 [profile.release]
 opt-level = 3   # 最高级别的代码优化
 lto = true      # 启用链接时优化
@@ -96,3 +106,12 @@ strip = true    # 移除符号信息，显著减小安装包大小
 opt-level = 1   # 基础代码优化，保持极速编译的同时大幅缩减体积
 debug = 0       # 彻底关闭开发模式下海量臃肿的调试符号（体积暴降的关键！）
 strip = true    # 强行剥离动态库的辅助冗余符号
+
+# Local performance profile: release-like hot paths with unwind enabled so
+# Criterion and test harnesses can link. This profile is not used for APKs.
+[profile.perf]
+inherits = "release"
+panic = "unwind"
+strip = false
+lto = "thin"
+codegen-units = 16

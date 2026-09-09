@@ -3,14 +3,11 @@
 // Mirrors VCPChat/VCPDistributedServer/VCPDistributedServer.js (class DistributedServer)
 // Self-contained — does NOT import anything from vcp_modules/.
 
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{self, Instant};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -33,11 +30,51 @@ type WsSink = Arc<
 const DISTRIBUTED_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
 const DISTRIBUTED_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(75);
 
-/// Immutable configuration for a single connection lifecycle.
-struct ConnectionConfig {
+/// 单次连接生命周期使用的不可变配置。
+pub(crate) struct ConnectionConfig {
     ws_url: String,
     vcp_key: String,
     device_name: String,
+}
+
+impl ConnectionConfig {
+    pub(crate) fn new(ws_url: String, vcp_key: String, device_name: String) -> Self {
+        Self {
+            ws_url,
+            vcp_key,
+            device_name,
+        }
+    }
+}
+
+/// 一次经过串行化边界处理的生命周期调和请求。
+pub(crate) struct ReconcileRequest {
+    request_id: u64,
+    enabled: bool,
+    force_reconnect: bool,
+    trigger_reconnect: bool,
+    config: ConnectionConfig,
+    registry: Arc<ToolRegistry>,
+}
+
+impl ReconcileRequest {
+    pub(crate) fn new(
+        request_id: u64,
+        enabled: bool,
+        force_reconnect: bool,
+        trigger_reconnect: bool,
+        config: ConnectionConfig,
+        registry: Arc<ToolRegistry>,
+    ) -> Self {
+        Self {
+            request_id,
+            enabled,
+            force_reconnect,
+            trigger_reconnect,
+            config,
+            registry,
+        }
+    }
 }
 
 /// Runtime context for a single connection lifecycle (channel receivers).
@@ -47,14 +84,47 @@ struct SessionContext {
     re_register_rx: tokio::sync::mpsc::Receiver<()>,
     reconnect_rx: tokio::sync::mpsc::Receiver<()>,
     session_id: u64,
+    session_generation: Arc<AtomicU64>,
+    task_registry: SessionTaskRegistry,
 }
 
 /// Handle to an active connection session — created by start(), dropped by stop().
 struct ConnectionSession {
+    session_id: u64,
     cancel_token: CancellationToken,
     re_register_tx: tokio::sync::mpsc::Sender<()>,
     reconnect_tx: tokio::sync::mpsc::Sender<()>,
+    task_registry: SessionTaskRegistry,
     task_handle: tokio::task::JoinHandle<()>,
+}
+
+/// 表示一个已经声明 stop 的生命周期请求。
+///
+/// 请求对象存活期间会阻止新的 start 越过正在等待的 stop；释放后，新的
+/// start 请求可以正常建立下一代 session。
+pub struct StopRequest {
+    request_id: u64,
+    stop_in_flight: Arc<AtomicUsize>,
+    stop_barrier_epoch: Arc<AtomicU64>,
+    reservation_lock: Arc<std::sync::Mutex<()>>,
+}
+
+impl StopRequest {
+    pub fn request_id(&self) -> u64 {
+        self.request_id
+    }
+}
+
+impl Drop for StopRequest {
+    fn drop(&mut self) {
+        let _reservation = self
+            .reservation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.stop_in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.stop_barrier_epoch.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 
 fn build_distributed_connection_url(raw_url: &str, key: &str) -> Result<String, String> {
@@ -119,821 +189,200 @@ pub struct DistributedClient {
     /// Current connection status.
     status: Arc<RwLock<DistributedStatus>>,
     /// Active session handle — None when disconnected.
-    session: Mutex<Option<ConnectionSession>>,
+    /// 用标准互斥锁保护会话句柄，使 stop 声明可以同步取消当前会话。
+    session: std::sync::Mutex<Option<ConnectionSession>>,
+    /// 串行化 start、stop、reconcile 和网络恢复的所有状态转换。
+    transition: Mutex<()>,
+    /// 所有调用入口共用的请求序号，较新的请求覆盖较旧请求。
+    request_epoch: AtomicU64,
+    /// 将请求预留与 stop 屏障更新线性化，避免预留窗口穿过正在声明的 stop。
+    reservation_lock: Arc<std::sync::Mutex<()>>,
+    /// 最近一次 stop 请求的序号，用于拒绝已经过期的 start。
+    stop_epoch: AtomicU64,
+    /// stop 已经开始但尚未完成的数量，阻止 start 在 stop 等待锁时复活。
+    stop_in_flight: Arc<AtomicUsize>,
+    /// 偶数表示没有 stop，奇数表示有 stop 正在生效。
+    start_barrier_epoch: Arc<AtomicU64>,
+    /// 最近一次 start 预留时观察到的屏障代际。
+    start_barrier_snapshot: AtomicU64,
+    /// 活跃连接的单调 generation；stop 也会推进它以令旧任务失效。
+    session_generation: Arc<AtomicU64>,
 }
 
 impl DistributedClient {
     pub fn new() -> Self {
         Self {
             status: Arc::new(RwLock::new(DistributedStatus::default())),
-            session: Mutex::new(None),
+            session: std::sync::Mutex::new(None),
+            transition: Mutex::new(()),
+            request_epoch: AtomicU64::new(0),
+            reservation_lock: Arc::new(std::sync::Mutex::new(())),
+            stop_epoch: AtomicU64::new(0),
+            stop_in_flight: Arc::new(AtomicUsize::new(0)),
+            start_barrier_epoch: Arc::new(AtomicU64::new(0)),
+            start_barrier_snapshot: AtomicU64::new(0),
+            session_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Start the distributed node connection.
-    /// `ws_url`: base URL of the main server, e.g. "ws://192.168.1.100:5800"
-    /// `vcp_key`: authentication key
-    /// `device_name`: node name (maps to VCPChat's `serverName` / config.env `ServerName`)
-    pub async fn start(
-        &self,
-        app: AppHandle,
-        ws_url: String,
-        vcp_key: String,
-        device_name: String,
-        registry: Arc<ToolRegistry>,
-    ) -> Result<(), String> {
-        // Prevent duplicate activation using ConnectionState.
-        let next_session_id = {
-            let mut s = self.status.write().await;
-            if s.state == ConnectionState::Connected || s.state == ConnectionState::Connecting {
-                log::info!(
-                    "[Distributed] Connection is already running or connecting ({:?}), skipping start request.",
-                    s.state
-                );
-                return Ok(());
-            }
-            s.state = ConnectionState::Connecting;
-            s.connected = false;
-            s.server_id = None;
-            s.client_id = None;
-            s.last_error = None;
-            s.session_id += 1;
-            s.session_id
-        };
+    /// 为一个希望启动或调和的调用预留序号。
+    pub fn reserve_start_request(&self) -> u64 {
+        let _reservation = self
+            .reservation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let request_id = self.request_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.start_barrier_snapshot.store(
+            self.start_barrier_epoch.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
+        request_id
+    }
 
-        // Gracefully shut down any existing session before creating a new one.
-        let old_session = { self.session.lock().await.take() };
-        if let Some(session) = old_session {
+    /// 为 stop/禁用调用预留序号，并立即阻断尚未安装的旧 start。
+    pub fn reserve_stop_request(&self) -> StopRequest {
+        let _reservation = self
+            .reservation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let request_id = self.request_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.start_barrier_snapshot.store(
+            self.start_barrier_epoch.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
+        if self.stop_in_flight.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.start_barrier_epoch.fetch_add(1, Ordering::SeqCst);
+        }
+        self.stop_epoch.fetch_max(request_id, Ordering::SeqCst);
+        self.invalidate_active_session();
+        StopRequest {
+            request_id,
+            stop_in_flight: self.stop_in_flight.clone(),
+            stop_barrier_epoch: self.start_barrier_epoch.clone(),
+            reservation_lock: self.reservation_lock.clone(),
+        }
+    }
+
+    fn request_is_latest(&self, request_id: u64) -> bool {
+        self.request_epoch.load(Ordering::SeqCst) == request_id
+    }
+
+    fn start_request_is_current(&self, request_id: u64) -> bool {
+        let _reservation = self
+            .reservation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.start_request_is_current_locked(request_id)
+    }
+
+    fn start_request_is_current_locked(&self, request_id: u64) -> bool {
+        self.request_is_latest(request_id)
+            && self.stop_epoch.load(Ordering::SeqCst) < request_id
+            && self.stop_in_flight.load(Ordering::SeqCst) == 0
+            && self.start_barrier_snapshot.load(Ordering::SeqCst)
+                == self.start_barrier_epoch.load(Ordering::SeqCst)
+    }
+
+    fn next_session_generation(&self) -> u64 {
+        self.session_generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn invalidate_active_session(&self) {
+        self.session_generation.fetch_add(1, Ordering::SeqCst);
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = session.as_ref() {
             session.cancel_token.cancel();
-            let _ = session.task_handle.await;
-        }
-
-        // Check if state changed during startup setup (e.g. stop requested during await)
-        {
-            let s = self.status.read().await;
-            if s.state != ConnectionState::Connecting || s.session_id != next_session_id {
-                log::info!("[Distributed] State changed during start setup, aborting start.");
-                return Ok(());
-            }
-        }
-
-        // Create fresh channels and cancellation token — no state reuse from previous cycles.
-        let cancel_token = CancellationToken::new();
-        let (re_register_tx, re_register_rx) = tokio::sync::mpsc::channel(1);
-        let (reconnect_tx, reconnect_rx) = tokio::sync::mpsc::channel(1);
-        let status = self.status.clone();
-
-        Self::emit_status(&app, &status).await;
-
-        #[cfg(target_os = "android")]
-        if let Err(e) = tauri_plugin_vcp_mobile::stream::set_keepalive_mode(app.clone(), true) {
-            log::warn!(
-                "[Distributed] Failed to start keepalive foreground service: {}",
-                e
-            );
-        }
-
-        let config = ConnectionConfig {
-            ws_url,
-            vcp_key,
-            device_name,
-        };
-        let ctx = SessionContext {
-            status,
-            registry,
-            re_register_rx,
-            reconnect_rx,
-            session_id: next_session_id,
-        };
-        let loop_token = cancel_token.clone();
-
-        let task_handle = tokio::spawn(Self::connection_loop(app, config, loop_token, ctx));
-
-        *self.session.lock().await = Some(ConnectionSession {
-            cancel_token,
-            re_register_tx,
-            reconnect_tx,
-            task_handle,
-        });
-        Ok(())
-    }
-
-    /// Stop the distributed node.
-    pub async fn stop(&self, _app: &AppHandle) {
-        #[cfg(target_os = "android")]
-        if let Err(e) = tauri_plugin_vcp_mobile::stream::set_keepalive_mode(_app.clone(), false) {
-            log::warn!(
-                "[Distributed] Failed to stop keepalive foreground service: {}",
-                e
-            );
-        }
-
-        {
-            let mut s = self.status.write().await;
-            if s.state == ConnectionState::Disconnected || s.state == ConnectionState::Disconnecting
-            {
-                log::info!(
-                    "[Distributed] Already disconnected or disconnecting, skipping stop request."
-                );
-                return;
-            }
-            s.state = ConnectionState::Disconnecting;
-        }
-
-        // Take the session out and gracefully shut it down.
-        let old_session = { self.session.lock().await.take() };
-        if let Some(session) = old_session {
-            session.cancel_token.cancel();
-            let _ = session.task_handle.await;
-        }
-
-        // Safety net: ensure final Disconnected state if loop didn't clean up properly.
-        {
-            let mut s = self.status.write().await;
-            if s.state == ConnectionState::Disconnecting {
-                s.state = ConnectionState::Disconnected;
-                s.connected = false;
-                s.server_id = None;
-                s.client_id = None;
-            }
-        }
-        Self::emit_status(_app, &self.status).await;
-    }
-
-    /// Get current status snapshot.
-    pub async fn get_status(&self) -> DistributedStatus {
-        self.status.read().await.clone()
-    }
-
-    /// Check if the distributed client is connected.
-    pub async fn is_connected(&self) -> bool {
-        self.status.read().await.connected
-    }
-
-    /// Check if the connection task is running (connecting, connected, or disconnecting).
-    pub async fn is_running(&self) -> bool {
-        self.status.read().await.state != ConnectionState::Disconnected
-    }
-
-    /// Trigger re-registration of tools.
-    pub async fn re_register_tools(&self) {
-        if let Some(session) = self.session.lock().await.as_ref() {
-            let _ = session.re_register_tx.try_send(());
+            session.task_registry.invalidate();
         }
     }
 
-    /// Trigger immediate reconnection.
-    pub async fn trigger_reconnect(&self) {
-        if let Some(session) = self.session.lock().await.as_ref() {
-            let _ = session.reconnect_tx.try_send(());
-        }
-    }
-
-    // ================================================================
-    // Connection loop — mirrors DistributedServer.connect() + scheduleReconnect()
-    // ================================================================
-
-    async fn connection_loop(
-        app: AppHandle,
-        config: ConnectionConfig,
-        cancel_token: CancellationToken,
-        ctx: SessionContext,
-    ) {
-        let mut reconnect_interval = Duration::from_secs(5);
-        let max_reconnect_interval = Duration::from_secs(60);
-        let mut re_register_rx = ctx.re_register_rx;
-        let mut reconnect_rx = ctx.reconnect_rx;
-        let status = ctx.status;
-        let registry = ctx.registry;
-        let session_id = ctx.session_id;
-
-        loop {
-            // Check cancellation before connecting.
-            if cancel_token.is_cancelled() {
-                break;
-            }
-
-            // Build connection URL from the same base URL used by VCPLog.
-            let connection_url =
-                match build_distributed_connection_url(&config.ws_url, &config.vcp_key) {
-                    Ok(url) => url,
-                    Err(e) => {
-                        log::warn!("[Distributed] Invalid connection config: {}", e);
-                        {
-                            let mut s = status.write().await;
-                            s.state = ConnectionState::Disconnected;
-                            s.connected = false;
-                            s.server_id = None;
-                            s.client_id = None;
-                            s.last_error = Some(e);
-                        }
-                        Self::emit_status(&app, &status).await;
-                        break;
-                    }
-                };
-
-            log::info!(
-                "[Distributed] Connecting to main server: {}",
-                redact_distributed_connection_url(&connection_url)
-            );
-
-            // Connect with cancellation support — avoids blocking on TCP timeout during shutdown.
-            acquire_wake_lock_helper(&app, "distributed:connect");
-            let connect_result = tokio::select! {
-                result = tokio_tungstenite::connect_async(&connection_url) => Some(result),
-                _ = cancel_token.cancelled() => None,
-            };
-            release_wake_lock_helper(&app, "distributed:connect");
-
-            match connect_result {
-                Some(Ok((ws_stream, _response))) => {
-                    log::info!("[Distributed] WebSocket connected.");
-                    reconnect_interval = Duration::from_secs(5); // Reset backoff on success.
-
-                    // Run the session until it ends.
-                    let exit_reason = Self::run_session(
-                        &app,
-                        ws_stream,
-                        &config.device_name,
-                        &cancel_token,
-                        &status,
-                        &registry,
-                        &mut re_register_rx,
-                        session_id,
-                    )
-                    .await;
-
-                    // Session ended — update status.
-                    {
-                        let mut s = status.write().await;
-                        if s.session_id == session_id {
-                            if s.state != ConnectionState::Disconnecting {
-                                s.state = ConnectionState::Connecting;
-                            }
-                            s.connected = false;
-                            s.server_id = None;
-                            s.client_id = None;
-                            s.last_error = Some(exit_reason);
-                        }
-                    }
-                    Self::emit_status(&app, &status).await;
-                }
-                Some(Err(e)) => {
-                    log::warn!("[Distributed] Connection failed: {}", e);
-                    {
-                        let mut s = status.write().await;
-                        if s.session_id == session_id {
-                            if s.state != ConnectionState::Disconnecting {
-                                s.state = ConnectionState::Connecting;
-                            }
-                            s.connected = false;
-                            s.last_error = Some(format!("Connection failed: {}", e));
-                        }
-                    }
-                    Self::emit_status(&app, &status).await;
-                }
-                None => {
-                    // Cancelled during connect — exit loop immediately.
-                    break;
-                }
-            }
-
-            // Check cancellation before waiting.
-            if cancel_token.is_cancelled() {
-                break;
-            }
-
-            // Exponential backoff — mirrors scheduleReconnect()
-            log::info!(
-                "[Distributed] Reconnecting in {}s...",
-                reconnect_interval.as_secs()
-            );
-
-            tokio::select! {
-                _ = time::sleep(reconnect_interval) => {},
-                _ = reconnect_rx.recv() => {
-                    log::info!("[Distributed] Triggering immediate reconnect due to network restore event.");
-                }
-                _ = cancel_token.cancelled() => {
-                    break;
-                }
-            }
-
-            reconnect_interval = std::cmp::min(reconnect_interval * 2, max_reconnect_interval);
-        }
-
-        {
-            let mut s = status.write().await;
-            if s.session_id == session_id {
-                s.state = ConnectionState::Disconnected;
-                s.connected = false;
-                s.server_id = None;
-                s.client_id = None;
-            }
-        }
-        Self::emit_status(&app, &status).await;
-        log::info!("[Distributed] Connection loop exited.");
-    }
-
-    // ================================================================
-    // Session handler — processes one WS connection lifetime
-    // ================================================================
-
-    #[allow(clippy::too_many_arguments)]
-    async fn run_session(
-        app: &AppHandle,
-        ws_stream: tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        device_name: &str,
-        cancel_token: &CancellationToken,
-        status: &Arc<RwLock<DistributedStatus>>,
-        registry: &Arc<ToolRegistry>,
-        re_register_rx: &mut tokio::sync::mpsc::Receiver<()>,
-        session_id: u64,
-    ) -> String {
-        use tokio_tungstenite::tungstenite::Message;
-
-        #[cfg(target_os = "android")]
-        if let Err(e) = tauri_plugin_vcp_mobile::system::start_sensor_collection(app.clone()) {
-            log::warn!(
-                "[Distributed] Failed to start native sensor collection: {}",
-                e
-            );
-        }
-
-        let (ws_tx, mut ws_rx) = ws_stream.split();
-
-        // Wrap tx in Arc<Mutex> so we can send from multiple places.
-        let ws_tx = Arc::new(Mutex::new(ws_tx));
-
-        // Static placeholder push timer — mirrors setupStaticPlaceholderUpdates() (30s interval)
-        let mut placeholder_interval = time::interval(Duration::from_secs(30));
-        // Skip the first immediate tick; we do an initial push below after registration.
-        placeholder_interval.tick().await;
-
-        let mut heartbeat_interval = time::interval(DISTRIBUTED_HEARTBEAT_INTERVAL);
-        heartbeat_interval.tick().await;
-        let mut last_inbound_at = Instant::now();
-
-        #[allow(unused_assignments)]
-        let mut exit_reason = "Connection closed normally".to_string();
-
-        loop {
-            tokio::select! {
-                // --- Receive messages from main server ---
-                msg = ws_rx.next() => {
-                    match msg {
-                        Some(Ok(Message::Text(text))) => {
-                            last_inbound_at = Instant::now();
-                            Self::handle_incoming(
-                                app,
-                                &text,
-                                device_name,
-                                &ws_tx,
-                                status,
-                                registry,
-                                session_id,
-                            ).await;
-                        }
-                        Some(Ok(Message::Ping(data))) => {
-                            last_inbound_at = Instant::now();
-                            let mut tx = ws_tx.lock().await;
-                            let _ = tx.send(Message::Pong(data)).await;
-                        }
-                        Some(Ok(Message::Pong(_))) => {
-                            last_inbound_at = Instant::now();
-                        }
-                        Some(Ok(Message::Binary(_))) => {
-                            last_inbound_at = Instant::now();
-                        }
-                        Some(Ok(Message::Close(reason))) => {
-                            let r_str = reason.map(|r| format!("{} (code: {})", r.reason, r.code)).unwrap_or_else(|| "No reason provided".to_string());
-                            log::info!("[Distributed] Server sent close frame: {}", r_str);
-                            exit_reason = format!("Server closed connection: {}", r_str);
-                            break;
-                        }
-                        Some(Err(e)) => {
-                            log::warn!("[Distributed] WS error: {}", e);
-                            exit_reason = format!("WebSocket error: {}", e);
-                            break;
-                        }
-                        None => {
-                            log::info!("[Distributed] WS stream ended.");
-                            exit_reason = "WS stream ended (server disconnected)".to_string();
-                            break;
-                        }
-                        _ => {} // Binary, Pong — ignore
-                    }
-                }
-
-                // --- Out-of-band re-registration request ---
-                opt = re_register_rx.recv() => {
-                    if opt.is_some() {
-                        log::info!("[Distributed] Re-registering tools due to configuration change.");
-                        Self::register_tools(device_name, &ws_tx, registry, status, session_id).await;
-                        Self::emit_status_with_app(app, status).await;
-                    }
-                }
-
-                // --- Periodic static placeholder push ---
-                _ = placeholder_interval.tick() => {
-                    Self::push_static_placeholders(app, device_name, &ws_tx, registry).await;
-                }
-
-                // --- Active heartbeat ---
-                _ = heartbeat_interval.tick() => {
-                    let idle_for = last_inbound_at.elapsed();
-                    if is_distributed_connection_stale(idle_for) {
-                        exit_reason = format!(
-                            "Heartbeat timeout: no inbound WebSocket frame for {}s",
-                            idle_for.as_secs()
-                        );
-                        log::warn!("[Distributed] {}", exit_reason);
-                        let mut tx = ws_tx.lock().await;
-                        let _ = tx.close().await;
-                        break;
-                    }
-
-                    acquire_wake_lock_helper(app, "distributed:connection");
-                    let ping_result = {
-                        let mut tx = ws_tx.lock().await;
-                        tx.send(Message::Ping(Vec::new().into())).await
-                    };
-                    release_wake_lock_helper(app, "distributed:connection");
-
-                    if let Err(e) = ping_result {
-                        exit_reason = format!("Heartbeat ping failed: {}", e);
-                        log::warn!("[Distributed] {}", exit_reason);
-                        break;
-                    }
-                }
-
-                // --- Cancellation signal ---
-                _ = cancel_token.cancelled() => {
-                    log::info!("[Distributed] Shutdown signal received, closing session.");
-                    exit_reason = "Client requested shutdown".to_string();
-                    break;
-                }
-            }
-        }
-
-        #[cfg(target_os = "android")]
-        if let Err(e) = tauri_plugin_vcp_mobile::system::stop_sensor_collection(app.clone()) {
-            log::warn!(
-                "[Distributed] Failed to stop native sensor collection: {}",
-                e
-            );
-        }
-
-        exit_reason
-    }
-
-    // ================================================================
-    // Incoming message handler
-    // ================================================================
-
-    async fn handle_incoming(
-        app: &AppHandle,
-        text: &str,
-        device_name: &str,
-        ws_tx: &WsSink,
-        status: &Arc<RwLock<DistributedStatus>>,
-        registry: &Arc<ToolRegistry>,
-        session_id: u64,
-    ) {
-        let envelope: IncomingEnvelope = match serde_json::from_str(text) {
-            Ok(e) => e,
-            Err(e) => {
-                log::warn!("[Distributed] Failed to parse message: {}", e);
-                return;
-            }
-        };
-
-        match envelope.parse() {
-            IncomingMessage::ConnectionAck {
-                server_id,
-                client_id,
-            } => {
-                log::info!(
-                    "[Distributed] Connection acknowledged. serverId={}, clientId={}",
-                    server_id,
-                    client_id
-                );
-
-                // Update status
-                {
-                    let mut s = status.write().await;
-                    if s.session_id == session_id {
-                        s.state = ConnectionState::Connected;
-                        s.connected = true;
-                        s.server_id = Some(server_id.clone());
-                        s.client_id = Some(client_id.clone());
-                        s.last_error = None;
-                    }
-                }
-                Self::emit_status_with_app(app, status).await;
-
-                // Register tools — mirrors registerTools()
-                Self::register_tools(device_name, ws_tx, registry, status, session_id).await;
-                Self::emit_status_with_app(app, status).await;
-
-                // Report IP — mirrors reportIPAddress()
-                let device_name_clone = device_name.to_string();
-                let ws_tx_clone = ws_tx.clone();
-                tokio::spawn(async move {
-                    Self::report_ip(&device_name_clone, &ws_tx_clone).await;
-                });
-
-                // Initial static placeholder push (2s delay in VCPChat, do it immediately here)
-                Self::push_static_placeholders(app, device_name, ws_tx, registry).await;
-            }
-
-            IncomingMessage::ExecuteTool {
-                request_id,
-                tool_name,
-                tool_args,
-            } => {
-                log::info!(
-                    "[Distributed] Execute tool request: {} (requestId={})",
-                    tool_name,
-                    request_id
-                );
-
-                // Execute and return result asynchronously to avoid blocking the main WS receiver loop.
-                let app_clone = app.clone();
-                let ws_tx_clone = ws_tx.clone();
-                let registry_clone = registry.clone();
-                let request_id_clone = request_id.clone();
-                let tool_name_clone = tool_name.clone();
-
-                tokio::spawn(async move {
-                    let tag = format!("distributed:tool:{}", request_id_clone);
-                    acquire_wake_lock_helper(&app_clone, &tag);
-                    let (response, callback) = Self::execute_tool(
-                        &app_clone,
-                        &request_id_clone,
-                        &tool_name_clone,
-                        tool_args,
-                        &registry_clone,
-                    )
-                    .await;
-                    Self::send_message(&ws_tx_clone, &response).await;
-                    if let Some(callback) = callback {
-                        Self::send_message(&ws_tx_clone, &callback).await;
-                    }
-                    release_wake_lock_helper(&app_clone, &tag);
-                });
-            }
-
-            IncomingMessage::Unknown(msg_type) => {
-                log::debug!("[Distributed] Unknown message type: {}", msg_type);
-            }
-        }
-    }
-
-    // ================================================================
-    // Protocol actions (mirrors DistributedServer methods)
-    // ================================================================
-
-    /// Register tools with the main server.
-    /// VCPChat ref: registerTools() line 271-308
-    async fn register_tools(
-        device_name: &str,
-        ws_tx: &WsSink,
-        registry: &Arc<ToolRegistry>,
-        status: &Arc<RwLock<DistributedStatus>>,
-        session_id: u64,
-    ) {
-        let tools = registry.get_all_manifests();
-
-        if tools.is_empty() {
-            log::info!("[Distributed] No tools to register.");
-            return;
-        }
-
-        let count = tools.len();
-        let msg = OutgoingMessage::RegisterTools {
-            server_name: device_name.to_string(),
-            tools,
-        };
-        Self::send_message(ws_tx, &msg).await;
-
-        // Update status with tool count
-        {
-            let mut s = status.write().await;
-            if s.session_id == session_id {
-                s.registered_tools = count;
-            }
-        }
-
-        log::info!("[Distributed] Registered {} tools with main server.", count);
-    }
-
-    /// Report IP addresses to the main server.
-    /// VCPChat ref: reportIPAddress() line 310-347
-    async fn report_ip(device_name: &str, ws_tx: &WsSink) {
-        // Collect local IPv4 addresses (simplified — no external crate needed)
-        let local_ips = Vec::new(); // TODO: enumerate network interfaces in Phase 2
-
-        // Optional: fetch public IP with a 5-second timeout
-        let public_ip: Option<String> = {
-            let fetch_fut = async {
-                match reqwest::get("https://api.ipify.org?format=json").await {
-                    Ok(resp) => {
-                        if let Ok(data) = resp.json::<Value>().await {
-                            data.get("ip")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                        } else {
-                            None
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("[Distributed] Could not fetch public IP: {}", e);
-                        None
-                    }
-                }
-            };
-            match tokio::time::timeout(Duration::from_secs(5), fetch_fut).await {
-                Ok(val) => val,
-                Err(_) => {
-                    log::warn!("[Distributed] Fetching public IP timed out");
-                    None
-                }
-            }
-        };
-
-        let msg = OutgoingMessage::ReportIp {
-            server_name: device_name.to_string(),
-            local_ips,
-            public_ip,
-        };
-        Self::send_message(ws_tx, &msg).await;
-        log::info!("[Distributed] IP report sent.");
-    }
-
-    /// Push static placeholder values asynchronously to avoid blocking.
-    /// VCPChat ref: pushStaticPlaceholderValues() line 374-398
-    async fn push_static_placeholders(
-        app: &AppHandle,
-        device_name: &str,
-        ws_tx: &WsSink,
-        registry: &Arc<ToolRegistry>,
-    ) {
-        let app_clone = app.clone();
-        let device_name_clone = device_name.to_string();
-        let ws_tx_clone = ws_tx.clone();
-        let registry_clone = registry.clone();
-
-        tokio::spawn(async move {
-            acquire_wake_lock_helper(&app_clone, "distributed:placeholder_push");
-            let placeholders = registry_clone.get_all_placeholder_values(&app_clone);
-            if !placeholders.is_empty() {
-                let msg = OutgoingMessage::UpdateStaticPlaceholders {
-                    server_name: device_name_clone,
-                    placeholders,
-                };
-                Self::send_message(&ws_tx_clone, &msg).await;
-            }
-            release_wake_lock_helper(&app_clone, "distributed:placeholder_push");
-        });
-    }
-
-    /// Execute a tool and return the result message plus optional callback push.
-    /// VCPChat ref: handleToolExecutionRequest() line 428-649
-    async fn execute_tool(
-        app: &AppHandle,
-        request_id: &str,
-        tool_name: &str,
-        tool_args: Value,
-        registry: &Arc<ToolRegistry>,
-    ) -> (OutgoingMessage, Option<OutgoingMessage>) {
-        let manifest = registry.get_manifest(tool_name);
-        match registry.execute(tool_name, tool_args, app).await {
-            Ok(result) => {
-                log::info!("[Distributed] Tool '{}' executed successfully.", tool_name);
-                let callback =
-                    Self::build_plugin_callback_forward(request_id, tool_name, &result, &manifest);
-                (
-                    OutgoingMessage::ToolResult {
-                        request_id: request_id.to_string(),
-                        status: "success".to_string(),
-                        result: Some(result),
-                        error: None,
-                    },
-                    callback,
-                )
-            }
-            Err(e) => {
-                log::warn!("[Distributed] Tool '{}' failed: {}", tool_name, e);
-                (
-                    OutgoingMessage::ToolResult {
-                        request_id: request_id.to_string(),
-                        status: "error".to_string(),
-                        result: None,
-                        error: Some(e),
-                    },
-                    None,
-                )
-            }
-        }
-    }
-
-    fn build_plugin_callback_forward(
-        request_id: &str,
-        tool_name: &str,
-        result: &Value,
-        manifest: &Option<ToolManifest>,
-    ) -> Option<OutgoingMessage> {
-        let push = manifest.as_ref()?.web_socket_push.as_ref()?;
-        if !push.enabled {
-            return None;
-        }
-
-        let mut callback_data = if push.use_plugin_result_as_message {
-            match result {
-                Value::Object(map) => Value::Object(map.clone()),
-                other => json!({ "message": other }),
-            }
-        } else {
-            json!({ "result": result })
-        };
-
-        if let Value::Object(map) = &mut callback_data {
-            map.insert(
-                "pluginName".to_string(),
-                Value::String(tool_name.to_string()),
-            );
-            map.insert("taskId".to_string(), Value::String(request_id.to_string()));
-        }
-
-        Some(OutgoingMessage::PluginCallbackForward { callback_data })
-    }
-
-    // ================================================================
-    // Helpers
-    // ================================================================
-
-    /// Serialize and send a message over WebSocket.
-    async fn send_message(ws_tx: &WsSink, msg: &OutgoingMessage) {
-        match serde_json::to_string(msg) {
-            Ok(json) => {
-                let mut tx = ws_tx.lock().await;
-                if let Err(e) = tx
-                    .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
-                    .await
-                {
-                    log::warn!("[Distributed] Failed to send message: {}", e);
-                }
-            }
-            Err(e) => {
-                log::error!("[Distributed] Failed to serialize message: {}", e);
-            }
-        }
-    }
-
-    /// Emit status to the Vue frontend.
-    async fn emit_status(app: &AppHandle, status: &Arc<RwLock<DistributedStatus>>) {
-        let s = status.read().await.clone();
-        let _ = app.emit("vcp-distributed-status", &s);
-    }
-
-    async fn emit_status_with_app(app: &AppHandle, status: &Arc<RwLock<DistributedStatus>>) {
-        Self::emit_status(app, status).await;
+    fn lock_session(&self) -> std::sync::MutexGuard<'_, Option<ConnectionSession>> {
+        self.session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
+#[path = "client_connection.rs"]
+mod connection;
+#[path = "client_lifecycle.rs"]
+mod lifecycle;
+#[path = "client_lifecycle_start.rs"]
+mod lifecycle_start;
+#[path = "client_protocol.rs"]
+mod protocol;
+#[path = "client_session.rs"]
+mod session;
+#[path = "client_tasks.rs"]
+mod task_registry;
+#[path = "client_tools.rs"]
+mod tools;
+use self::task_registry::{SessionTaskRegistry, WakeLockLease, SESSION_STOP_TIMEOUT};
 #[cfg(target_os = "android")]
-fn acquire_wake_lock_helper(app: &tauri::AppHandle, tag: &str) {
+fn acquire_wake_lock_helper(
+    app: &tauri::AppHandle,
+    tag: &str,
+    session_id: u64,
+    session_generation: &AtomicU64,
+    cancel_token: &CancellationToken,
+) -> bool {
+    if !is_session_current(session_generation, session_id, cancel_token) {
+        return false;
+    }
+    let scoped_tag = scoped_wake_lock_tag(tag, session_id);
     if let Err(e) = tauri_plugin_vcp_mobile::stream::acquire_foreground_inner(
         app,
-        tag,
+        &scoped_tag,
         10, // priority = PRIORITY_DISTRIBUTED
         "[分布式连接]",
         false, // screen_keep_on = false
     ) {
         log::warn!(
-            "[Distributed] Failed to acquire native wake lock with tag {}: {}",
-            tag,
+            "[Distributed] 获取原生保活锁失败（标签 {}）：{}",
+            scoped_tag,
             e
         );
+        return false;
     }
+    true
 }
 
 #[cfg(target_os = "android")]
 fn release_wake_lock_helper(app: &tauri::AppHandle, tag: &str) {
     if let Err(e) = tauri_plugin_vcp_mobile::stream::release_foreground_inner(app, tag) {
-        log::warn!(
-            "[Distributed] Failed to release native wake lock with tag {}: {}",
-            tag,
-            e
-        );
+        log::warn!("[Distributed] 释放原生保活锁失败（标签 {}）：{}", tag, e);
     }
 }
 
 #[cfg(not(target_os = "android"))]
-fn acquire_wake_lock_helper(_app: &tauri::AppHandle, _tag: &str) {}
+fn acquire_wake_lock_helper(
+    _app: &tauri::AppHandle,
+    _tag: &str,
+    _session_id: u64,
+    _session_generation: &AtomicU64,
+    _cancel_token: &CancellationToken,
+) -> bool {
+    is_session_current(_session_generation, _session_id, _cancel_token)
+}
 
 #[cfg(not(target_os = "android"))]
 fn release_wake_lock_helper(_app: &tauri::AppHandle, _tag: &str) {}
+
+fn is_session_current(
+    session_generation: &AtomicU64,
+    session_id: u64,
+    cancel_token: &CancellationToken,
+) -> bool {
+    !cancel_token.is_cancelled() && session_generation.load(Ordering::SeqCst) == session_id
+}
+
+fn scoped_wake_lock_tag(tag: &str, session_id: u64) -> String {
+    format!("{tag}:generation:{session_id}")
+}
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;

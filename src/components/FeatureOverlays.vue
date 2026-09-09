@@ -30,6 +30,7 @@ const DistributedView = defineAsyncComponent(() => import('../features/distribut
 const SettingsView = defineAsyncComponent(() => import('../features/settings/SettingsView.vue'));
 const DailyNoteView = defineAsyncComponent(() => import('../features/dailynote/DailyNoteView.vue'));
 const RagObserverView = defineAsyncComponent(() => import('../features/rag/RagObserver.vue'));
+const GlobalSearchView = defineAsyncComponent(() => import('../features/globalsearch/GlobalSearchView.vue'));
 
 const overlayStore = useOverlayStore();
 const settingsStore = useSettingsStore();
@@ -93,6 +94,12 @@ onMounted(() => {
       :is-open="overlayStore.isRagObserverOpen"
       :z-index="overlayStore.getPageZIndex('ragObserver')"
       @close="overlayStore.closeRagObserver()"
+    />
+
+    <GlobalSearchView
+      :is-open="overlayStore.isGlobalSearchOpen"
+      :z-index="overlayStore.getPageZIndex('globalSearch')"
+      @close="overlayStore.closeGlobalSearch()"
     />
 
     <!-- 仅当用户已启用分布式计算时才挂载事件监听器，避免常驻不必要的后台监听 -->

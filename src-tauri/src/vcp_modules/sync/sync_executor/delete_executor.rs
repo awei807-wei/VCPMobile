@@ -1,148 +1,122 @@
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::db_write_queue::ExpectedMessageStates;
 use crate::vcp_modules::persistence::message_repository::ContentCompressor;
-use crate::vcp_modules::sync_hash::HashAggregator;
-use sqlx::Row;
+use crate::vcp_modules::sync_types::{MessageDeleteDecision, SYNC_TOMBSTONE_HASH};
+use crate::vcp_modules::topic_types::{MessageKey, OwnerKey, TopicKey};
 use tauri::{AppHandle, Manager, Runtime};
 
 pub struct DeleteExecutor;
 
+#[path = "delete_executor_messages.rs"]
+mod messages;
+#[path = "delete_executor_storage.rs"]
+mod storage;
+use messages::soft_delete_messages_data;
+use storage::{soft_delete_owner_data, soft_delete_topic_data};
+
+#[cfg(test)]
+#[path = "delete_executor_tests.rs"]
+mod tests;
+
+const MAX_SAFE_TIMESTAMP: i64 = (1_i64 << 53) - 1;
+
+fn validate_deleted_at(deleted_at: i64, entity: &str) -> Result<(), String> {
+    if !(0..=MAX_SAFE_TIMESTAMP).contains(&deleted_at) {
+        return Err(format!(
+            "{entity} delete requires a safe non-negative deletedAt"
+        ));
+    }
+    Ok(())
+}
+
+fn cancel_active_requests<R: Runtime>(app: &AppHandle<R>, keys: Vec<MessageKey>) {
+    let Some(active_requests) = app.try_state::<crate::vcp_modules::vcp_client::ActiveRequests>()
+    else {
+        return;
+    };
+    for key in keys {
+        if let Some((_, cancel_sender)) = active_requests.0.remove_key(&key) {
+            let _ = cancel_sender.send(());
+        }
+    }
+}
+
 impl DeleteExecutor {
+    /// Delete an owner namespace. The fixed Agent/Group wrappers are retained
+    /// for business commands, while storage receives a complete OwnerKey.
     pub async fn soft_delete_agent<R: Runtime>(
         app: &AppHandle<R>,
         agent_id: &str,
+        deleted_at: i64,
     ) -> Result<(), String> {
-        let db = app.state::<DbState>();
-        let now = chrono::Utc::now().timestamp_millis();
-
-        sqlx::query("UPDATE agents SET deleted_at = ? WHERE agent_id = ?")
-            .bind(now)
-            .bind(agent_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联将该 Agent 下的所有话题标记为逻辑删除
-        sqlx::query("UPDATE topics SET deleted_at = ? WHERE owner_id = ? AND owner_type = 'agent' AND deleted_at IS NULL")
-            .bind(now)
-            .bind(agent_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联将该 Agent 下所有话题的所有消息标记为逻辑删除
-        sqlx::query("UPDATE messages SET deleted_at = ? WHERE topic_id IN (SELECT topic_id FROM topics WHERE owner_id = ? AND owner_type = 'agent') AND deleted_at IS NULL")
-            .bind(now)
-            .bind(agent_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联清除该 Agent 下的所有活跃生成，杜绝已删除消息复活
-        sqlx::query("DELETE FROM active_generations WHERE owner_id = ? AND owner_type = 'agent'")
-            .bind(agent_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let mut tx = db.pool.begin().await.map_err(|e| e.to_string())?;
-        HashAggregator::bubble_agent_hash(&mut tx, agent_id).await?;
-        tx.commit().await.map_err(|e| e.to_string())?;
-
-        Ok(())
+        Self::soft_delete_owner(app, &OwnerKey::new("agent", agent_id), deleted_at).await
     }
 
     pub async fn soft_delete_group<R: Runtime>(
         app: &AppHandle<R>,
         group_id: &str,
+        deleted_at: i64,
     ) -> Result<(), String> {
-        let db = app.state::<DbState>();
-        let now = chrono::Utc::now().timestamp_millis();
+        Self::soft_delete_owner(app, &OwnerKey::new("group", group_id), deleted_at).await
+    }
 
-        sqlx::query("UPDATE groups SET deleted_at = ? WHERE group_id = ?")
-            .bind(now)
-            .bind(group_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联将该 Group 下的所有话题标记为逻辑删除
-        sqlx::query("UPDATE topics SET deleted_at = ? WHERE owner_id = ? AND owner_type = 'group' AND deleted_at IS NULL")
-            .bind(now)
-            .bind(group_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联将该 Group 下所有话题的所有消息标记为逻辑删除
-        sqlx::query("UPDATE messages SET deleted_at = ? WHERE topic_id IN (SELECT topic_id FROM topics WHERE owner_id = ? AND owner_type = 'group') AND deleted_at IS NULL")
-            .bind(now)
-            .bind(group_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联清除该 Group 下的所有活跃生成，杜绝已删除消息复活
-        sqlx::query("DELETE FROM active_generations WHERE owner_id = ? AND owner_type = 'group'")
-            .bind(group_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let mut tx = db.pool.begin().await.map_err(|e| e.to_string())?;
-        HashAggregator::bubble_group_hash(&mut tx, group_id).await?;
-        tx.commit().await.map_err(|e| e.to_string())?;
-
+    pub async fn soft_delete_owner<R: Runtime>(
+        app: &AppHandle<R>,
+        key: &OwnerKey,
+        deleted_at: i64,
+    ) -> Result<(), String> {
+        validate_deleted_at(deleted_at, "Owner")?;
+        let receipt = soft_delete_owner_locked(app, key, deleted_at).await?;
+        cancel_active_requests(app, receipt.active_messages);
         Ok(())
     }
 
     pub async fn soft_delete_topic<R: Runtime>(
         app: &AppHandle<R>,
-        topic_id: &str,
+        key: &TopicKey,
+        deleted_at: i64,
+    ) -> Result<(), String> {
+        validate_deleted_at(deleted_at, "Topic")?;
+        let db = app.state::<DbState>();
+        let receipt = soft_delete_topic_data(&db.pool, key, deleted_at).await?;
+        cancel_active_requests(app, receipt.active_messages);
+        Ok(())
+    }
+
+    /// Apply one remote message tombstone using a complete MessageKey.
+    pub async fn soft_delete_message<R: Runtime>(
+        app: &AppHandle<R>,
+        key: &MessageKey,
+        deleted_at: i64,
+    ) -> Result<(), String> {
+        validate_deleted_at(deleted_at, "Message")?;
+        if !key.is_valid() {
+            return Err("Message delete requires a complete message identity".to_string());
+        }
+        let decision = MessageDeleteDecision {
+            msg_id: key.msg_id.clone(),
+            deleted_at,
+        };
+        let db = app.state::<DbState>();
+        let receipt =
+            soft_delete_messages_data(&db.pool, &key.topic, &[decision], true, None).await?;
+        cancel_active_requests(app, receipt.active_messages);
+        Ok(())
+    }
+
+    /// Apply a batch of Desktop message tombstones. Aggregate topic/owner
+    /// repair is deliberately deferred to SyncFinalizer for one-pass repair.
+    pub async fn soft_delete_messages<R: Runtime>(
+        app: &AppHandle<R>,
+        key: &TopicKey,
+        tombstones: &[MessageDeleteDecision],
+        expected_states: &ExpectedMessageStates,
     ) -> Result<(), String> {
         let db = app.state::<DbState>();
-        let now = chrono::Utc::now().timestamp_millis();
-
-        let parent_row = sqlx::query("SELECT owner_id, owner_type FROM topics WHERE topic_id = ?")
-            .bind(topic_id)
-            .fetch_optional(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        sqlx::query("UPDATE topics SET deleted_at = ? WHERE topic_id = ?")
-            .bind(now)
-            .bind(topic_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联将该话题下的所有消息标记为逻辑删除
-        sqlx::query("UPDATE messages SET deleted_at = ? WHERE topic_id = ? AND deleted_at IS NULL")
-            .bind(now)
-            .bind(topic_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 级联清除活跃生成注册表，杜绝已删除消息复活
-        sqlx::query("DELETE FROM active_generations WHERE topic_id = ?")
-            .bind(topic_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if let Some(row) = parent_row {
-            let owner_id: String = row.get("owner_id");
-            let owner_type: String = row.get("owner_type");
-
-            let mut tx = db.pool.begin().await.map_err(|e| e.to_string())?;
-            if owner_type == "agent" {
-                let _ = HashAggregator::bubble_agent_hash(&mut tx, &owner_id).await;
-            } else if owner_type == "group" {
-                let _ = HashAggregator::bubble_group_hash(&mut tx, &owner_id).await;
-            }
-            let _ = tx.commit().await;
-        }
-
+        let receipt =
+            soft_delete_messages_data(&db.pool, key, tombstones, false, Some(expected_states))
+                .await?;
+        cancel_active_requests(app, receipt.active_messages);
         Ok(())
     }
 
@@ -150,41 +124,68 @@ impl DeleteExecutor {
         app: &AppHandle<R>,
         owner_type: &str,
         owner_id: &str,
+        deleted_at: i64,
     ) -> Result<(), String> {
+        validate_deleted_at(deleted_at, "Avatar")?;
+        if !crate::vcp_modules::sync_types::is_valid_avatar_owner(owner_type, owner_id) {
+            return Err(format!("Invalid avatar owner {owner_type}/{owner_id}"));
+        }
         let db = app.state::<DbState>();
-        let now = chrono::Utc::now().timestamp_millis();
-
-        sqlx::query("UPDATE avatars SET deleted_at = ? WHERE owner_type = ? AND owner_id = ?")
-            .bind(now)
-            .bind(owner_type)
-            .bind(owner_id)
-            .execute(&db.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        Ok(())
+        let current: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT deleted_at FROM avatars WHERE owner_type = ? AND owner_id = ?",
+        )
+        .bind(owner_type)
+        .bind(owner_id)
+        .fetch_optional(&db.pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        match current {
+            None => insert_avatar_tombstone(&db.pool, owner_type, owner_id, deleted_at).await,
+            Some(Some(existing)) if existing >= deleted_at => Ok(()),
+            Some(Some(_)) | Some(None) => {
+                let result = sqlx::query(
+                    "UPDATE avatars SET deleted_at = MAX(COALESCE(deleted_at, 0), ?)
+                     WHERE owner_type = ? AND owner_id = ?",
+                )
+                .bind(deleted_at)
+                .bind(owner_type)
+                .bind(owner_id)
+                .execute(&db.pool)
+                .await
+                .map_err(|error| error.to_string())?;
+                if result.rows_affected() != 1 {
+                    return Err(format!(
+                        "Avatar {owner_type}/{owner_id} disappeared during delete"
+                    ));
+                }
+                Ok(())
+            }
+        }
     }
 
     pub async fn cleanup_old_deleted_records<R: Runtime>(
         app: &AppHandle<R>,
         days: i64,
     ) -> Result<(), String> {
+        if days < 0 {
+            return Err("cleanup days must be non-negative".to_string());
+        }
         let db = app.state::<DbState>();
         let threshold = chrono::Utc::now().timestamp_millis() - days * 24 * 60 * 60 * 1000;
-
-        // 1. 物理强清除已删除超过安全期（30天）的消息的预渲染缓存
-        let render_cache =
-            sqlx::query("DELETE FROM render_cache WHERE (topic_id, msg_id) IN (SELECT topic_id, msg_id FROM messages WHERE deleted_at IS NOT NULL AND deleted_at < ?)")
-                .bind(threshold)
-                .execute(&db.pool)
-                .await
-                .map_err(|e| e.to_string())?;
-
-        // 2. 仅清空已删除超过安全期（30天）的消息的正文内容，保留消息的主键、角色与墓碑时间戳（防止多端同步幽灵复活，并释放大文本空间）
+        let render_cache = sqlx::query(
+            "DELETE FROM render_cache
+             WHERE (owner_type, owner_id, topic_id, msg_id) IN (
+                SELECT owner_type, owner_id, topic_id, msg_id FROM messages
+                WHERE deleted_at IS NOT NULL AND deleted_at < ?
+             )",
+        )
+        .bind(threshold)
+        .execute(&db.pool)
+        .await
+        .map_err(|error| error.to_string())?;
         let cleared_content = ContentCompressor::compress("[已清空]")?;
         let messages = sqlx::query(
-            "UPDATE messages
-             SET content = ?
+            "UPDATE messages SET content = ?
              WHERE deleted_at IS NOT NULL AND deleted_at < ? AND content != ?",
         )
         .bind(&cleared_content)
@@ -192,15 +193,68 @@ impl DeleteExecutor {
         .bind(&cleared_content)
         .execute(&db.pool)
         .await
-        .map_err(|e| e.to_string())?;
-
+        .map_err(|error| error.to_string())?;
         log::info!(
-            "[DeleteExecutor] Completed safety-period cleanup (older than {} days): cleared_messages_content={}, deleted_render_caches={}",
-            days,
+            "[DeleteExecutor] Cleanup older than {days} days: cleared_messages={}, deleted_render_caches={}",
             messages.rows_affected(),
             render_cache.rows_affected()
         );
-
         Ok(())
     }
+}
+
+async fn soft_delete_owner_locked<R: Runtime>(
+    app: &AppHandle<R>,
+    key: &OwnerKey,
+    deleted_at: i64,
+) -> Result<storage::DeleteReceipt, String> {
+    let db = app.state::<DbState>();
+    match key.owner_type.as_str() {
+        "agent" => {
+            if let Some(state) =
+                app.try_state::<crate::vcp_modules::agent_service::AgentConfigState>()
+            {
+                let owner_lock = state.acquire_lock(&key.owner_id).await;
+                let _owner_guard = owner_lock.lock().await;
+                let receipt = soft_delete_owner_data(&db.pool, key, deleted_at).await?;
+                return Ok(receipt);
+            }
+        }
+        "group" => {
+            if let Some(state) =
+                app.try_state::<crate::vcp_modules::group_service::GroupManagerState>()
+            {
+                let owner_lock = state.acquire_lock(&key.owner_id).await;
+                let _owner_guard = owner_lock.lock().await;
+                let receipt = soft_delete_owner_data(&db.pool, key, deleted_at).await?;
+                return Ok(receipt);
+            }
+        }
+        _ => {}
+    }
+    soft_delete_owner_data(&db.pool, key, deleted_at).await
+}
+
+async fn insert_avatar_tombstone(
+    pool: &sqlx::SqlitePool,
+    owner_type: &str,
+    owner_id: &str,
+    deleted_at: i64,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO avatars (
+            owner_type, owner_id, avatar_hash, mime_type, image_data,
+            updated_at, deleted_at
+         ) VALUES (?, ?, ?, 'application/octet-stream', ?, ?, ?)",
+    )
+    .bind(owner_type)
+    .bind(owner_id)
+    .bind(SYNC_TOMBSTONE_HASH)
+    .bind(Vec::<u8>::new())
+    .bind(deleted_at)
+    .bind(deleted_at)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("写入头像墓碑失败: {error}"))
 }

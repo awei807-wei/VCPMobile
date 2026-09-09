@@ -480,6 +480,7 @@ pub struct AvatarResult {
 | `image_data` | `BLOB` | 原始二进制图像数据 |
 | `dominant_color` | `TEXT` | 主色调，如 `#3a7bd5` |
 | `updated_at` | `INTEGER` | 毫秒级 Unix 时间戳 |
+| `deleted_at` | `INTEGER` | 同步头像删除墓碑；非空记录不得进入 UI 读取结果 |
 
 ### 4.3 获取头像（get_avatar）
 
@@ -490,10 +491,10 @@ pub struct AvatarResult {
 ```sql
 SELECT mime_type, image_data, dominant_color, updated_at
 FROM avatars
-WHERE owner_type = ? AND owner_id = ?
+WHERE owner_type = ? AND owner_id = ? AND deleted_at IS NULL
 ```
 
-返回 `Option<AvatarResult>`，无记录时返回 `Ok(None)`，前端应做好空态处理（如展示首字母占位 Avatar）。
+返回 `Option<AvatarResult>`；无记录或记录已成为同步删除墓碑时返回 `Ok(None)`，前端展示占位头像。批量预加载接口 `batch_get_avatars` 使用相同的 `deleted_at IS NULL` 约束，消息历史外壳读取头像主色时也必须排除墓碑，避免删除后的图片或颜色重新进入 UI 缓存。
 
 ### 4.4 存量数据主色调补算（compute_and_store_dominant_color）
 

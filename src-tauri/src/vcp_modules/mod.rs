@@ -7,6 +7,8 @@ pub mod persistence;
 pub mod sync;
 pub mod updater;
 
+pub(crate) mod owner_lock;
+
 // 2. 扁平化外观代理导出 (Façade Re-exporting)
 // 完美兼容 lib.rs 和外部文件对原有扁平模块的引用
 
@@ -40,12 +42,14 @@ pub use chat::topic_types;
 
 // --- Sync 领域 ---
 pub use sync::sync_dto;
+pub use sync::sync_error;
 pub use sync::sync_executor;
 pub use sync::sync_hash;
 pub use sync::sync_logger;
 pub use sync::sync_pipeline;
 pub use sync::sync_service;
 pub use sync::sync_types;
+pub use sync::wire_protocol;
 
 // --- Persistence 领域 ---
 pub use persistence::db_manager;

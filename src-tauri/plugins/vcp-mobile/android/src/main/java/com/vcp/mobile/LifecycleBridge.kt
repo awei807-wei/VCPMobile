@@ -12,10 +12,10 @@ import java.lang.ref.WeakReference
  * 应用生命周期桥接器
  *
  * 合并方案：保留本地回调 (onResumeHook/onConfigurationChangedHook) + 添加上游 ProcessLifecycleOwner 支持。
- * 
+ *
  * 通过 DefaultLifecycleObserver 自动监听进程级生命周期 (ProcessLifecycleOwner)，
  * 完美防抖，免疫 Activity 重建与切换。
- * 
+ *
  * 使用 plugin.trigger 派发强类型的原生生命周期事件，规避 WebView 被冻结时 JS 无法执行的痛点。
  * 同时保留本地的 onResumeHook/onConfigurationChangedHook 回调，用于权限刷新等本地逻辑。
  */
@@ -25,9 +25,9 @@ class LifecycleBridge(
 ) : DefaultLifecycleObserver {
 
     private var activityRef: WeakReference<Activity>? = null
-    private var pluginRef: WeakReference<VcpMobilePlugin>? = null
+    private var pluginRef: WeakReference<VcpMobilePluginCore>? = null
 
-    fun attach(activity: Activity, plugin: VcpMobilePlugin) {
+    fun attach(activity: Activity, plugin: VcpMobilePluginCore) {
         activityRef = WeakReference(activity)
         pluginRef = WeakReference(plugin)
         // 升级为进程级生命周期监听，完美防抖，免疫 Activity 重建与切换

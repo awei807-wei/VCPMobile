@@ -1,12 +1,8 @@
 package com.vcp.mobile.service
 
 import android.content.Context
-import android.content.Intent
-import android.net.wifi.WifiManager
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 
@@ -18,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object ForegroundGuardian {
     private const val TAG = "ForegroundGuardian"
-    private const val DISTRIBUTED_TAG = "distributed"
+    private const val DISTRIBUTED_TAG = ForegroundTagContract.DISTRIBUTED_TAG
 
     const val PRIORITY_SYNC = 40
     const val PRIORITY_PRERENDER = 30
@@ -26,12 +22,28 @@ object ForegroundGuardian {
     const val PRIORITY_DISTRIBUTED = 10
 
     private val consumers = ConcurrentHashMap<String, ConsumerEntry>()
+    private val streamLeases = ForegroundLeaseLedger()
     private val handler = Handler(Looper.getMainLooper())
-    private val timeoutRunnables = ConcurrentHashMap<String, Runnable>()
+    private val watchdog = ForegroundWatchdog(handler) { context, tag, generation ->
+        Log.w(TAG, "前台 lease 超时：category=${categoryForTag(tag)}，result=release")
+        release(context, tag, generation)
+    }
 
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
-    private var foregroundStartPending = false
+    private val physicalLocks = ForegroundPhysicalLocks()
+    private val physicalLockReleaseScheduler = ForegroundLockReleaseScheduler(
+        postDelayed = { runnable, delay -> handler.postDelayed(runnable, delay) },
+        removeCallbacks = { runnable -> handler.removeCallbacks(runnable) },
+        releaseLocks = { physicalLocks.release() },
+        logError = { message -> Log.e(TAG, message) },
+    )
+    private val serviceLifecycle = ForegroundServiceLifecycleCoordinator { appInForeground }
+    private val failureCoordinator = ForegroundFailureCoordinator(
+        clearRuntimeState = { clearRuntimeState() },
+        clearPersistence = { context ->
+            StreamKeepaliveService.setDistributedKeepalivePersisted(context, false)
+        },
+        reconcileService = { context -> serviceLifecycle.reconcile(context) },
+    )
     private var appInForeground = true
 
     data class ConsumerEntry(
@@ -45,6 +57,12 @@ object ForegroundGuardian {
 
     val isScreenKeepOnRequired: Boolean
         get() = consumers.values.any { it.screenKeepOn }
+
+    /** 为一个完整流身份生成抗碰撞 lease tag。 */
+    fun streamTag(key: StreamSessionKey): String = StreamLeaseTag.forKey(key)
+
+    /** 没有所有权字段的旧调用方继续使用稳定且带命名空间的 tag。 */
+    fun legacyStreamTag(agentName: String): String = StreamLeaseTag.forLegacyAgent(agentName)
 
     fun getNotificationLabel(): String {
         return consumers.values.maxByOrNull { it.priority }?.displayLabel
@@ -60,55 +78,100 @@ object ForegroundGuardian {
         label: String,
         screenKeepOn: Boolean = false,
         timeoutMs: Long = -1
-    ) {
+    ): Long? {
         Log.i(
             TAG,
-            "acquire: tag=$tag, priority=$priority, label=$label, " +
-                "screenKeepOn=$screenKeepOn, timeoutMs=$timeoutMs"
+            "acquire: category=${categoryForPriority(priority)}, priority=$priority, " +
+                "screenKeepOn=$screenKeepOn, consumers=${consumers.size}, result=accepted"
         )
 
-        cancelTimeout(tag)
-        consumers[tag] = ConsumerEntry(priority, label, screenKeepOn)
-
-        if (tag == DISTRIBUTED_TAG) {
-            StreamKeepaliveService.setDistributedKeepalivePersisted(context, true)
+        if (ForegroundTagContract.isGenerationDistributedTag(tag)) {
+            removeLegacyDistributedPlaceholder()
         }
+        val leaseGeneration = if (isIdentityStreamTag(tag)) {
+            streamLeases.acquire(tag)
+        } else {
+            null
+        }
+        consumers[tag] = ConsumerEntry(priority, label, screenKeepOn)
+        updateDistributedPersistence(context)
 
-        acquireLocks(context)
+        physicalLockReleaseScheduler.cancel()
+        try {
+            physicalLocks.acquire(context)
+        } catch (error: Throwable) {
+            clearFailedForegroundState(context)
+            Log.e(TAG, "获取前台物理锁失败，已撤销消费者", error)
+            throw IllegalStateException("无法获取前台保活锁", error)
+        }
 
         if (StreamKeepaliveService.isServiceRunning) {
-            updateFgs(context)
-        } else if (!appInForeground && !ensureFgsStarted(context)) {
-            releaseLocks()
-            throw IllegalStateException("Unable to start StreamKeepaliveService as a foreground service")
+            if (!serviceLifecycle.update(context)) {
+                clearFailedForegroundState(context)
+                throw IllegalStateException("无法刷新 StreamKeepaliveService 前台状态")
+            }
+        } else if (!appInForeground && !serviceLifecycle.ensureStarted(context)) {
+            // 后台提升失败时不再调和物理锁；失败服务没有所有者，必须清空全部共享状态。
+            clearFailedForegroundState(context)
+            throw IllegalStateException("无法将 StreamKeepaliveService 启动为前台服务")
         } else if (appInForeground) {
-            Log.d(TAG, "App is foreground; deferring foreground-service launch until background transition.")
+            Log.d(TAG, "应用当前位于前台，将前台服务启动延迟到进入后台")
         }
 
-        scheduleTimeout(context, tag, timeoutMs)
+        if (!isIdentityStreamTag(tag)) {
+            cancelTimeout(tag, null)
+        }
+        scheduleTimeout(context, tag, timeoutMs, leaseGeneration)
+        return leaseGeneration
     }
 
     /** 释放指定消费者；最后一个消费者退出时由 Service 串行完成自停。 */
     @Synchronized
-    fun release(context: Context, tag: String) {
-        Log.i(TAG, "release: tag=$tag")
-        cancelTimeout(tag)
-
-        if (tag == DISTRIBUTED_TAG) {
-            StreamKeepaliveService.setDistributedKeepalivePersisted(context, false)
-        }
-
-        if (consumers.remove(tag) == null) {
-            Log.d(TAG, "release: tag=$tag is not registered, ignore.")
+    fun release(context: Context, tag: String, expectedGeneration: Long? = null) {
+        val isStreamLease = isIdentityStreamTag(tag)
+        if (isStreamLease && expectedGeneration == null) {
+            Log.e(TAG, "release: category=stream, result=missing_generation")
             return
         }
+        val releasedGeneration = if (isStreamLease) {
+            streamLeases.releaseGeneration(tag, expectedGeneration)
+        } else {
+            null
+        }
+        if (isStreamLease && releasedGeneration == null) {
+            Log.d(TAG, "release: category=stream, result=stale_generation")
+            return
+        }
+        cancelTimeout(tag, releasedGeneration)
+        if (isStreamLease && streamLeases.isHeld(tag)) {
+            if (StreamKeepaliveService.isServiceRunning || !appInForeground) {
+                if (!serviceLifecycle.update(context)) {
+                    clearFailedForegroundState(context)
+                }
+            }
+            return
+        }
+        if (consumers.remove(tag) == null) {
+            if (ForegroundTagContract.isDistributedTag(tag)) {
+                updateDistributedPersistence(context)
+            }
+            Log.d(TAG, "release: category=${categoryForTag(tag)}, result=not_registered")
+            return
+        }
+        updateDistributedPersistence(context)
 
         if (consumers.isEmpty()) {
-            releaseLocks()
-            reconcileFgsLifecycle(context)
+            physicalLockReleaseScheduler.release()
+            serviceLifecycle.reconcile(context)
         } else if (StreamKeepaliveService.isServiceRunning || !appInForeground) {
-            updateFgs(context)
+            if (!serviceLifecycle.update(context)) {
+                clearFailedForegroundState(context)
+            }
         }
+        Log.i(
+            TAG,
+            "release: category=${categoryForTag(tag)}, consumers=${consumers.size}, result=accepted"
+        )
     }
 
     /**
@@ -124,11 +187,18 @@ object ForegroundGuardian {
             return
         }
 
-        acquireLocks(context)
-        if (!ensureFgsStarted(context)) {
-            // 后台启动被系统拒绝时不得维持无通知的锁，也不能让生命周期回调抛异常杀进程。
-            releaseLocks()
-            Log.e(TAG, "Background foreground-service launch failed; keepalive locks released.")
+        physicalLockReleaseScheduler.cancel()
+        try {
+            physicalLocks.acquire(context)
+        } catch (error: Throwable) {
+            clearFailedForegroundState(context)
+            Log.e(TAG, "后台获取前台物理锁失败，已撤销消费者", error)
+            return
+        }
+        if (!serviceLifecycle.ensureStarted(context)) {
+            // 后台启动被系统拒绝时撤销共享消费者，避免无通知服务继续持有物理锁。
+            clearFailedForegroundState(context)
+            Log.e(TAG, "后台前台服务启动失败，已撤销消费者并释放保活锁")
         }
     }
 
@@ -139,20 +209,27 @@ object ForegroundGuardian {
      */
     @Synchronized
     fun restoreDistributedConsumer(context: Context) {
-        if (consumers.containsKey(DISTRIBUTED_TAG)) {
+        if (consumers.keys.any(ForegroundTagContract::isDistributedTag)) {
             return
         }
 
-        Log.i(TAG, "Restoring persisted distributed foreground consumer.")
+        Log.i(TAG, "恢复已持久化的分布式前台消费者")
         appInForeground = false
         consumers[DISTRIBUTED_TAG] = ConsumerEntry(
             PRIORITY_DISTRIBUTED,
             DISTRIBUTED_TAG,
             false
         )
-        StreamKeepaliveService.setDistributedKeepalivePersisted(context, true)
-        acquireLocks(context)
-        scheduleTimeout(context, DISTRIBUTED_TAG, -1)
+        updateDistributedPersistence(context)
+        physicalLockReleaseScheduler.cancel()
+        try {
+            physicalLocks.acquire(context)
+        } catch (error: Throwable) {
+            clearFailedForegroundState(context)
+            Log.e(TAG, "恢复分布式前台物理锁失败，已撤销消费者", error)
+            return
+        }
+        scheduleTimeout(context, DISTRIBUTED_TAG, -1, null)
     }
 
     /** 显式停止全部前台任务，并清除分布式恢复意图。 */
@@ -160,203 +237,116 @@ object ForegroundGuardian {
     fun releaseAll(context: Context) {
         StreamKeepaliveService.setDistributedKeepalivePersisted(context, false)
         clearRuntimeState()
-        reconcileFgsLifecycle(context)
+        serviceLifecycle.reconcile(context)
+    }
+
+    /**
+     * 收口启动恢复留下的全部分布式消费者，但保留独立的流式消费者。
+     *
+     * Rust bootstrap 读取数据库中的权威设置后可能发现 Android BootReceiver
+     * 依据旧 SharedPreferences 恢复了分布式占位消费者。此时不能只释放
+     * `distributed` 这个旧 tag：连接代际和派生任务也可能留下带前缀的
+     * native lease。统一按分布式命名空间清除，随后再由 Service 串行释放
+     * 音频、物理锁和前台通知。
+     */
+    @Synchronized
+    fun releaseDistributed(context: Context) {
+        var removed = false
+        consumers.keys
+            .filter(ForegroundTagContract::isDistributedTag)
+            .toList()
+            .forEach { tag ->
+                cancelTimeout(tag, null)
+                removed = consumers.remove(tag) != null || removed
+            }
+
+        // 即使运行时没有对应 consumer，也要清除新旧两套持久化键，避免
+        // 下次 BOOT_COMPLETED 再次按过期意图拉起服务。
+        updateDistributedPersistence(context)
+        if (consumers.isEmpty()) {
+            physicalLockReleaseScheduler.release()
+            serviceLifecycle.reconcile(context)
+        } else if (StreamKeepaliveService.isServiceRunning || !appInForeground) {
+            if (!serviceLifecycle.update(context)) {
+                clearFailedForegroundState(context)
+            }
+        }
+        Log.i(
+            TAG,
+            "清理分布式前台恢复状态：removed=$removed, consumers=${consumers.size}, " +
+                "result=accepted",
+        )
     }
 
     /** 标记 Service 已在 onCreate 最早阶段完成前台提升。 */
     @Synchronized
     fun onServicePromoted() {
-        foregroundStartPending = false
+        serviceLifecycle.onServicePromoted()
     }
 
-    /** 前台提升同步失败时释放物理锁，保留消费者供后续可见状态切换重试。 */
+    /** 前台提升失败后撤销共享消费者与物理锁，避免失败服务留下无主保活状态。 */
     @Synchronized
-    fun onServicePromotionFailed() {
-        foregroundStartPending = false
-        releaseLocks()
+    fun onServicePromotionFailed(context: Context) {
+        serviceLifecycle.onServiceDestroyed()
+        clearFailedForegroundState(context)
     }
 
     /** Service 销毁时释放物理锁但保留业务消费者，避免服务异常退出篡改连接状态。 */
     @Synchronized
     fun onServiceDestroyed() {
-        foregroundStartPending = false
-        releaseLocks()
+        serviceLifecycle.onServiceDestroyed()
+        physicalLockReleaseScheduler.release()
     }
 
-    private fun scheduleTimeout(context: Context, tag: String, requestedTimeoutMs: Long) {
+    private fun scheduleTimeout(
+        context: Context,
+        tag: String,
+        requestedTimeoutMs: Long,
+        leaseGeneration: Long?
+    ) {
         val actualTimeout = if (requestedTimeoutMs >= 0) {
             requestedTimeoutMs
         } else {
-            defaultTimeoutFor(tag)
+            ForegroundTimeoutPolicy.forTag(tag)
         }
 
         if (actualTimeout <= 0) {
             return
         }
 
-        val appContext = context.applicationContext
-        val runnable = Runnable {
-            Log.w(TAG, "Timeout reached for tag: $tag. Force releasing to prevent lock leak.")
-            release(appContext, tag)
-        }
-        timeoutRunnables[tag] = runnable
-        handler.postDelayed(runnable, actualTimeout)
-        Log.d(TAG, "Scheduled timeout for tag: $tag in $actualTimeout ms")
+        watchdog.schedule(context.applicationContext, tag, leaseGeneration, actualTimeout)
+        Log.d(
+            TAG,
+            "timeout scheduled: category=${categoryForTag(tag)}, consumers=${consumers.size}, result=accepted"
+        )
     }
 
-    private fun defaultTimeoutFor(tag: String): Long {
-        return when {
-            tag.startsWith("stream:") -> 10 * 60 * 1000L
-            tag == "sync" -> 30 * 60 * 1000L
-            tag == "prerender" -> 30 * 60 * 1000L
-            tag == DISTRIBUTED_TAG || tag == "manual_keepalive" -> 2 * 60 * 60 * 1000L
-            else -> 15 * 60 * 1000L
+    private fun cancelTimeout(tag: String, generation: Long?) {
+        watchdog.cancel(tag, generation)
+    }
+
+    private fun removeLegacyDistributedPlaceholder() {
+        if (consumers.remove(DISTRIBUTED_TAG) != null) {
+            cancelTimeout(DISTRIBUTED_TAG, null)
+            Log.i(TAG, "移除旧分布式占位消费者：category=distributed, result=accepted")
         }
     }
 
-    private fun cancelTimeout(tag: String) {
-        timeoutRunnables.remove(tag)?.let(handler::removeCallbacks)
+    private fun updateDistributedPersistence(context: Context) {
+        StreamKeepaliveService.setDistributedKeepalivePersisted(
+            context,
+            consumers.keys.any(ForegroundTagContract::isDistributedTag),
+        )
     }
 
     private fun clearRuntimeState() {
-        timeoutRunnables.values.forEach(handler::removeCallbacks)
-        timeoutRunnables.clear()
+        watchdog.clear()
         consumers.clear()
-        releaseLocks()
+        streamLeases.clear()
+        physicalLockReleaseScheduler.release()
     }
 
-    private fun acquireLocks(context: Context) {
-        val appContext = context.applicationContext
-
-        if (wakeLock == null) {
-            val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
-            wakeLock = powerManager?.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "VCP:ForegroundGuardian"
-            )
-        }
-        wakeLock?.let {
-            if (!it.isHeld) {
-                it.acquire()
-                Log.d(TAG, "acquireLocks: WakeLock acquired.")
-            }
-        }
-
-        if (wifiLock == null) {
-            val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            if (wifiManager != null) {
-                @Suppress("DEPRECATION")
-                wifiLock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    wifiManager.createWifiLock(
-                        WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                        "VCP:ForegroundGuardianWifi"
-                    )
-                } else {
-                    wifiManager.createWifiLock(
-                        WifiManager.WIFI_MODE_FULL,
-                        "VCP:ForegroundGuardianWifi"
-                    )
-                }
-            }
-        }
-        wifiLock?.let {
-            if (!it.isHeld) {
-                it.acquire()
-                Log.d(TAG, "acquireLocks: WifiLock acquired.")
-            }
-        }
-    }
-
-    private fun releaseLocks() {
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
-                Log.d(TAG, "releaseLocks: WakeLock released.")
-            }
-        }
-        wakeLock = null
-
-        wifiLock?.let {
-            if (it.isHeld) {
-                it.release()
-                Log.d(TAG, "releaseLocks: WifiLock released.")
-            }
-        }
-        wifiLock = null
-    }
-
-    private fun ensureFgsStarted(context: Context): Boolean {
-        if (StreamKeepaliveService.isServiceRunning) {
-            updateFgs(context)
-            return true
-        }
-
-        if (foregroundStartPending) {
-            Log.d(TAG, "Foreground start already pending; coalescing duplicate request.")
-            return true
-        }
-
-        return startFgs(context)
-    }
-
-    private fun startFgs(context: Context): Boolean {
-        val appContext = context.applicationContext
-        val intent = Intent(appContext, StreamKeepaliveService::class.java)
-        foregroundStartPending = true
-        Log.i(TAG, "startFgs: Starting StreamKeepaliveService...")
-
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
-            }
-            true
-        } catch (e: Exception) {
-            foregroundStartPending = false
-            Log.e(TAG, "startFgs failed", e)
-            false
-        }
-    }
-
-    private fun updateFgs(context: Context) {
-        if (!StreamKeepaliveService.isServiceRunning) {
-            if (!appInForeground) {
-                ensureFgsStarted(context)
-            }
-            return
-        }
-
-        val appContext = context.applicationContext
-        val intent = Intent(appContext, StreamKeepaliveService::class.java).apply {
-            action = StreamKeepaliveService.ACTION_REFRESH_NOTIFICATION
-        }
-        try {
-            // 已运行的前台服务只需普通 startService 更新，不能重复制造前台提升计时契约。
-            appContext.startService(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "updateFgs failed", e)
-        }
-    }
-
-    private fun reconcileFgsLifecycle(context: Context) {
-        if (!StreamKeepaliveService.isServiceRunning) {
-            // 若首次 startForegroundService 尚在排队，不能 stopService 抢先取消；
-            // Service 会先在 onCreate 完成提升，再在 onStartCommand 发现空消费者后自停。
-            if (foregroundStartPending) {
-                Log.d(TAG, "Foreground start is pending; deferring stop until service reconciliation.")
-            }
-            return
-        }
-
-        val appContext = context.applicationContext
-        val intent = Intent(appContext, StreamKeepaliveService::class.java).apply {
-            action = StreamKeepaliveService.ACTION_RECONCILE_LIFECYCLE
-        }
-        try {
-            appContext.startService(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to reconcile StreamKeepaliveService lifecycle", e)
-        }
+    private fun clearFailedForegroundState(context: Context) {
+        failureCoordinator.clear(context)
     }
 }

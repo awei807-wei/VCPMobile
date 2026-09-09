@@ -54,7 +54,10 @@ fn append_capped_bytes(buffer: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String>
 }
 
 async fn read_capped_text(resp: reqwest::Response) -> Result<String, String> {
-    if resp.content_length().is_some_and(|len| len > MAX_RESPONSE_BYTES as u64) {
+    if resp
+        .content_length()
+        .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
+    {
         return Err("日志响应超过 8 MiB，已拒绝读取".to_string());
     }
     let mut buffer = Vec::new();
@@ -91,23 +94,28 @@ pub async fn logcenter_fetch<R: Runtime>(
     // The target is derived ONLY from the backend Settings snapshot.
     let mut request = admin_api::admin_request(&settings, Method::GET, &["server-log"])?;
     if incremental {
-        request = request.query(&[("incremental", "true".to_string()), ("offset", offset.to_string())]);
+        request = request.query(&[
+            ("incremental", "true".to_string()),
+            ("offset", offset.to_string()),
+        ]);
     }
-    let resp = request.timeout(FETCH_TOTAL_TIMEOUT).send().await
+    let resp = request
+        .timeout(FETCH_TOTAL_TIMEOUT)
+        .send()
+        .await
         .map_err(|_| "日志拉取失败，请检查连接或稍后重试".to_string())?;
     match resp.status() {
         StatusCode::OK => {}
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN =>
-            return Err("管理员凭据校验失败，请检查当前配置".to_string()),
-        StatusCode::NOT_FOUND =>
-            return Err("日志文件不存在，或服务器不支持日志接口".to_string()),
-        StatusCode::SERVICE_UNAVAILABLE =>
-            return Err("日志服务暂不可用，请稍后重试".to_string()),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+            return Err("管理员凭据校验失败，请检查当前配置".to_string())
+        }
+        StatusCode::NOT_FOUND => return Err("日志文件不存在，或服务器不支持日志接口".to_string()),
+        StatusCode::SERVICE_UNAVAILABLE => return Err("日志服务暂不可用，请稍后重试".to_string()),
         status => return Err(format!("日志拉取失败: HTTP {}", status.as_u16())),
     }
     let body = read_capped_text(resp).await?;
-    let mut result: LogFetchResult = serde_json::from_str(&body)
-        .map_err(|_| "服务器日志响应不符合 JSON 契约".to_string())?;
+    let mut result: LogFetchResult =
+        serde_json::from_str(&body).map_err(|_| "服务器日志响应不符合 JSON 契约".to_string())?;
     if result.offset > MAX_JS_SAFE_INTEGER || result.file_size > MAX_JS_SAFE_INTEGER {
         return Err("日志响应中的大小或游标超出安全范围".to_string());
     }
@@ -135,7 +143,9 @@ mod tests {
     }
     #[test]
     fn different_profile_is_rejected() {
-        assert!(validate_connection_scope(&settings(), "wan", "https://example.test/vcp/").is_err());
+        assert!(
+            validate_connection_scope(&settings(), "wan", "https://example.test/vcp/").is_err()
+        );
     }
     #[test]
     fn different_server_is_rejected() {
@@ -143,7 +153,12 @@ mod tests {
     }
     #[test]
     fn embedded_credentials_are_rejected() {
-        assert!(validate_connection_scope(&settings(), "lan", "https://user:pass@example.test/vcp/").is_err());
+        assert!(validate_connection_scope(
+            &settings(),
+            "lan",
+            "https://user:pass@example.test/vcp/"
+        )
+        .is_err());
     }
     #[test]
     fn oversized_chunk_is_not_appended() {
@@ -161,7 +176,8 @@ mod tests {
     }
     #[test]
     fn rotation_notice_has_safe_defaults() {
-        let result: LogFetchResult = serde_json::from_str(r#"{"needFullReload":true,"offset":0}"#).unwrap();
+        let result: LogFetchResult =
+            serde_json::from_str(r#"{"needFullReload":true,"offset":0}"#).unwrap();
         assert!(result.need_full_reload);
         assert_eq!(result.file_size, 0);
     }

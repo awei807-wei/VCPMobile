@@ -87,7 +87,7 @@ function result(
     content,
     offset,
     path,
-    fileSize: content.length,
+    fileSize: Math.max(offset, new TextEncoder().encode(content).byteLength),
     needFullReload,
   };
 }
@@ -346,6 +346,18 @@ describe("logCenterStore T04 竞态与边界", () => {
 
     await resolveRequest(1, result("行\n", 3));
     expect(current.lines).toEqual(["半行"]);
+    expect(current.pendingFragment).toBe("");
+  });
+
+  it("L12b 跨增量边界的 ANSI 序列在半行拼接后完整剥除", async () => {
+    const current = await openSession();
+    await resolveRequest(0, result("\x1b[", 2));
+    await advance(3_000);
+    expect(getRequest(1).args).toMatchObject({ incremental: true, offset: 2 });
+
+    await resolveRequest(1, result("31m中文\n", 12));
+    expect(current.lines).toEqual(["中文"]);
+    expect(current.lines.join("")).not.toContain("\x1b");
     expect(current.pendingFragment).toBe("");
   });
 

@@ -160,7 +160,8 @@ export const useLogCenterStore = defineStore('logCenter', () => {
       return;
     }
     const carry = incremental ? pendingFragment.value : '';
-    const chunk = splitLogChunk(stripAnsi(data.content), carry);
+    // ANSI 序列可能跨两次增量响应，必须先拼接上次半行再统一清理。
+    const chunk = splitLogChunk(stripAnsi(`${carry}${data.content}`));
     const base = incremental
       ? (pendingFragment.value && lines.value.length ? lines.value.slice(0, -1) : lines.value)
       : [];

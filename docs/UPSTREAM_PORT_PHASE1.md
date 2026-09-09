@@ -12,7 +12,7 @@
 
 > 交付物不是“全量同步上游”，而是：五个独立组件/工具原样移植、四处局部界面修复、一个带连接隔离的只读日志中心。Wire、数据库、渲染主链、OTA 等本轮均不改。
 >
-> 本文是待执行施工图，不是已完成代码。附录中的 fork 适配代码经过文末注明的有限检查，尚未在整个项目上完成类型检查、Rust 编译、APK 构建或真机验收。
+> 本文同时是施工图与执行验收台账。当前 T00–T07 已完成并验证，T08 已生成并校验 APK，但真机、测试服务器等人工验收仍为 `NOT_RUN`；详细状态以第 10 节为准。
 
 ## 0. 给执行模型的入口指令
 
@@ -720,6 +720,7 @@ pnpm test:run
 pnpm build
 cargo check --manifest-path src-tauri/Cargo.toml --locked
 cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
 随后设置 `FINAL = True`，运行附录 E 的白名单、全部交付物存在性和精确源文件检查。追加检查：
@@ -789,10 +790,10 @@ pnpm android:verify:phone
 | T02-c RAG 定位 | VERIFIED | 两个收起定位改为 `instant`，Tab 定位仍为 `smooth`；未提交 | T02 共享门禁：Vitest 0；vue-tsc 0；build 0；diff check 0 | 无阻塞 |
 | T02-d 群成员限高 | VERIFIED | 成员区增加 `max-h-80`、纵向滚动与现有滚动样式；toggle agentId 行为测试通过；未提交 | T02 共享门禁：Vitest 0；vue-tsc 0；build 0；diff check 0 | 无阻塞 |
 | T03 日志后端 | VERIFIED | 原样新增 `admin_api.rs`；新增只读 `log_service.rs` 与模块/handler 注册；未提交 | `cargo check --manifest-path src-tauri/Cargo.toml --locked` 0；`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib logcenter` 0（7/7）；`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib admin_api` 0（7/7）；`git diff --check` 0 | `admin_api.rs` blob 匹配；日志命令仅注册 `logcenter_fetch`，无清空命令；无阻塞 |
-| T04 隔离 Store | VERIFIED | 完整加入附录 B/C/D；新增 L01–L21 响应式竞态/边界测试；未提交 | `pnpm exec vitest run src/tests/unit/port/RequestEpoch.test.ts src/tests/unit/port/LogCenterStore.test.ts` 0（30/30）；`pnpm exec vue-tsc --noEmit` 0；`git diff --check` 0 | 已验证双在途上限、旧响应隔离、连接/凭据变化、完整 6/12/24/30 秒退避、70,000 字符长行与总缓冲上限；无阻塞 |
+| T04 隔离 Store | VERIFIED | 完整加入附录 B/C/D；新增 L01–L21 响应式竞态/边界测试及跨响应 ANSI 清理回归；未提交 | `pnpm exec vitest run src/tests/unit/port/RequestEpoch.test.ts src/tests/unit/port/LogCenterStore.test.ts` 0（31/31）；`pnpm exec vue-tsc --noEmit` 0；`git diff --check` 0 | 已验证双在途上限、旧响应隔离、连接/凭据变化、跨响应 ANSI 清理、完整 6/12/24/30 秒退避、70,000 字符长行与总缓冲上限；无阻塞 |
 | T05 日志页面 | VERIFIED | 固定上游页面取件后完成 A–H 只读适配；新增页面集成测试；未提交 | `pnpm exec vitest run src/tests/unit/port/LogCenterIntegration.test.ts` 0（4/4）；`pnpm exec vue-tsc --noEmit` 0；`pnpm build` 0（4588 modules）；`git diff --check` 0 | 仅一个 BottomSheet；无 clear/compact；保留虚拟列表与文本节点高亮；无阻塞 |
 | T06 导航接线 | VERIFIED | 扩展 Overlay Store；懒加载且一次挂载日志页；新增右栏只读入口；扩展 10 个导航/集成场景；未提交 | `pnpm exec vitest run src/tests/unit/port/LogCenterIntegration.test.ts` 0（14/14）；`pnpm exec vitest run src/tests/unit/port` 0（59/59）；`pnpm exec vue-tsc --noEmit` 0；`pnpm build` 0；`git diff --check` 0 | 入口不重复压栈，open/active 分离，返回栈和异步关闭通过；无阻塞 |
-| T07 集成验证 | VERIFIED | 全量前端/Rust 回归与最终范围审计完成；未提交 | `pnpm exec vitest run src/tests/unit/port` 0（59/59）；`pnpm exec vue-tsc --noEmit` 0；`pnpm test:run` 0（269/269）；`pnpm build` 0（4600 modules）；`cargo check --manifest-path src-tauri/Cargo.toml --locked` 0；`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib` 0（596 passed，1 ignored）；附录 E `FINAL=True` 等价检查 PASS；`git diff --check bae00da0` 0 | 28/28 变更路径在白名单；交付物齐全；6 个原样 blob 匹配；无阻塞 |
+| T07 集成验证 | VERIFIED | 全量前端/Rust 回归与最终范围审计完成；CI 格式回归已修正；未提交 | `pnpm exec vitest run src/tests/unit/port` 0（60/60）；`pnpm exec vue-tsc --noEmit` 0；`pnpm test:unit` 0（270/270）；`pnpm build` 0（4600 modules）；`cargo fmt --all -- --check` 0；`cargo check --manifest-path src-tauri/Cargo.toml --locked` 0；`cargo test --locked --workspace --lib` 0（插件 8/8，主 crate 596 passed、1 ignored）；附录 E `FINAL=True` 等价检查 PASS；`git diff --check bae00da0` 0 | 28/28 变更路径在白名单；交付物齐全；6 个原样 blob 匹配；无阻塞 |
 | T08 APK/真机 | CODE_DONE | 生成并校验 `app-universal-release.apk`（30,692,934 bytes，arm64-v8a，Debug 证书）；未安装、未提交 | `pnpm android:build:phone` 首次受限网络运行 1（BLOCKED_ENV：esm.sh）；受控联网重跑 0（Rust release、Gradle、v2 签名、zipalign、ELF 16KB 页对齐 PASS）；`pnpm android:verify:phone` 0（ABI/ELF 16KB PASS）；`adb devices -l` 0（无设备） | 真机、双测试服务器、错误凭据与回归人工验收 `NOT_RUN`；不得宣称真机可用 |
 
 遇到阻塞，只在本节追加这一种记录，不新建日志文档：
@@ -1244,7 +1245,8 @@ export const useLogCenterStore = defineStore('logCenter', () => {
       return;
     }
     const carry = incremental ? pendingFragment.value : '';
-    const chunk = splitLogChunk(stripAnsi(data.content), carry);
+    // ANSI 序列可能跨两次增量响应，必须先拼接上次半行再统一清理。
+    const chunk = splitLogChunk(stripAnsi(`${carry}${data.content}`));
     const base = incremental
       ? (pendingFragment.value && lines.value.length ? lines.value.slice(0, -1) : lines.value)
       : [];

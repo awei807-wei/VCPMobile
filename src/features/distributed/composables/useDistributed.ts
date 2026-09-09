@@ -132,7 +132,14 @@ async function setupListener(): Promise<void> {
 }
 
 function teardownListener(): void {
-  if (listenerCount > 0 || !unlisten) return;
+  if (listenerCount > 0) return;
+
+  // 事件水位只属于当前监听周期。完全脱离监听后，下一位消费者必须能用
+  // 同一 session 的权威快照校正离线期间发生的状态变化。
+  latestEventSession = 0;
+  hasReceivedEvent = false;
+
+  if (!unlisten) return;
   const stopListening = unlisten;
   unlisten = null;
   try {

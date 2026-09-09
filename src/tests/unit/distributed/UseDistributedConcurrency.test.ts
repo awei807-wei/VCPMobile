@@ -108,4 +108,58 @@ describe("useDistributed 会话状态并发控制", () => {
     second.wrapper.unmount();
     await Promise.resolve(stop);
   });
+
+  it("最后一个消费者卸载后重挂载可接受同一会话的当前快照", async () => {
+    let snapshotCount = 0;
+    mockInvoke("get_distributed_status", () => {
+      snapshotCount += 1;
+      return snapshotCount === 1
+        ? status(7, "connecting")
+        : status(7, "disconnected");
+    });
+    const first = await mountDistributed();
+    await first.api.activate();
+    emitTauriEvent("vcp-distributed-status", status(7, "connected"));
+    expect(first.api.status.value.state).toBe("connected");
+
+    first.wrapper.unmount();
+    const second = await mountDistributed(false);
+    await second.api.activate();
+
+    expect(second.api.status.value).toMatchObject({
+      session_id: 7,
+      state: "disconnected",
+      connected: false,
+    });
+    expect(listenMock).toHaveBeenCalledTimes(2);
+    second.wrapper.unmount();
+  });
+
+  it("重挂载的快照请求期间到达的同会话事件仍优先", async () => {
+    const remountSnapshot = deferred<unknown>();
+    let snapshotCount = 0;
+    mockInvoke("get_distributed_status", () => {
+      snapshotCount += 1;
+      return snapshotCount === 1
+        ? status(9, "disconnected")
+        : remountSnapshot.promise;
+    });
+    const first = await mountDistributed();
+    await first.api.activate();
+    first.wrapper.unmount();
+
+    const second = await mountDistributed(false);
+    const activating = second.api.activate();
+    await vi.waitFor(() => expect(snapshotCount).toBe(2));
+    emitTauriEvent("vcp-distributed-status", status(9, "connected"));
+    remountSnapshot.resolve(status(9, "disconnected"));
+    await activating;
+
+    expect(second.api.status.value).toMatchObject({
+      session_id: 9,
+      state: "connected",
+      connected: true,
+    });
+    second.wrapper.unmount();
+  });
 });

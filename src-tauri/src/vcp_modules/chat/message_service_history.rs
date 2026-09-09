@@ -119,15 +119,20 @@ async fn load_history_shell_context(
     let user_name = settings
         .map(|settings| settings.user_name)
         .unwrap_or_else(|| "User".to_string());
-    let user_avatar_color: Option<String> = sqlx::query_scalar(
+    let user_avatar_color = load_user_avatar_color(pool).await;
+    (agents, user_name, user_avatar_color)
+}
+
+async fn load_user_avatar_color(pool: &sqlx::SqlitePool) -> Option<String> {
+    sqlx::query_scalar(
         "SELECT dominant_color FROM avatars
-         WHERE owner_type = 'user' AND owner_id = 'user_avatar'",
+         WHERE owner_type = 'user' AND owner_id = 'user_avatar'
+           AND deleted_at IS NULL",
     )
     .fetch_optional(pool)
     .await
     .ok()
-    .flatten();
-    (agents, user_name, user_avatar_color)
+    .flatten()
 }
 
 async fn load_history_agents(
@@ -136,7 +141,8 @@ async fn load_history_agents(
     match sqlx::query(
         "SELECT a.agent_id, a.name, av.dominant_color
          FROM agents a
-         LEFT JOIN avatars av ON av.owner_id = a.agent_id AND av.owner_type = 'agent'
+         LEFT JOIN avatars av ON av.owner_id = a.agent_id
+            AND av.owner_type = 'agent' AND av.deleted_at IS NULL
          WHERE a.deleted_at IS NULL",
     )
     .fetch_all(pool)
@@ -324,7 +330,7 @@ async fn write_render_cache_if_current(
 
 #[cfg(test)]
 mod tests {
-    use super::write_render_cache_if_current;
+    use super::{load_history_agents, load_user_avatar_color, write_render_cache_if_current};
     use crate::vcp_modules::topic_types::TopicKey;
 
     #[tokio::test]
@@ -363,5 +369,52 @@ mod tests {
             .await
             .expect("read cache fixture");
         assert_eq!(bytes, vec![0xAA]);
+    }
+
+    #[tokio::test]
+    async fn 历史消息外壳不读取头像墓碑颜色() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("创建消息外壳测试数据库");
+        sqlx::raw_sql(
+            "CREATE TABLE agents (
+                agent_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                deleted_at INTEGER
+             );
+             CREATE TABLE avatars (
+                owner_type TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                dominant_color TEXT,
+                deleted_at INTEGER,
+                PRIMARY KEY(owner_type, owner_id)
+             );
+             INSERT INTO agents VALUES
+                ('live-agent', 'Live', NULL),
+                ('deleted-avatar-agent', 'Deleted avatar', NULL);
+             INSERT INTO avatars VALUES
+                ('agent', 'live-agent', '#111111', NULL),
+                ('agent', 'deleted-avatar-agent', '#222222', 20),
+                ('user', 'user_avatar', '#333333', 30);",
+        )
+        .execute(&pool)
+        .await
+        .expect("写入消息外壳测试数据");
+
+        let agents = load_history_agents(&pool).await;
+        assert_eq!(agents.len(), 2);
+        let live = agents
+            .iter()
+            .find(|agent| agent.id == "live-agent")
+            .expect("读取存活头像颜色");
+        let tombstoned = agents
+            .iter()
+            .find(|agent| agent.id == "deleted-avatar-agent")
+            .expect("保留头像已删除的智能体");
+        assert_eq!(live.avatar_calculated_color.as_deref(), Some("#111111"));
+        assert_eq!(tombstoned.avatar_calculated_color, None);
+        assert_eq!(load_user_avatar_color(&pool).await, None);
     }
 }

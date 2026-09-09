@@ -129,10 +129,12 @@ const combinedItems = computed(() => [
 ```typescript
 const currentSelectedItem = ref<any>(null);   // 当前选中的 Agent 或 Group 对象
 const currentTopicId = ref<string | null>(null); // 当前话题 ID
-const lastActiveTopicMap = ref<Record<string, string>>({}); // 每个 item 最后打开的话题
+const lastActiveTopicMap = ref<Record<string, string>>({}); // ownerType:ownerId -> topicId
 ```
 
 `chatSessionStore` 通过 Pinia `persist` 插件将这三个字段持久化到 `localStorage`，保证应用重启后能恢复上次会话上下文：
+
+`lastActiveTopicMap` 以 `ownerType:ownerId` 为键，避免同 ID 的 Agent 与 Group 相互覆盖。升级时若复合键不存在，会读取旧版 `ownerId` 键，将记录迁移到复合键并删除 legacy 键。
 
 > 文件位置：`src/core/stores/chatSessionStore.ts` 第 99–103 行
 
@@ -579,14 +581,15 @@ AgentList.vue 渲染列表 + 未读红点
     │
     ├──► 若已选中且 currentTopicId 存在，直接返回（防重复）
     │
-    ├──► lastActiveTopicMap[agent.id]?
+    ├──► lastActiveTopicMap[`agent:${agent.id}`]?
     │       Yes ──► 使用该 topicId
-    │       No  ──► invoke("get_topics") 取最新话题
+    │       No  ──► 读取 legacy agent.id 键，迁移后删除旧键
+    │       均无 ──► invoke("get_topics") 取最新话题
     │
-    ▼ selectTopicById(agent.id, topicId, loadHistory)
+    ▼ selectTopicById(agent.id, "agent", topicId, loadHistory)
     │
     ├──► currentTopicId = topicId
-    ├──► lastActiveTopicMap[agent.id] = topicId
+    ├──► lastActiveTopicMap[`agent:${agent.id}`] = topicId
     ├──► currentSelectedItem = { ...agent, type: "agent" }
     │
     ▼ loadHistoryCallback(itemId, ownerType, topicId)
@@ -755,7 +758,7 @@ watch(agentConfig, () => {
 | 原始快照 | Original Snapshot | 配置加载后深克隆一份 JSON 快照，用于后续变更检测 | `AgentSettingsView.vue` |
 | SortableJS | — | 第三方拖拽排序库，用于 Agent/Group 侧边栏的手动排序 | `AgentList.vue` |
 | agentOrder / groupOrder | — | 保存在 `AppSettings` 中的 ID 数组，定义侧边栏展示顺序 | `settings.ts`, `AgentList.vue` |
-| lastActiveTopicMap | — | 记录每个 Agent/Group 最后一次打开的话题 ID，会话恢复时使用 | `chatSessionStore.ts` |
+| lastActiveTopicMap | — | 按 `ownerType:ownerId` 记录每个 Agent/Group 最后一次打开的话题 ID；升级时迁移并删除 legacy `ownerId` 键 | `chatSessionStore.ts` |
 | allowDefault | — | `read_agent_config` 的参数，为 `true` 时若查不到记录返回默认配置而非报错 | `AgentSettingsView.vue` |
 | mobileSystemPrompt | — | 仅本机生效、不参与同步的系统提示词，实现移动端差异化行为 | `AgentSettingsView.vue` |
 | memberTags | — | Group 中每个成员对应的触发标签，用于自然随机发言模式 | `GroupSettingsView.vue` |

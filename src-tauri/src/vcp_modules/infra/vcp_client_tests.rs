@@ -1,5 +1,6 @@
 use super::active::delete_active_generation_for_key;
 use super::*;
+use tauri::Manager;
 
 #[test]
 fn 核心状态缺失时返回可重试错误() {
@@ -35,6 +36,48 @@ fn 流事件serde序列化携带正整数请求纪元() {
     assert_eq!(serialized["type"], "thinking");
     assert_eq!(serialized["generation"], 7);
     assert!(serialized.get("requestEpoch").is_none());
+}
+
+#[test]
+fn 群聊回合取消和清理按完整群组话题身份隔离() {
+    let app = tauri::test::mock_app();
+    app.manage(CancelledGroupTurns::default());
+    let first_key = group_turn_key("group-a", "shared-topic").unwrap();
+    let second_key = group_turn_key("group-b", "shared-topic").unwrap();
+
+    interruptGroupTurn(
+        app.state(),
+        "group-a".to_string(),
+        "shared-topic".to_string(),
+    )
+    .expect("应取消第一个群组回合");
+    let cancelled_turns = app.state::<CancelledGroupTurns>();
+    assert!(cancelled_turns.is_cancelled(&first_key));
+    assert!(!cancelled_turns.is_cancelled(&second_key));
+
+    cancelled_turns.clear(&second_key);
+    assert!(cancelled_turns.is_cancelled(&first_key));
+
+    interruptGroupTurn(
+        app.state(),
+        "group-b".to_string(),
+        "shared-topic".to_string(),
+    )
+    .expect("应独立取消第二个群组回合");
+    cancelled_turns.clear(&first_key);
+    assert!(!cancelled_turns.is_cancelled(&first_key));
+    assert!(cancelled_turns.is_cancelled(&second_key));
+}
+
+#[test]
+fn 群聊回合取消拒绝不完整身份() {
+    let app = tauri::test::mock_app();
+    app.manage(CancelledGroupTurns::default());
+
+    let error = interruptGroupTurn(app.state(), String::new(), "shared-topic".to_string())
+        .expect_err("缺少群组标识时必须拒绝 topic-only 取消");
+
+    assert!(error.contains("groupId"));
 }
 
 #[tokio::test]

@@ -850,17 +850,19 @@ sessionStore.selectItem(item)
     │
     ├──► 若已选中且已有话题 → 提前返回（防重复）
     │
-    ├──► 从 lastActiveTopicMap 获取上次话题 ID
+    ├──► 从 lastActiveTopicMap[`${ownerType}:${ownerId}`] 获取上次话题 ID
     │
-    ├──► 若无记录 → invoke('get_topics', { ownerId, ownerType })
+    ├──► 复合键缺失时读取 legacy ownerId 键，迁移后删除旧键
+    │
+    ├──► 两种键均无记录 → invoke('get_topics', { ownerId, ownerType })
     │       │
     │       └──► Rust 查询 topics 表，按 updated_at DESC
     │
-    └──► selectTopicById(ownerId, topicId)
+    └──► selectTopicById(ownerId, ownerType, topicId)
             │
             ├──► currentTopicId.value = topicId
             │
-            ├──► lastActiveTopicMap[ownerId] = topicId
+            ├──► lastActiveTopicMap[`${ownerType}:${ownerId}`] = topicId
             │
             ├──► currentSelectedItem.value = { ...agent, type: 'agent' }
             │
@@ -869,6 +871,8 @@ sessionStore.selectItem(item)
                     ▼
                 ChatView 加载历史消息并渲染
 ```
+
+复合键会随 Pinia 状态持久化；legacy `ownerId` 键只用于升级兼容，成功迁移或后续明确选中话题后即删除，避免同 ID 的 Agent 与 Group 重复消费旧记录。
 
 > 注：`loadHistoryCallback` 的注入由 `App.vue` 在初始化时完成，解耦了 `chatSessionStore` 与 `chatHistoryStore` 的直接依赖。
 

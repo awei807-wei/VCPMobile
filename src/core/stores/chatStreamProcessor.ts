@@ -61,8 +61,10 @@ async function finalizeMessage(
   } catch (error) {
     console.error("[ChatStreamStore] process_message_content failed:", error);
   }
-  if (!shouldNotifyFinished() ||
-      deps.state.activeStreamMessages.get(parsed.messageKey) !== message) {
+  if (
+    !shouldNotifyFinished() ||
+    deps.state.activeStreamMessages.get(parsed.messageKey) !== message
+  ) {
     return;
   }
   message.content = content;
@@ -99,9 +101,11 @@ function createSkeleton(
 ): ChatMessage {
   const context = parsed.context;
   const event = parsed.event;
-  const agentId = firstDefined(context.agentId, context.agent_id) as
-    | string
-    | undefined;
+  const agentId = firstDefined(
+    context.speakerAgentId,
+    context.agentId,
+    context.agent_id,
+  ) as string | undefined;
   const agentName = context.agentName || context.agent_name;
   return {
     id: parsed.messageId,
@@ -323,7 +327,8 @@ function acceptStreamGeneration(
   if (watermark && parsed.generation <= watermark.generation) return null;
   const previous = generations.get(parsed.messageKey);
   if (previous !== undefined && parsed.generation < previous) return null;
-  if (previous !== undefined && parsed.generation === previous) return "existing";
+  if (previous !== undefined && parsed.generation === previous)
+    return "existing";
   let decision: StreamGenerationDecision = "new";
   if (
     previous !== undefined ||
@@ -353,7 +358,12 @@ async function processStreamEvent(
   if (!parsed) return;
   const generationDecision = acceptStreamGeneration(deps, parsed);
   if (!generationDecision) return;
-  const message = createOrGetMessage(deps, parsed, generationDecision, callbacks);
+  const message = createOrGetMessage(
+    deps,
+    parsed,
+    generationDecision,
+    callbacks,
+  );
   switch (event.type) {
     case "thinking":
       handleThinkingEvent(deps, parsed, message);

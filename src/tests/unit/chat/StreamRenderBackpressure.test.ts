@@ -93,23 +93,103 @@ describe("流式渲染背压与纪元门禁", () => {
     mockInvoke("process_message_content", () => []);
   });
 
+  it("群聊 skeleton 使用请求上下文中的发言 Agent 身份", async () => {
+    const store = useChatStreamStore();
+    await store.processStreamEvent({
+      type: "thinking",
+      generation: 1,
+      messageId: "group-message",
+      context: {
+        groupId: "group-a",
+        ownerType: "group",
+        topicId: "group-topic",
+        speakerAgentId: "speaker-a",
+        isGroupMessage: true,
+        agentName: "Speaker",
+      },
+    });
+
+    expect(
+      store.getActiveStreamMessage(
+        "group-a",
+        "group",
+        "group-topic",
+        "group-message",
+      ),
+    ).toMatchObject({
+      agentId: "speaker-a",
+      groupId: "group-a",
+      isGroupMessage: true,
+      name: "Speaker",
+    });
+  });
+
+  it.each(["agentId", "agent_id"] as const)(
+    "单聊 skeleton 保留 %s 上下文字段兼容",
+    async (agentIdField) => {
+      const store = useChatStreamStore();
+      await store.processStreamEvent({
+        type: "thinking",
+        generation: 1,
+        messageId: "agent-message",
+        context: {
+          ownerId: "agent-a",
+          ownerType: "agent",
+          topicId: "agent-topic",
+          [agentIdField]: "agent-a",
+        },
+      });
+
+      expect(
+        store.getActiveStreamMessage(
+          "agent-a",
+          "agent",
+          "agent-topic",
+          "agent-message",
+        )?.agentId,
+      ).toBe("agent-a");
+    },
+  );
+
   it("将新 generation 视为新流，并拒绝旧 generation 的迟到正文", async () => {
     const store = useChatStreamStore();
-    await store.processStreamEvent(streamEvent({ type: "thinking", messageId: "assistant-1" }));
     await store.processStreamEvent(
-      streamEvent({ type: "data", messageId: "assistant-1", generation: 1, chunk: "旧" }),
+      streamEvent({ type: "thinking", messageId: "assistant-1" }),
     );
     await store.processStreamEvent(
-      streamEvent({ type: "thinking", messageId: "assistant-1", generation: 2 }),
+      streamEvent({
+        type: "data",
+        messageId: "assistant-1",
+        generation: 1,
+        chunk: "旧",
+      }),
     );
     await store.processStreamEvent(
-      streamEvent({ type: "data", messageId: "assistant-1", generation: 2, chunk: "新" }),
+      streamEvent({
+        type: "thinking",
+        messageId: "assistant-1",
+        generation: 2,
+      }),
     );
     await store.processStreamEvent(
-      streamEvent({ type: "data", messageId: "assistant-1", generation: 1, chunk: "迟到" }),
+      streamEvent({
+        type: "data",
+        messageId: "assistant-1",
+        generation: 2,
+        chunk: "新",
+      }),
+    );
+    await store.processStreamEvent(
+      streamEvent({
+        type: "data",
+        messageId: "assistant-1",
+        generation: 1,
+        chunk: "迟到",
+      }),
     );
     expect(
-      store.getActiveStreamMessage("agent-a", "agent", "topic-a", "assistant-1")?.content,
+      store.getActiveStreamMessage("agent-a", "agent", "topic-a", "assistant-1")
+        ?.content,
     ).toBe("新");
   });
 
@@ -124,7 +204,12 @@ describe("流式渲染背压与纪元门禁", () => {
       raf.flush();
       await store.processStreamEvent(tailEvent(1, "重复", { chunk: "重复" }));
       expect(
-        store.getActiveStreamMessage("agent-a", "agent", "topic-a", "assistant-1")?.content,
+        store.getActiveStreamMessage(
+          "agent-a",
+          "agent",
+          "topic-a",
+          "assistant-1",
+        )?.content,
       ).toBe("一次");
     } finally {
       raf.restore();
@@ -191,8 +276,14 @@ describe("流式渲染背压与纪元门禁", () => {
 
   it("隐藏 WebView 只保留最新快照", async () => {
     const originalRaf = window.requestAnimationFrame;
-    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, "hidden");
-    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    const hiddenDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "hidden",
+    );
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
     window.requestAnimationFrame = vi.fn(() => 1);
     try {
       const store = useChatStreamStore();
@@ -233,9 +324,14 @@ describe("流式渲染背压与纪元门禁", () => {
       await store.processStreamEvent(
         streamEvent({ type: "end", messageId: "assistant-1" }),
       );
-      expect(store.getActiveStreamMessage("agent-a", "agent", "topic-a", "assistant-1")?.content).toBe(
-        "终态",
-      );
+      expect(
+        store.getActiveStreamMessage(
+          "agent-a",
+          "agent",
+          "topic-a",
+          "assistant-1",
+        )?.content,
+      ).toBe("终态");
       expect(store.streamGenerations.size).toBe(0);
     } finally {
       raf.restore();
@@ -245,7 +341,11 @@ describe("流式渲染背压与纪元门禁", () => {
   it("终态保留 generation 水位并拒绝迟到 thinking、正文和终态", async () => {
     const store = useChatStreamStore();
     await store.processStreamEvent(
-      streamEvent({ type: "thinking", messageId: "assistant-1", generation: 7 }),
+      streamEvent({
+        type: "thinking",
+        messageId: "assistant-1",
+        generation: 7,
+      }),
     );
     await store.processStreamEvent(
       streamEvent({
@@ -260,7 +360,11 @@ describe("流式渲染背压与纪元门禁", () => {
     );
 
     await store.processStreamEvent(
-      streamEvent({ type: "thinking", messageId: "assistant-1", generation: 7 }),
+      streamEvent({
+        type: "thinking",
+        messageId: "assistant-1",
+        generation: 7,
+      }),
     );
     await store.processStreamEvent(
       streamEvent({
@@ -278,8 +382,9 @@ describe("流式渲染背压与纪元门禁", () => {
       store.getActiveStreamMessage("agent-a", "agent", "topic-a", "assistant-1")
         ?.content,
     ).toBe("已完成");
-    expect(store.generationWatermarks.get("agent:agent-a:topic-a:assistant-1"))
-      .toMatchObject({ generation: 7 });
+    expect(
+      store.generationWatermarks.get("agent:agent-a:topic-a:assistant-1"),
+    ).toMatchObject({ generation: 7 });
   });
 
   it("缺少或冲突的 generation/身份别名 fail-closed", () => {

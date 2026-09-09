@@ -118,11 +118,11 @@ date: 2026-06-05
 |------|------|------|
 | `currentSelectedItem` | `any \| null` | 当前选中的 Agent 或 Group 对象（含 `type: 'agent' \| 'group'`） |
 | `currentTopicId` | `string \| null` | 当前活跃话题 ID |
-| `lastActiveTopicMap` | `Record<string, string>` | 每个 itemId 最后一次选中的话题 ID，用于会话恢复 |
+| `lastActiveTopicMap` | `Record<string, string>` | 按 `ownerType:ownerId` 记录最后一次选中的话题 ID，用于会话恢复 |
 
 **持久化策略**：通过 `pinia-plugin-persistedstate` 持久化全部 3 个字段。这意味着应用重启后，用户会自动回到上次离开的 Agent/Group 与话题。
 
-**关键设计**：`selectItem` 方法实现了"智能话题恢复"——优先使用 `lastActiveTopicMap` 中缓存的话题 ID，若无缓存则调用后端 `get_topics` 获取最新话题。回调函数 `loadHistoryCallback` 的设计将 HistoryStore 的加载动作以函数参数形式注入，避免了 SessionStore 对 HistoryStore 的直接依赖（反向依赖）。
+**关键设计**：`selectItem` 方法实现了"智能话题恢复"——优先使用 `lastActiveTopicMap` 中 `ownerType:ownerId` 复合键缓存的话题 ID；复合键缺失时读取旧版 `ownerId` 键，迁移到复合键并删除 legacy 键；两种键均无缓存时才调用后端 `get_topics` 获取最新话题。回调函数 `loadHistoryCallback` 的设计将 HistoryStore 的加载动作以函数参数形式注入，避免了 SessionStore 对 HistoryStore 的直接依赖（反向依赖）。
 
 #### chatHistoryStore —— 历史记录与消息操作
 
@@ -1148,7 +1148,7 @@ await invoke('get_topics_streamed', { ownerId, ownerType, onChunk: channel });
 | Backend-Driven Streaming | — | 由后端 SSE 事件驱动消息生命周期，前端不再预创建 thinking 占位消息 | `chatStreamStore` |
 | 增量同步 | Incremental Sync | 基于 SHA-256 Hash 差异的三阶段同步协议 | `syncSession` |
 | 热更新感知 | HMR Awareness | Store 检测 Vite HMR 并自动重新加载状态的机制 | `theme` |
-| 智能话题恢复 | Smart Topic Recovery | 启动时优先使用缓存的 `lastActiveTopicMap` 恢复上次话题 | `chatSessionStore` |
+| 智能话题恢复 | Smart Topic Recovery | 优先按 `ownerType:ownerId` 从 `lastActiveTopicMap` 恢复上次话题，并一次性迁移 legacy `ownerId` 键 | `chatSessionStore` |
 | 流式分块 | Streamed Chunk | 通过 Tauri `Channel` 分批次接收的大量数据（历史消息、话题列表） | `chatHistoryStore`、`topicListManager` |
 | 锁频防护 | Debounce Guard | 防止并发重复触发同一异步请求的状态检查（如 `isLoading`） | `modelStore` |
 | Mini-App 模式 | Mini-App Pattern | 浮动 WebView 独立 Vue 实例，仅加载单一 Pinia Store，无主应用 Store 污染 | `floatingAssistant` |

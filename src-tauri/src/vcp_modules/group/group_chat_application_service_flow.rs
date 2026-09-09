@@ -7,8 +7,8 @@ use crate::vcp_modules::group_context_assembler::assemble_group_context;
 use crate::vcp_modules::group_service::GroupManagerState;
 use crate::vcp_modules::group_types::GroupConfig;
 use crate::vcp_modules::vcp_client::{
-    acquire_stream_service, perform_vcp_request, ActiveRequests, CancelledGroupTurns, StreamEvent,
-    VcpRequestPayload,
+    acquire_stream_service, group_turn_key, perform_vcp_request, ActiveRequests,
+    CancelledGroupTurns, StreamEvent, VcpRequestPayload,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -53,7 +53,8 @@ pub async fn process_group_chat_message(
         vcp_api_key,
         stream_channel,
     } = params;
-    cancelled_turns.0.remove(&topic_id);
+    let turn_key = group_turn_key(&group_id, &topic_id)?;
+    cancelled_turns.clear(&turn_key);
     let setup = setup::load_turn_setup(
         &app_handle,
         group_state,
@@ -72,7 +73,8 @@ pub async fn process_group_chat_message(
         &app_handle,
         &db_state.pool,
         &active_requests.0,
-        &cancelled_turns.0,
+        cancelled_turns.inner(),
+        &turn_key,
         &group_id,
         &topic_id,
         &user_message,
@@ -83,7 +85,7 @@ pub async fn process_group_chat_message(
     )
     .await?;
     emit_group_finished(&app_handle, &group_id, &topic_id, &summary)?;
-    cancelled_turns.0.remove(&topic_id);
+    cancelled_turns.clear(&turn_key);
     Ok(summary_status(summary))
 }
 
@@ -92,7 +94,8 @@ async fn process_speakers(
     app: &AppHandle,
     pool: &sqlx::Pool<sqlx::Sqlite>,
     active_requests: &Arc<crate::vcp_modules::vcp_client::ActiveRequestRegistry>,
-    cancelled_turns: &Arc<dashmap::DashSet<String>>,
+    cancelled_turns: &CancelledGroupTurns,
+    turn_key: &crate::vcp_modules::topic_types::TopicKey,
     group_id: &str,
     topic_id: &str,
     user_message: &ChatMessage,
@@ -106,7 +109,7 @@ async fn process_speakers(
     let mut failures = 0;
     let mut skipped = 0;
     for speaker in &setup.speakers {
-        if cancelled_turns.contains(topic_id) {
+        if cancelled_turns.is_cancelled(turn_key) {
             break;
         }
         match process_speaker(

@@ -144,11 +144,11 @@ impl Drop for ActiveRequestGuard {
 ### 2.5 CancelledGroupTurns
 
 ```rust
-pub struct CancelledGroupTurns(pub Arc<DashSet<String>>);
+pub struct CancelledGroupTurns(Arc<DashSet<TopicKey>>);
 ```
 
-- 键：`topic_id`（String）
-- 使用 `DashSet`：存在即代表该话题的群聊接力赛回合已被取消
+- 键：`TopicKey("group", group_id, topic_id)`，包含完整群组话题身份
+- 使用 `DashSet`：存在即代表该群组下该话题的接力赛回合已被取消；共享 `topic_id` 的其他群组不受影响
 - 由 `interruptGroupTurn` Command 写入，由 `group_chat_application_service.rs` 在编排循环中读取
 
 ---
@@ -396,11 +396,13 @@ pub fn interruptRequest(
 ```rust
 pub fn interruptGroupTurn(
     state: tauri::State<'_, CancelledGroupTurns>,
+    group_id: String,
     topic_id: String,
 ) -> Result<Value, String>
 ```
 
-- 将 `topic_id` 插入 `DashSet`，标记该话题的群聊接力赛应被取消
+- 校验 `group_id` 与 `topic_id` 均非空，不允许退回仅凭 `topic_id` 的模糊取消
+- 将 `TopicKey("group", group_id, topic_id)` 插入 `DashSet`，标记该群组话题的接力赛应被取消
 - 实际取消检查由 `group_chat_application_service.rs` 在编排循环中执行
 
 ### 4.4 test_vcp_connection

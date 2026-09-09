@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tauri::{ipc::Channel, AppHandle, Manager, Runtime};
 
 use crate::vcp_modules::aurora_pipeline::AuroraUpdate;
-use crate::vcp_modules::chat::topic_types::MessageKey;
+use crate::vcp_modules::chat::topic_types::{MessageKey, TopicKey};
 use crate::vcp_modules::content_parser::ContentBlock;
 use crate::vcp_modules::db_manager::{DbState, CORE_NOT_READY_ERROR};
 use crate::vcp_modules::settings_manager::{create_default_settings, Settings};
@@ -188,9 +188,8 @@ impl Drop for ActiveRequestGuard {
     }
 }
 
-/// 群组回合取消令牌，用于标记需要中断接力赛的话题
-/// topicId -> true (存在即代表已取消)
-pub struct CancelledGroupTurns(pub Arc<DashSet<String>>);
+/// 群组回合取消令牌，以完整群组话题身份隔离并发接力赛。
+pub struct CancelledGroupTurns(Arc<DashSet<TopicKey>>);
 
 impl Default for CancelledGroupTurns {
     fn default() -> Self {
@@ -199,18 +198,43 @@ impl Default for CancelledGroupTurns {
     }
 }
 
+impl CancelledGroupTurns {
+    pub(crate) fn cancel(&self, key: TopicKey) {
+        debug_assert_eq!(key.owner_type, "group");
+        self.0.insert(key);
+    }
+
+    pub(crate) fn clear(&self, key: &TopicKey) {
+        self.0.remove(key);
+    }
+
+    pub(crate) fn is_cancelled(&self, key: &TopicKey) -> bool {
+        self.0.contains(key)
+    }
+}
+
+pub(crate) fn group_turn_key(group_id: &str, topic_id: &str) -> Result<TopicKey, String> {
+    let key = TopicKey::new("group", group_id, topic_id);
+    key.is_valid()
+        .then_some(key)
+        .ok_or_else(|| "中止群聊回合需要完整的 groupId 和 topicId".to_string())
+}
+
 /// 中止群组的整个接力赛回合
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn interruptGroupTurn(
     state: tauri::State<'_, CancelledGroupTurns>,
+    group_id: String,
     topic_id: String,
 ) -> Result<Value, String> {
+    let key = group_turn_key(&group_id, &topic_id)?;
     log::info!(
-        "[VCPClient] interruptGroupTurn called for topicId: {}",
-        topic_id
+        "[VCPClient] interruptGroupTurn called for groupId/topicId: {}/{}",
+        group_id,
+        topic_id,
     );
-    state.0.insert(topic_id);
+    state.cancel(key);
     Ok(json!({"status": "cancelled"}))
 }
 

@@ -101,9 +101,7 @@ async function stopGroupTurn(
   try {
     await invoke("interruptGroupTurn", {
       groupId: identity.ownerId,
-      ownerId: identity.ownerId,
-      ownerType: identity.ownerType,
-      topicId,
+      topicId: identity.topicId,
     });
     const activeIds = Array.from(deps.activeStreamingIds.value);
     await Promise.all(

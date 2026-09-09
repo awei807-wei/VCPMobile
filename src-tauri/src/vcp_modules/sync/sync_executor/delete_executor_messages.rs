@@ -296,7 +296,10 @@ pub(super) async fn soft_delete_messages_data(
     expected_states: Option<&ExpectedMessageStates>,
 ) -> Result<DeleteReceipt, String> {
     let values = validate_tombstones(key, tombstones)?;
-    let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| error.to_string())?;
     if !topic_is_live(&mut tx, key).await? {
         if expected_states.is_some() {
             return Err(snapshot_stale_error(

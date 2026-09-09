@@ -8,8 +8,9 @@ use crate::vcp_modules::sync_types::{
     MessageDeleteDecision, MessageLiveState, MessageVersionState,
 };
 use crate::vcp_modules::topic_types::{MessageKey, OwnerKey, TopicKey};
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::path::PathBuf;
+use std::time::Duration;
 use tauri::Manager;
 
 fn topic(owner_type: &str, owner_id: &str, topic_id: &str) -> TopicKey {
@@ -22,6 +23,10 @@ async fn test_pool() -> sqlx::SqlitePool {
         .connect("sqlite::memory:")
         .await
         .expect("open delete fixture");
+    seed_test_pool(pool).await
+}
+
+async fn seed_test_pool(pool: sqlx::SqlitePool) -> sqlx::SqlitePool {
     sqlx::query(
         "CREATE TABLE agents (
             agent_id TEXT PRIMARY KEY, config_hash TEXT, content_hash TEXT,
@@ -117,6 +122,25 @@ async fn test_pool() -> sqlx::SqlitePool {
     pool
 }
 
+async fn contended_test_pool() -> (PathBuf, sqlx::SqlitePool) {
+    let path = std::env::temp_dir().join(format!(
+        "vcp-mobile-sync-delete-lock-{}-{}.sqlite",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(2));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(options)
+        .await
+        .expect("open contended delete fixture");
+    (path, seed_test_pool(pool).await)
+}
+
 async fn count(pool: &sqlx::SqlitePool, table: &str, key: &TopicKey) -> i64 {
     let sql = format!(
         "SELECT COUNT(*) FROM {table}
@@ -172,6 +196,57 @@ async fn topic_delete_isolated_by_owner_namespace_and_clears_side_tables() {
     .await
     .expect("read unrelated message");
     assert_eq!(unrelated_deleted, None);
+}
+
+#[tokio::test]
+async fn topic_delete_waits_for_concurrent_writer_before_reading_snapshot() {
+    let (path, pool) = contended_test_pool().await;
+    let mut blocker = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .expect("reserve competing writer");
+    sqlx::query("UPDATE agents SET content_hash = 'concurrent-write' WHERE agent_id = 'agent-a'")
+        .execute(&mut *blocker)
+        .await
+        .expect("hold a real WAL write transaction");
+
+    let delete_pool = pool.clone();
+    let target = topic("agent", "agent-a", "shared");
+    let delete_target = target.clone();
+    let delete =
+        tokio::spawn(async move { soft_delete_topic_data(&delete_pool, &delete_target, 50).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !delete.is_finished(),
+        "delete must wait for the existing writer instead of reading a stale snapshot"
+    );
+    blocker.commit().await.expect("release competing writer");
+
+    let receipt = tokio::time::timeout(Duration::from_secs(2), delete)
+        .await
+        .expect("delete should finish after the writer commits")
+        .expect("delete task should not panic")
+        .expect("delete should wait and commit after lock release");
+    assert_eq!(
+        receipt.active_messages,
+        vec![MessageKey::new(target.clone(), "m1")]
+    );
+    let deleted_at: Option<i64> = sqlx::query_scalar(
+        "SELECT deleted_at FROM topics
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&target.owner_type)
+    .bind(&target.owner_id)
+    .bind(&target.topic_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read committed topic tombstone");
+    assert_eq!(deleted_at, Some(50));
+
+    pool.close().await;
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
 }
 
 #[tokio::test]

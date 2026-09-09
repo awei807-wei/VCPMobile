@@ -1,11 +1,11 @@
 use super::super::super::super::{
     db_pool_if_ready, transport, ActiveRequestRegistry, GuardedTransition,
 };
+use super::super::{State, StreamControl, StreamSession, StreamSource};
 use super::bind::{bind_generation_with_timeout_or_cancel, BindGenerationAttempt};
 use super::stop::{
     helper_stop_context, stop_helper_generation_with_context, verify_generation_ack,
 };
-use super::{State, StreamControl, StreamSession, StreamSource};
 use crate::vcp_modules::chat::topic_types::MessageKey;
 use futures_util::StreamExt;
 use serde_json::{json, Value};

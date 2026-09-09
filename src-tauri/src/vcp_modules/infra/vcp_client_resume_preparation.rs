@@ -15,7 +15,8 @@ pub(super) async fn prepare_resume_request<R: Runtime>(
 ) -> Result<Option<PreparedResumeRequest>, String> {
     let pool = super::db_pool_if_ready(app)?;
     #[cfg(target_os = "android")]
-    super::transport::prepare_resume_with_helper(app, request_key, expected_generation).await?;
+    super::super::transport::prepare_resume_with_helper(app, request_key, expected_generation)
+        .await?;
     let (abort_rx, request_epoch, guard, completion_lease) =
         match register_resume_request(state, request_key, expected_generation).await {
             Ok(value) => value,
@@ -186,7 +187,8 @@ pub(super) async fn cancel_prepared_resume<R: Runtime>(
     primary_error: &str,
 ) {
     if let Err(cancel_error) =
-        super::transport::cancel_resume_with_helper(app, request_key, expected_generation).await
+        super::super::transport::cancel_resume_with_helper(app, request_key, expected_generation)
+            .await
     {
         log::error!(
             "[VCPClient] 接续准备失败后的 helper cancel_resume 失败: messageId={}, generation={}, primary_error={}, cancel_error={}",

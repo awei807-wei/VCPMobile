@@ -49,7 +49,7 @@ pub(super) fn helper_stop_context<R: Runtime>(session: &StreamSession<R>) -> Hel
 }
 
 #[cfg(target_os = "android")]
-pub(super) async fn stop_helper_generation<R: Runtime>(
+pub(in super::super) async fn stop_helper_generation<R: Runtime>(
     session: &StreamSession<R>,
     generation: u64,
 ) {

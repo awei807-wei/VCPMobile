@@ -1,4 +1,6 @@
-use super::{State, StreamControl, StreamSession};
+#[cfg(not(target_os = "android"))]
+use super::State;
+use super::{StreamControl, StreamSession};
 use std::time::Duration;
 use tauri::Runtime;
 

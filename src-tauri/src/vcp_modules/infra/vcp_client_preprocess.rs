@@ -1,7 +1,7 @@
 use super::{
     handle_non_streaming_request, handle_streaming_request, load_app_settings,
     message_key_from_context, ActiveRequestGuard, ActiveRequestRegistry, CompletionLease,
-    StreamEvent, VcpRequestPayload,
+    StreamEvent, VcpRequestMode, VcpRequestPayload,
 };
 use crate::vcp_modules::infra::utils::normalize_vcp_url;
 use reqwest::Client;
@@ -74,6 +74,7 @@ impl VcpRequestError {
     }
 }
 
+#[derive(Debug)]
 enum PrepareError {
     Failed(String),
     Skipped,
@@ -174,6 +175,7 @@ async fn prepare_vcp_request<R: Runtime>(
             stream_channel,
             &message_id,
             request_epoch,
+            payload.mode,
         )
         .await?;
     }
@@ -202,7 +204,11 @@ async fn prepare_stream_request<R: Runtime>(
     stream_channel: Option<&Channel<StreamEvent>>,
     message_id: &str,
     request_epoch: u64,
+    mode: VcpRequestMode,
 ) -> Result<(), PrepareError> {
+    if mode == VcpRequestMode::Ephemeral {
+        return send_thinking_event(stream_channel, message_id, context, request_epoch);
+    }
     let pool = super::db_pool_if_ready(app)?;
     let agent_id = context
         .and_then(|value| {
@@ -386,3 +392,7 @@ async fn dispatch_request_payload<R: Runtime>(
     };
     (result, request_guard)
 }
+
+#[cfg(test)]
+#[path = "vcp_client_preprocess_tests.rs"]
+mod tests;

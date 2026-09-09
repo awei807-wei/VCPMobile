@@ -5,8 +5,8 @@ use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::message_service;
 use crate::vcp_modules::vcp_client::{
     acquire_stream_service, mark_message_as_error_guarded_with_channel, perform_vcp_request,
-    ActiveRequests, GuardedTransition, StreamEvent, VcpRequestError, VcpRequestOutcome,
-    VcpRequestPayload,
+    ActiveRequests, GuardedTransition, StreamEvent, VcpRequestError, VcpRequestMode,
+    VcpRequestOutcome, VcpRequestPayload,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -150,6 +150,7 @@ async fn prepare_agent_request(input: AgentRequestInput<'_>) -> Result<VcpReques
         model_config: build_model_config(agent_config),
         message_id: thinking_id,
         context,
+        mode: VcpRequestMode::Persistent,
     })
 }
 

@@ -260,6 +260,9 @@ async fn stop_distributed_after_linger(
 async fn return_foreground(app: &AppHandle, state: &LifecycleState) {
     cancel_linger_tasks(state).await;
     let _ = tauri_plugin_vcp_mobile::stream::release_foreground_inner(app, "vcp_log");
+    let Some(settings) = load_foreground_settings(app).await else {
+        return;
+    };
     let was_log_disconnected = state
         .linger
         .is_log_disconnected
@@ -268,23 +271,11 @@ async fn return_foreground(app: &AppHandle, state: &LifecycleState) {
         .linger
         .is_dist_disconnected
         .swap(false, Ordering::SeqCst);
-    let Some(settings) = load_foreground_distributed_settings(app).await else {
-        return;
-    };
     restore_log_connections(app, &settings, was_log_disconnected).await;
-    if settings.distributed_enabled {
-        log::info!(
-            "[Lifecycle] 回到前台，调和分布式节点；此前冷断开：{}。",
-            was_dist_disconnected
-        );
-        crate::vcp_modules::infra::lifecycle_reconciler::reconcile_distributed_node(
-            app, true, false,
-        )
-        .await;
-    }
+    reconcile_foreground_distributed(app, &settings, was_dist_disconnected).await;
 }
 
-async fn load_foreground_distributed_settings(
+async fn load_foreground_settings(
     app: &AppHandle,
 ) -> Option<crate::vcp_modules::settings_manager::Settings> {
     let settings_state = match app.try_state::<SettingsState>() {
@@ -309,25 +300,38 @@ async fn load_foreground_distributed_settings(
             return None;
         }
     };
+    Some(settings)
+}
+
+async fn reconcile_foreground_distributed(
+    app: &AppHandle,
+    settings: &crate::vcp_modules::settings_manager::Settings,
+    was_disconnected: bool,
+) {
     if !settings.distributed_enabled {
         crate::vcp_modules::infra::lifecycle_manager::stop_distributed_with_reason(
             app,
             "回到前台时权威设置已禁用分布式",
         )
         .await;
-        return None;
+        return;
     }
     if let Err(error) =
         crate::vcp_modules::infra::lifecycle_manager::validate_distributed_connection_config(
-            &settings,
+            settings,
             "回到前台",
         )
     {
         crate::vcp_modules::infra::lifecycle_manager::stop_distributed_with_reason(app, error)
             .await;
-        return None;
+        return;
     }
-    Some(settings)
+    log::info!(
+        "[Lifecycle] 回到前台，调和分布式节点；此前冷断开：{}。",
+        was_disconnected
+    );
+    crate::vcp_modules::infra::lifecycle_reconciler::reconcile_distributed_node(app, true, false)
+        .await;
 }
 
 async fn restore_log_connections(
@@ -335,60 +339,28 @@ async fn restore_log_connections(
     settings: &crate::vcp_modules::settings_manager::Settings,
     was_disconnected: bool,
 ) {
-    if was_disconnected {
-        if !settings.vcp_log_url.trim().is_empty() && !settings.vcp_log_key.trim().is_empty() {
-            log::info!("[Lifecycle] 回到前台，重连 VCPLog/Info。");
-            let _ = crate::vcp_modules::infra::vcp_log_service::reconnect_log_connections(
-                app,
-                settings.vcp_log_url.clone(),
-                settings.vcp_log_key.clone(),
-            )
-            .await;
-        }
-    } else {
+    if should_reconnect_log_connections(settings, was_disconnected) {
+        log::info!("[Lifecycle] 回到前台，重连 VCPLog/Info。");
+        let _ = crate::vcp_modules::infra::vcp_log_service::reconnect_log_connections(
+            app,
+            settings.vcp_log_url.clone(),
+            settings.vcp_log_key.clone(),
+        )
+        .await;
+    } else if !was_disconnected {
         crate::vcp_modules::infra::vcp_log_service::flush_background_logs(app);
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{resolve_foreground_epoch, LifecycleState};
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn 隐式前后台请求不会把自身当作重复请求() {
-        let state = LifecycleState::new();
-
-        let background_epoch =
-            resolve_foreground_epoch(&state, None, false).expect("后台请求应分配新序号");
-        state
-            .foreground_request_epoch
-            .store(background_epoch, Ordering::SeqCst);
-        state.is_foreground.store(false, Ordering::SeqCst);
-
-        let foreground_epoch =
-            resolve_foreground_epoch(&state, None, true).expect("前台请求应分配新序号");
-        assert!(foreground_epoch > background_epoch);
-        assert_eq!(
-            state.foreground_request_epoch.load(Ordering::SeqCst),
-            foreground_epoch
-        );
-    }
-
-    #[test]
-    fn 前台后台前台顺序接受连续隐式请求() {
-        let state = LifecycleState::new();
-        let mut expected_epoch = 0;
-
-        for is_foreground in [false, true, false, true] {
-            let epoch =
-                resolve_foreground_epoch(&state, None, is_foreground).expect("连续隐式请求应接受");
-            assert!(epoch > expected_epoch);
-            expected_epoch = epoch;
-            state
-                .foreground_request_epoch
-                .store(epoch, Ordering::SeqCst);
-            state.is_foreground.store(is_foreground, Ordering::SeqCst);
-        }
-    }
+fn should_reconnect_log_connections(
+    settings: &crate::vcp_modules::settings_manager::Settings,
+    was_disconnected: bool,
+) -> bool {
+    was_disconnected
+        && !settings.vcp_log_url.trim().is_empty()
+        && !settings.vcp_log_key.trim().is_empty()
 }
+
+#[cfg(test)]
+#[path = "lifecycle_transition_tests.rs"]
+mod tests;

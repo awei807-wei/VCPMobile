@@ -251,6 +251,7 @@ async fn build_speaker_request(
             "isGroupMessage": true,
             "agentName": speaker.name
         })),
+        mode: crate::vcp_modules::vcp_client::VcpRequestMode::Persistent,
     })
 }
 

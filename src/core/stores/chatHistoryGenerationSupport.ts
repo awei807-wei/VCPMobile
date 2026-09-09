@@ -85,19 +85,21 @@ export function prepareGeneration(
     selectedItem?.type,
     currentTopicId,
   );
-  if (!identity || !sameConversationIdentity(identity, pendingIdentity)) {
-    if (!pendingOptions.registered) {
-      deps.streamStore.removePendingGeneration(
-        pendingIdentity.ownerId,
-        pendingIdentity.ownerType,
-        pendingIdentity.topicId,
-        requestId,
-      );
-    }
-    return null;
-  }
+  if (identity && sameConversationIdentity(identity, pendingIdentity))
+    return { identity, pendingIdentity, requestId };
 
-  return { identity, pendingIdentity, requestId };
+  if (pendingOptions.continueForCapturedIdentity)
+    return { identity: pendingIdentity, pendingIdentity, requestId };
+
+  if (!pendingOptions.registered) {
+    deps.streamStore.removePendingGeneration(
+      pendingIdentity.ownerId,
+      pendingIdentity.ownerType,
+      pendingIdentity.topicId,
+      requestId,
+    );
+  }
+  return null;
 }
 
 function updateCompiledMessage(
@@ -145,8 +147,12 @@ function handleGenerationMessage(
   generation: number,
 ): void {
   const eventIdentity = makeConversationIdentity(ownerId, ownerType, topicId);
-  if (!eventIdentity || !sameConversationIdentity(eventIdentity, identity) ||
-      !deps.isCurrentIdentity(identity)) return;
+  if (
+    !eventIdentity ||
+    !sameConversationIdentity(eventIdentity, identity) ||
+    !deps.isCurrentIdentity(identity)
+  )
+    return;
   message.generation = generation;
   const targetIndex = deps.currentChatHistory.value.findIndex(
     (item) => item.id === message.id,
@@ -181,7 +187,8 @@ function handleGenerationFinished(
     sameConversationIdentity(eventIdentity, identity) &&
     deps.isCurrentIdentity(identity) &&
     deps.currentChatHistory.value.some(
-      (message) => message.id === messageId && message.generation === generation,
+      (message) =>
+        message.id === messageId && message.generation === generation,
     )
   ) {
     void summarizeTopic(deps);

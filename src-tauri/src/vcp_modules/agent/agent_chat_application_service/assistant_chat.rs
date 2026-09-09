@@ -1,11 +1,9 @@
 use crate::vcp_modules::agent_service::{read_agent_config_internal, AgentConfigState};
 use crate::vcp_modules::agent_types::AgentConfig;
-use crate::vcp_modules::chat::message_service;
 use crate::vcp_modules::chat::topic_service::TempMessage;
-use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::vcp_client::{
-    acquire_stream_service, mark_message_as_error_guarded_with_channel, perform_vcp_request,
-    ActiveRequests, GuardedTransition, StreamEvent, VcpRequestError, VcpRequestOutcome,
+    acquire_stream_service, perform_vcp_request, ActiveRequests, CompletionLease,
+    GuardedTransition, StreamEvent, VcpRequestError, VcpRequestMode, VcpRequestOutcome,
     VcpRequestPayload,
 };
 use serde::Deserialize;
@@ -64,10 +62,7 @@ pub async fn handle_assistant_chat_stream(
         Some(stream_channel.clone()),
     )
     .await;
-    let db_state = app_handle
-        .try_state::<DbState>()
-        .ok_or_else(|| "核心数据库尚未就绪".to_string())?;
-    let emitted = emit_assistant_result(result, &app_handle, &db_state.pool, &stream_channel).await;
+    let emitted = emit_assistant_result(result, &stream_channel).await;
     drop(stream_lease);
     emitted?;
     drop(activity_guard);
@@ -85,24 +80,39 @@ async fn prepare_assistant_request(
     let thinking_id = new_thinking_id(agent_id);
     let agent_config =
         read_agent_config_internal(app_handle, agent_state, agent_id, Some(true)).await?;
-    let context = Some(json!({
-        "agentId": agent_id,
-        "ownerType": "agent",
-        "topicId": "assistant_chat",
-        "agentName": agent_config.name
-    }));
-    Ok((
+    let request_payload = build_assistant_request_payload(
         thinking_id.clone(),
-        agent_config.clone(),
-        VcpRequestPayload {
-            vcp_url,
-            vcp_api_key,
-            messages: build_messages(&agent_config, temp_messages),
-            model_config: build_model_config(&agent_config),
-            message_id: thinking_id,
-            context,
-        },
-    ))
+        agent_id,
+        &agent_config,
+        temp_messages,
+        vcp_url,
+        vcp_api_key,
+    );
+    Ok((thinking_id.clone(), agent_config.clone(), request_payload))
+}
+
+fn build_assistant_request_payload(
+    thinking_id: String,
+    agent_id: &str,
+    agent_config: &AgentConfig,
+    temp_messages: Vec<TempMessage>,
+    vcp_url: String,
+    vcp_api_key: String,
+) -> VcpRequestPayload {
+    VcpRequestPayload {
+        vcp_url,
+        vcp_api_key,
+        messages: build_messages(agent_config, temp_messages),
+        model_config: build_model_config(agent_config),
+        message_id: thinking_id,
+        context: Some(json!({
+            "agentId": agent_id,
+            "ownerType": "agent",
+            "topicId": "assistant_chat",
+            "agentName": agent_config.name
+        })),
+        mode: VcpRequestMode::Ephemeral,
+    }
 }
 
 fn build_messages(agent_config: &AgentConfig, temp_messages: Vec<TempMessage>) -> Vec<Value> {
@@ -120,20 +130,16 @@ fn build_messages(agent_config: &AgentConfig, temp_messages: Vec<TempMessage>) -
 
 async fn emit_assistant_result(
     result: Result<VcpRequestOutcome, VcpRequestError>,
-    app_handle: &AppHandle,
-    pool: &sqlx::Pool<sqlx::Sqlite>,
     stream_channel: &Channel<StreamEvent>,
 ) -> Result<(), String> {
     match result {
-        Ok(outcome) => emit_assistant_success(outcome, app_handle, pool, stream_channel).await,
-        Err(error) => emit_assistant_error(error, app_handle, pool, stream_channel).await,
+        Ok(outcome) => emit_assistant_success(outcome, stream_channel).await,
+        Err(error) => emit_assistant_error(error, stream_channel).await,
     }
 }
 
 async fn emit_assistant_success(
     outcome: VcpRequestOutcome,
-    app_handle: &AppHandle,
-    pool: &sqlx::Pool<sqlx::Sqlite>,
     stream_channel: &Channel<StreamEvent>,
 ) -> Result<(), String> {
     let VcpRequestOutcome {
@@ -143,52 +149,43 @@ async fn emit_assistant_success(
         request_guard,
     } = outcome;
     let _request_guard = request_guard;
-    let Some(full_content) = response["fullContent"].as_str() else {
-        let mark_result = mark_message_as_error_guarded_with_channel(
-            app_handle,
-            pool,
-            &completion_lease,
-            Some("响应缺少 fullContent".to_string()),
-            Some(stream_channel.clone()),
-        )
-        .await?;
-        return match mark_result {
-            GuardedTransition::Applied(()) => Err("响应缺少 fullContent".to_string()),
-            GuardedTransition::Skipped => {
-                log::warn!("[AssistantChatAppService] 缺少正文的旧请求已跳过");
-                Ok(())
-            }
-        };
-    };
     let finish_reason = if is_aborted {
         Some("cancelled_by_user".to_string())
     } else {
         response["finishReason"].as_str().map(str::to_string)
     };
-    let finalization = message_service::finalize_stream_message_guarded(
-        app_handle.clone(),
-        pool,
-        &completion_lease,
-        full_content.to_string(),
-        is_aborted,
-        finish_reason,
-        Some(stream_channel.clone()),
-        Some(completion_lease.key().topic.owner_id.clone()),
-    )
-    .await?;
-    if matches!(
-        finalization,
-        message_service::StreamFinalizationStatus::Skipped
-    ) {
+    let missing_content = response["fullContent"].as_str().is_none();
+    let event = if missing_content {
+        StreamEvent::error(
+            completion_lease.key().msg_id.clone(),
+            assistant_stream_context(&completion_lease),
+            "响应缺少 fullContent".to_string(),
+            completion_lease.epoch(),
+        )
+    } else {
+        StreamEvent::end(
+            completion_lease.key().msg_id.clone(),
+            assistant_stream_context(&completion_lease),
+            Some(finish_reason.unwrap_or_else(|| "completed".to_string())),
+            None,
+            Some(crate::vcp_modules::infra::utils::now_millis() as u64),
+            completion_lease.epoch(),
+        )
+    };
+    let transition =
+        send_assistant_terminal_event(&completion_lease, stream_channel, event).await?;
+    if matches!(transition, GuardedTransition::Skipped) {
         log::warn!("[AssistantChatAppService] 旧请求终结已跳过");
+        return Ok(());
+    }
+    if missing_content {
+        return Err("响应缺少 fullContent".to_string());
     }
     Ok(())
 }
 
 async fn emit_assistant_error(
     error: VcpRequestError,
-    app_handle: &AppHandle,
-    pool: &sqlx::Pool<sqlx::Sqlite>,
     stream_channel: &Channel<StreamEvent>,
 ) -> Result<(), String> {
     let VcpRequestError {
@@ -209,28 +206,45 @@ async fn emit_assistant_error(
         );
         return Err(error_message);
     };
-    let transition = {
-        let mark_transition = mark_message_as_error_guarded_with_channel(
-            app_handle,
-            pool,
-            &lease,
-            Some(error_message.clone()),
-            Some(stream_channel.clone()),
-        )
-        .await?;
-        if matches!(mark_transition, GuardedTransition::Skipped) {
-            log::warn!("[AssistantChatAppService] 请求错误终结已跳过旧请求");
-        }
-        mark_transition
-    };
+    let event = StreamEvent::error(
+        lease.key().msg_id.clone(),
+        assistant_stream_context(&lease),
+        error_message.clone(),
+        lease.epoch(),
+    );
+    let transition = send_assistant_terminal_event(&lease, stream_channel, event).await?;
     if matches!(transition, GuardedTransition::Skipped) {
         log::warn!("[AssistantChatAppService] 旧请求 error 事件已跳过");
+        return Ok(());
     }
     log::error!(
         "[AssistantChatAppService] VCP 请求执行失败: {}",
         error_message
     );
     Err(error_message)
+}
+
+fn assistant_stream_context(lease: &CompletionLease) -> Option<Value> {
+    Some(json!({
+        "agentId": lease.key().topic.owner_id,
+        "ownerType": lease.key().topic.owner_type,
+        "topicId": lease.key().topic.topic_id,
+    }))
+}
+
+async fn send_assistant_terminal_event(
+    lease: &CompletionLease,
+    stream_channel: &Channel<StreamEvent>,
+    event: StreamEvent,
+) -> Result<GuardedTransition<()>, String> {
+    let stream_channel = stream_channel.clone();
+    lease
+        .with_current_transition(move |_| async move {
+            stream_channel
+                .send(event)
+                .map_err(|error| format!("发送划词助手终结事件失败: {error}"))
+        })
+        .await
 }
 
 fn build_model_config(agent_config: &AgentConfig) -> Value {
@@ -258,3 +272,7 @@ fn new_thinking_id(agent_id: &str) -> String {
     let timestamp = crate::vcp_modules::infra::utils::now_millis();
     format!("msg_{}_{}", agent_id, timestamp)
 }
+
+#[cfg(test)]
+#[path = "assistant_chat_tests.rs"]
+mod tests;

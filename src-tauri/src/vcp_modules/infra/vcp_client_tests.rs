@@ -22,6 +22,22 @@ fn 缺少正文时生产校验返回明确错误() {
 }
 
 #[test]
+fn ipc请求不能启用非持久化模式() {
+    let payload: VcpRequestPayload = serde_json::from_value(serde_json::json!({
+        "vcpUrl": "http://127.0.0.1:5890",
+        "vcpApiKey": "key",
+        "messages": [],
+        "modelConfig": { "stream": true },
+        "messageId": "message-a",
+        "context": null,
+        "mode": "ephemeral"
+    }))
+    .expect("解析 IPC 请求");
+
+    assert_eq!(payload.mode, VcpRequestMode::Persistent);
+}
+
+#[test]
 fn 流事件serde序列化携带正整数请求纪元() {
     let event = StreamEvent::thinking(
         "message-a".to_string(),

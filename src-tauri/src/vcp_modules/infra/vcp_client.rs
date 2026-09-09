@@ -1,5 +1,4 @@
 use dashmap::DashSet;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use std::sync::Arc;
@@ -7,7 +6,6 @@ use tauri::{ipc::Channel, AppHandle, Manager, Runtime};
 
 use crate::vcp_modules::aurora_pipeline::AuroraUpdate;
 use crate::vcp_modules::chat::topic_types::{MessageKey, TopicKey};
-use crate::vcp_modules::content_parser::ContentBlock;
 use crate::vcp_modules::db_manager::{DbState, CORE_NOT_READY_ERROR};
 use crate::vcp_modules::settings_manager::{create_default_settings, Settings};
 
@@ -31,6 +29,8 @@ mod resume;
 mod stream;
 #[path = "vcp_client_transport.rs"]
 mod transport;
+#[path = "vcp_client_types.rs"]
+mod types;
 pub(crate) use active::mark_message_as_error_guarded_with_channel;
 #[allow(unused_imports)]
 pub use active::{get_active_generations, interruptRequest, ActiveGeneration};
@@ -44,6 +44,8 @@ use registry::message_key_from_context;
 pub use registry::{ActiveRequestRegistry, ActiveRequests, CompletionLease, GuardedTransition};
 pub use resume::resume_stream;
 use stream::handle_streaming_request;
+pub(crate) use types::VcpRequestMode;
+pub use types::{StreamEvent, VcpRequestPayload};
 
 fn require_core_state<T>(state: Option<T>) -> Result<T, String> {
     state.ok_or_else(|| CORE_NOT_READY_ERROR.to_string())
@@ -58,110 +60,6 @@ pub(crate) fn require_full_content(response: &Value) -> Result<&str, String> {
     response["fullContent"]
         .as_str()
         .ok_or_else(|| "响应缺少 fullContent".to_string())
-}
-
-/// =================================================================
-/// vcp_modules/vcp_client.rs - 统一的 VCP 请求处理模块 (Rust 重写版)
-/// =================================================================
-/// 该模块对应原项目的 modules/vcpClient.js，负责处理所有与 VCP 服务器的通信。
-/// 包含动态路由、上下文注入（音乐、UI 规范）、流式 SSE 解析以及请求中止机制。
-/// 请求参数结构体
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VcpRequestPayload {
-    pub vcp_url: String,        // VCP服务器URL
-    pub vcp_api_key: String,    // API密钥
-    pub messages: Vec<Value>,   // 消息数组
-    pub model_config: Value,    // 模型配置 (包含 model, stream, temperature 等)
-    pub message_id: String,     // 消息ID (用于跟踪和中止)
-    pub context: Option<Value>, // 上下文信息 (agentId, topicId等)
-}
-
-/// 流式事件结构体，用于向前端发送数据
-#[derive(Debug, Serialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamEvent {
-    pub r#type: String, // 事件类型: "data", "aurora", "end", "error", "reconnecting"
-    pub chunk: Option<Value>, // 数据块 (仅 type="data" 时有效)
-    pub message_id: String, // 消息ID
-    /// 应用内请求纪元；所有可消费的流事件都必须绑定正整数纪元。
-    pub generation: u64,
-    pub context: Option<Value>,            // 透传的上下文信息
-    pub finish_reason: Option<String>,     // 结束原因
-    pub error: Option<String>,             // 错误信息 (仅 type="error" 时有效)
-    pub aurora: Option<AuroraUpdate>,      // Aurora 语义沉淀更新 (type="aurora" 时有效)
-    pub blocks: Option<Vec<ContentBlock>>, // 持久化后的预渲染块 (仅 type="end" 时有效)
-    pub timestamp: Option<u64>,            // ⚡ 新增物理落笔时间戳
-}
-
-impl StreamEvent {
-    pub fn thinking(message_id: String, context: Option<Value>, generation: u64) -> Self {
-        Self {
-            r#type: "thinking".into(),
-            message_id,
-            generation: require_stream_generation(generation),
-            context,
-            ..Default::default()
-        }
-    }
-
-    pub fn aurora(
-        message_id: String,
-        aurora: AuroraUpdate,
-        context: Option<Value>,
-        generation: u64,
-    ) -> Self {
-        Self {
-            r#type: "aurora".into(),
-            aurora: Some(aurora),
-            message_id,
-            generation: require_stream_generation(generation),
-            context,
-            ..Default::default()
-        }
-    }
-
-    pub fn end(
-        message_id: String,
-        context: Option<Value>,
-        finish_reason: Option<String>,
-        blocks: Option<Vec<ContentBlock>>,
-        timestamp: Option<u64>,
-        generation: u64,
-    ) -> Self {
-        Self {
-            r#type: "end".into(),
-            message_id,
-            generation: require_stream_generation(generation),
-            context,
-            finish_reason,
-            blocks,
-            timestamp,
-            ..Default::default()
-        }
-    }
-
-    pub fn error(
-        message_id: String,
-        context: Option<Value>,
-        error: String,
-        generation: u64,
-    ) -> Self {
-        Self {
-            r#type: "error".into(),
-            message_id,
-            generation: require_stream_generation(generation),
-            context,
-            finish_reason: Some("error".to_string()),
-            error: Some(error),
-            ..Default::default()
-        }
-    }
-}
-
-fn require_stream_generation(generation: u64) -> u64 {
-    assert!(generation > 0, "流事件 generation 必须是正整数");
-    generation
 }
 
 /// RAII guard：在 Drop 时自动从 ActiveRequests 中移除对应条目，防止 panic 导致泄漏

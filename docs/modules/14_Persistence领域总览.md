@@ -1,7 +1,7 @@
 ---
 id: MOD-PERSISTENCE-014
-version: "1.0.3"
-date: 2026-06-05
+version: "1.0.4"
+date: 2026-09-09
 module: persistence/
 scope: src-tauri/src/vcp_modules/persistence/
 related: [db_manager.rs, db_write_queue.rs, message_repository.rs, sync_service.rs, chat_manager.rs]
@@ -27,6 +27,7 @@ related: [db_manager.rs, db_write_queue.rs, message_repository.rs, sync_service.
 | 数据库管理器 | `db_manager.rs` | 连接池生命周期、Schema 初始化与迁移、PRAGMA 调优 | sqlx 异步连接池 (`max_connections=5`) + WAL 模式 |
 | 写入队列 | `db_write_queue.rs` | 单工作线程批量写入、消除 SQLite 并发锁竞争、同步哈希冒泡 | mpsc 队列 + `spawn_blocking` + rusqlite 直连 |
 | 消息仓储 | `message_repository.rs` | 消息读写、渲染编译、内容压缩、全量重建/压缩维护任务 | `MessageRenderCompiler` + `ContentCompressor` + 三段流水线 |
+| 全局搜索 | `global_search/` | 消息全文检索、索引状态与有界结果摘要 | 长词走 FTS5，短词回退保持一致的大小写折叠语义 |
 
 ### 1.3 整体数据流
 
@@ -239,6 +240,10 @@ CREATE TABLE render_cache (
 | `idx_emoticon_category` | `(category)` | 表情包按分类检索 |
 
 **索引设计原则**：所有索引均围绕**实体归属**（owner_id）、**时间线排序**（timestamp DESC）、**同步扫描**（updated_at）三大查询模式构建，避免过度索引带来的写入开销。
+
+### 2.8 搜索结果摘要
+
+`global_search/summary.rs` 为每条搜索结果生成最多 240 个 Unicode 字符的纯文本摘要，并按不区分大小写的搜索匹配语义将首个命中位置尽量置于窗口中央。清洗阶段只移除项目明确支持且片段完整闭合的 HTML 标签；未闭合的尖括号文本、Rust 泛型（如 `Vec<T>`）及 `<reason>` 等未知标签保持可见，避免摘要静默丢失原始消息内容。
 
 ---
 

@@ -51,41 +51,86 @@ fn first_case_insensitive_hit(content: &str, terms: &[String]) -> Option<usize> 
 
 fn strip_markup_and_controls(content: &str) -> String {
     let mut output = String::with_capacity(content.len().min(SUMMARY_LIMIT * 4));
-    let mut in_tag = false;
-    let mut tag_candidate = false;
-    for character in content.chars() {
-        if in_tag {
-            if character == '>' {
-                in_tag = false;
-                tag_candidate = false;
-            }
+    let mut cursor = 0;
+
+    while cursor < content.len() {
+        let remaining = &content[cursor..];
+        let character = remaining
+            .chars()
+            .next()
+            .expect("cursor must stay on a character boundary");
+        if character != '<' {
+            push_visible_character(&mut output, character);
+            cursor += character.len_utf8();
             continue;
         }
-        if character == '<' {
-            tag_candidate = true;
-            continue;
-        }
-        if tag_candidate {
-            if character.is_ascii_alphabetic() || matches!(character, '/' | '!' | '?' | ':') {
-                in_tag = true;
-                tag_candidate = false;
-                continue;
+
+        match complete_markup_fragment_len(remaining) {
+            MarkupScan::Complete(fragment_len) => {
+                let fragment = &remaining[..fragment_len];
+                if !crate::vcp_modules::chat::pre_renderer::markdown_parser::is_supported_message_html(
+                    fragment,
+                ) {
+                    push_visible_text(&mut output, fragment);
+                }
+                cursor += fragment_len;
             }
-            output.push('<');
-            tag_candidate = false;
-        }
-        if character.is_control() {
-            if matches!(character, '\n' | '\r' | '\t') {
-                output.push(' ');
+            MarkupScan::Interrupted => {
+                output.push('<');
+                cursor += 1;
             }
-        } else {
-            output.push(character);
+            MarkupScan::Unclosed => {
+                push_visible_text(&mut output, remaining);
+                break;
+            }
         }
     }
-    if tag_candidate {
-        output.push('<');
-    }
+
     output
+}
+
+enum MarkupScan {
+    Complete(usize),
+    Interrupted,
+    Unclosed,
+}
+
+fn complete_markup_fragment_len(content: &str) -> MarkupScan {
+    if content.starts_with("<!--") {
+        return content
+            .find("-->")
+            .map(|end| MarkupScan::Complete(end + 3))
+            .unwrap_or(MarkupScan::Unclosed);
+    }
+
+    let mut quote = None;
+    for (index, character) in content.char_indices().skip(1) {
+        match (quote, character) {
+            (Some(expected), actual) if actual == expected => quote = None,
+            (None, '\'' | '"') => quote = Some(character),
+            (None, '>') => return MarkupScan::Complete(index + 1),
+            (None, '<') => return MarkupScan::Interrupted,
+            _ => {}
+        }
+    }
+
+    MarkupScan::Unclosed
+}
+
+fn push_visible_text(output: &mut String, content: &str) {
+    for character in content.chars() {
+        push_visible_character(output, character);
+    }
+}
+
+fn push_visible_character(output: &mut String, character: char) {
+    if character.is_control() {
+        if matches!(character, '\n' | '\r' | '\t') {
+            output.push(' ');
+        }
+    } else {
+        output.push(character);
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +156,47 @@ mod tests {
         assert!(summary.contains("Apple"));
         assert!(summary.starts_with('…'));
         assert!(summary.ends_with('…'));
+    }
+
+    #[test]
+    fn 摘要保留未闭合的尖括号文本() {
+        assert_eq!(strip_markup_and_controls("use <variable"), "use <variable");
+        assert_eq!(
+            strip_markup_and_controls("prefix <mark needle"),
+            "prefix <mark needle"
+        );
+    }
+
+    #[test]
+    fn 摘要保留泛型与不受支持的标签() {
+        let content = "Vec<T> and Result<T, E> <reason>visible</reason>";
+
+        assert_eq!(strip_markup_and_controls(content), content);
+    }
+
+    #[test]
+    fn 摘要只移除完整且受支持的标签() {
+        let content =
+            "<mark>needle</mark><kbd title=\"1 > 0\">Ctrl</kbd><br>tail<!-- hidden > text -->";
+
+        assert_eq!(strip_markup_and_controls(content), "needleCtrltail");
+    }
+
+    #[test]
+    fn 摘要在畸形片段后仍能识别后续支持标签() {
+        let content = "use <variable then <mark>needle</mark>";
+
+        assert_eq!(
+            strip_markup_and_controls(content),
+            "use <variable then needle"
+        );
+    }
+
+    #[test]
+    fn 摘要继续规范化控制字符() {
+        assert_eq!(
+            strip_markup_and_controls("line\nnext\ttab\rreturn\u{0000}tail"),
+            "line next tab returntail"
+        );
     }
 }

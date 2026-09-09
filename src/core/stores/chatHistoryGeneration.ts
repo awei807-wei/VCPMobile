@@ -125,7 +125,9 @@ function applyCommittedEditMutation(
   if (!deps.isCurrentIdentity(identity)) return;
   const deleted = new Set(mutation.deletedIds);
   deps.currentChatHistory.value = deps.currentChatHistory.value.filter(
-    (message) => message.id === deps.editingOriginalMessageId.value || !deleted.has(message.id),
+    (message) =>
+      message.id === deps.editingOriginalMessageId.value ||
+      !deleted.has(message.id),
   );
   deps.topicStore.setTopicMsgCount?.(identity, mutation.msgCount);
 }
@@ -243,7 +245,6 @@ async function sendNewMessage(
     deps.attachmentStore.clearStaged();
     if (stagedAttachments.length > 0)
       await deps.attachmentStore.preProcessDocuments(stagedAttachments);
-    if (!deps.isCurrentIdentity(identity)) return;
     const userMessage = createUserMessage(
       deps,
       content,
@@ -251,11 +252,13 @@ async function sendNewMessage(
       now,
       stagedAttachments.length > 0 ? stagedAttachments : undefined,
     );
-    deps.currentChatHistory.value.push(userMessage);
+    if (deps.isCurrentIdentity(identity))
+      deps.currentChatHistory.value.push(userMessage);
     deps.topicStore.incrementTopicMsgCount(identity);
     await generate(userMessage, {
       requestId: userMsgId,
       registered: true,
+      continueForCapturedIdentity: true,
       ownerId: identity.ownerId,
       ownerType: identity.ownerType,
       topicId: identity.topicId,

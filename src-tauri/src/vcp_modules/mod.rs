@@ -3,6 +3,7 @@ pub mod agent;
 pub mod chat;
 pub mod group;
 pub mod infra;
+pub mod logcenter;
 pub mod persistence;
 pub mod sync;
 pub mod updater;

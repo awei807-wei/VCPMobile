@@ -13,7 +13,7 @@
  * 注意：此组件内的视图通过 SlidePage 管理滑入/滑出动画，
  * 物理上它们会渲染在 GlobalOverlayManager 提供的容器中。
  */
-import { ref, onMounted, defineAsyncComponent } from 'vue';
+import { ref, watch, onMounted, defineAsyncComponent } from 'vue';
 import { useOverlayStore } from '../core/stores/overlay';
 import { useSettingsStore } from '../core/stores/settings';
 import ToolInteractionOverlay from '../features/distributed/ToolInteractionOverlay.vue';
@@ -31,10 +31,16 @@ const SettingsView = defineAsyncComponent(() => import('../features/settings/Set
 const DailyNoteView = defineAsyncComponent(() => import('../features/dailynote/DailyNoteView.vue'));
 const RagObserverView = defineAsyncComponent(() => import('../features/rag/RagObserver.vue'));
 const GlobalSearchView = defineAsyncComponent(() => import('../features/globalsearch/GlobalSearchView.vue'));
+const LogCenterView = defineAsyncComponent(() => import('../features/logcenter/LogCenterView.vue'));
 
 const overlayStore = useOverlayStore();
 const settingsStore = useSettingsStore();
 const isMounted = ref(false);
+const logCenterMounted = ref(false);
+
+watch(() => overlayStore.isLogCenterOpen, (open) => {
+  if (open) logCenterMounted.value = true;
+}, { immediate: true });
 
 onMounted(() => {
   isMounted.value = true;
@@ -100,6 +106,14 @@ onMounted(() => {
       :is-open="overlayStore.isGlobalSearchOpen"
       :z-index="overlayStore.getPageZIndex('globalSearch')"
       @close="overlayStore.closeGlobalSearch()"
+    />
+
+    <LogCenterView
+      v-if="logCenterMounted"
+      :is-open="overlayStore.isLogCenterOpen"
+      :is-active="overlayStore.isLogCenterActive"
+      :z-index="overlayStore.getPageZIndex('logCenter')"
+      @close="overlayStore.closeLogCenter()"
     />
 
     <!-- 仅当用户已启用分布式计算时才挂载事件监听器，避免常驻不必要的后台监听 -->

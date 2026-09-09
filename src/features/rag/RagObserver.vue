@@ -38,7 +38,7 @@ const toggleSubCard = async (subId: string) => {
     await nextTick();
     const subCardEl = subCardRefs.value[subId];
     if (subCardEl) {
-      subCardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      subCardEl.scrollIntoView({ behavior: 'instant', block: 'nearest' });
     }
   } else {
     expandedSubCardIds.value.add(subId);
@@ -249,7 +249,7 @@ const toggleCard = async (id: string) => {
     await nextTick();
     const cardEl = cardRefs.value[id];
     if (cardEl) {
-      cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      cardEl.scrollIntoView({ behavior: 'instant', block: 'nearest' });
     }
   } else {
     expandedCardIds.value.add(id);

@@ -12,6 +12,7 @@ use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::infra::file_manager::get_attachments_root_dir;
 use crate::vcp_modules::infra::utils::calculate_sha256;
 use crate::vcp_modules::topic_types::TopicKey;
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
@@ -276,6 +277,44 @@ struct ManagedTestAttachment {
     hash: String,
     path: PathBuf,
     size: u64,
+}
+
+struct XdgDocumentsGuard {
+    previous_config_home: Option<OsString>,
+    root: PathBuf,
+}
+
+impl XdgDocumentsGuard {
+    fn new() -> Self {
+        let root =
+            std::env::temp_dir().join(format!("vcp-message-service-xdg-{}", uuid::Uuid::new_v4()));
+        let config_root = root.join("config");
+        let documents = root.join("documents");
+        fs::create_dir_all(&config_root).expect("create message service XDG config root");
+        fs::create_dir_all(&documents).expect("create message service documents root");
+        fs::write(
+            config_root.join("user-dirs.dirs"),
+            format!("XDG_DOCUMENTS_DIR=\"{}\"\n", documents.display()),
+        )
+        .expect("write message service XDG user directories");
+        let previous_config_home = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", &config_root);
+        Self {
+            previous_config_home,
+            root,
+        }
+    }
+}
+
+impl Drop for XdgDocumentsGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous_config_home.take() {
+            std::env::set_var("XDG_CONFIG_HOME", previous);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }
 
 fn write_managed_test_attachment(
@@ -886,6 +925,9 @@ async fn 编辑重发在单一事务内更新锚点并截断复合身份尾部()
 async fn 编辑重发替换锚点附件关系并更新附件实体() {
     let pool = test_pool().await;
     let key = TopicKey::new("agent", "owner-a", "edit-attachment-topic");
+    let _attachment_environment =
+        crate::vcp_modules::file_manager::lock_attachment_test_environment().await;
+    let _xdg_documents = XdgDocumentsGuard::new();
     let app = tauri::test::mock_app();
     app.manage(DbState {
         pool: pool.clone(),
@@ -1005,6 +1047,9 @@ async fn 编辑重发哈希刷新失败时锚点尾部计数和哈希全部回�
 async fn 编辑重发附件替换失败时关系和附件实体全部回滚() {
     let pool = test_pool().await;
     let key = TopicKey::new("agent", "owner-a", "edit-attachment-rollback-topic");
+    let _attachment_environment =
+        crate::vcp_modules::file_manager::lock_attachment_test_environment().await;
+    let _xdg_documents = XdgDocumentsGuard::new();
     let app = tauri::test::mock_app();
     app.manage(DbState {
         pool: pool.clone(),

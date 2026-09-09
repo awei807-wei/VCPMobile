@@ -52,6 +52,7 @@ export class GlobalSearchController {
   private statusRequest: Promise<void> | null = null;
   private pendingJump: PendingSearchJump | null = null;
   private jumpSequence = 0;
+  private restartSearchOnOpen = false;
 
   constructor(adapter: SearchAdapter = tauriSearchAdapter) {
     this.adapter = adapter;
@@ -60,14 +61,25 @@ export class GlobalSearchController {
   open(): void {
     this.isOpen.value = true;
     void this.refreshIndexStatus();
+    if (this.restartSearchOnOpen) {
+      this.restartSearchOnOpen = false;
+      this.scheduleSearch();
+    }
   }
 
   close(): void {
     this.isOpen.value = false;
+    const interruptedSearch = this.searchStatus.value === "loading";
     this.cancelScheduledRequest();
     this.generation += 1;
     this.queuedRequest = null;
     this.paginationGeneration = null;
+    if (interruptedSearch) {
+      this.restartSearchOnOpen =
+        !validateSearchDraft(this.filters) && !!this.filters.query.trim();
+      this.searchStatus.value =
+        this.results.value.length > 0 ? "ready" : "idle";
+    }
     if (this.targetStatus.value !== "loading") {
       this.pendingJump = null;
       this.targetStatus.value = "idle";
@@ -76,6 +88,7 @@ export class GlobalSearchController {
 
   dispose(): void {
     this.close();
+    this.restartSearchOnOpen = false;
   }
 
   setQuery(query: string): void {
@@ -193,6 +206,10 @@ export class GlobalSearchController {
     if (!this.pendingJump && requestId !== this.jumpSequence) return;
     this.targetStatus.value = status;
     if (this.pendingJump?.requestId === requestId) this.pendingJump = null;
+  }
+
+  isJumpRequestCurrent(requestId: number): boolean {
+    return requestId === this.jumpSequence;
   }
 
   private scheduleSearch(): void {
@@ -315,6 +332,8 @@ export class GlobalSearchController {
       beginJump: (result: SearchResult) => this.beginJump(result),
       takePendingJump: (identity: ConversationIdentity) =>
         this.takePendingJump(identity),
+      isJumpRequestCurrent: (requestId: number) =>
+        this.isJumpRequestCurrent(requestId),
       resolveJump: (
         requestId: number,
         status: Exclude<TargetStatus, "idle" | "loading">,

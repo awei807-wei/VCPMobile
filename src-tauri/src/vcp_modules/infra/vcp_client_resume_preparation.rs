@@ -9,10 +9,6 @@ pub(super) async fn prepare_resume_request<R: Runtime>(
     app: &AppHandle<R>,
     state: &tauri::State<'_, ActiveRequests>,
     request_key: &crate::vcp_modules::chat::topic_types::MessageKey,
-    msg_id: &str,
-    owner_id: &str,
-    owner_type: &str,
-    topic_id: &str,
     initial_content: Option<&str>,
     stream_channel: &Channel<StreamEvent>,
     expected_generation: u64,
@@ -46,8 +42,14 @@ pub(super) async fn prepare_resume_request<R: Runtime>(
             return Err(fail_preparation(app, request_key, expected_generation, error).await);
         }
     };
-    let context = build_resume_context(owner_id, owner_type, topic_id);
-    if let Err(error) = send_resume_thinking(stream_channel, msg_id, &context, request_epoch) {
+    let context = build_resume_context(
+        &request_key.topic.owner_id,
+        &request_key.topic.owner_type,
+        &request_key.topic.topic_id,
+    );
+    if let Err(error) =
+        send_resume_thinking(stream_channel, &request_key.msg_id, &context, request_epoch)
+    {
         return Err(fail_preparation(app, request_key, expected_generation, error).await);
     }
     Ok(Some(PreparedResumeRequest::new(

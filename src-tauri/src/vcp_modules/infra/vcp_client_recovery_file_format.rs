@@ -35,14 +35,10 @@ pub(crate) fn parse_claim_generation(path: &Path) -> Option<u64> {
     }
     let generation = parts[0].parse::<u64>().ok().filter(|value| *value > 0)?;
     for component in &parts[1..] {
-        if component[1..]
+        component[1..]
             .parse::<u64>()
             .ok()
-            .filter(|value| *value > 0)
-            .is_none()
-        {
-            return None;
-        }
+            .filter(|value| *value > 0)?;
     }
     Some(generation)
 }
@@ -100,7 +96,7 @@ pub(crate) fn stable_stream_identity_token(
     ]
     .into_iter()
     .map(|value| {
-        let length = value.as_bytes().len();
+        let length = value.len();
         format!("{length}:{value}")
     })
     .collect::<String>();

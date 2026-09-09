@@ -9,16 +9,10 @@ use super::{AttachmentData, AttachmentReadGuard};
 pub(super) async fn complete_registered_attachment<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     pool: &sqlx::SqlitePool,
-    hash: &str,
-    original_name: String,
-    normalized_mime: String,
-    size: u64,
-    canonical_path: std::path::PathBuf,
-    canonical_path_str: String,
-    now: u64,
+    mut parts: AttachmentDataParts<'_>,
     gate: &AttachmentReadGuard,
 ) -> Result<AttachmentData, String> {
-    let extracted_text = match extract_registered_text(&canonical_path, &normalized_mime).await {
+    let extracted_text = match extract_registered_text(&parts.path, &parts.mime_type).await {
         Ok(value) => value,
         Err(error) => {
             log::warn!("附件文本提取失败，保留已提交 CAS: {error}");
@@ -26,13 +20,13 @@ pub(super) async fn complete_registered_attachment<R: tauri::Runtime>(
         }
     };
     let thumbnail_path =
-        generate_registered_thumbnail(app_handle, &canonical_path, &normalized_mime, hash).await;
+        generate_registered_thumbnail(app_handle, &parts.path, &parts.mime_type, parts.hash).await;
     let roots =
         crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(app_handle)?;
     if let Err(error) = persist_derived_metadata(
         pool,
-        hash,
-        now,
+        parts.hash,
+        parts.created_at,
         extracted_text.as_ref(),
         thumbnail_path.as_ref(),
         &roots,
@@ -40,19 +34,13 @@ pub(super) async fn complete_registered_attachment<R: tauri::Runtime>(
     )
     .await
     {
-        log::warn!("附件派生元数据持久化失败，保留已提交 CAS: hash={hash}, error={error}");
+        log::warn!(
+            "附件派生元数据持久化失败，保留已提交 CAS: hash={}, error={error}",
+            parts.hash
+        );
     }
-    build_attachment_data(AttachmentDataParts {
-        hash,
-        original_name,
-        path: canonical_path,
-        internal_path: canonical_path_str,
-        mime_type: normalized_mime,
-        size,
-        created_at: now,
-        extracted_text: None,
-        thumbnail_path,
-    })
+    parts.thumbnail_path = thumbnail_path;
+    build_attachment_data(parts)
 }
 
 async fn extract_registered_text(path: &Path, mime_type: &str) -> Result<Option<String>, String> {
@@ -111,7 +99,7 @@ async fn persist_derived_metadata(
         ));
     }
     crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
-        &mut *tx, hash, roots,
+        &mut tx, hash, roots,
     )
     .await?;
     tx.commit()

@@ -300,11 +300,13 @@ pub(crate) async fn register_promoted_file(
     super::registration::register_attachment_internal_unlocked(
         app_handle,
         &db_state.pool,
-        staging.hash.clone(),
-        original_name,
-        refined_mime,
-        staging.size,
-        promoted.path.to_string_lossy().into_owned(),
+        super::registration::AttachmentRegistrationInput::new(
+            staging.hash.clone(),
+            original_name,
+            refined_mime,
+            staging.size,
+            promoted.path.to_string_lossy().into_owned(),
+        ),
         gate,
     )
     .await
@@ -345,7 +347,7 @@ pub(crate) async fn process_staged_thumbnail(
     let roots =
         crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(app_handle)?;
     crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
-        &mut *tx, hash, &roots,
+        &mut tx, hash, &roots,
     )
     .await?;
     tx.commit()

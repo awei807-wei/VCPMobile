@@ -1,8 +1,9 @@
 use super::scan::scan_managed_root_from_cursor;
+use super::sweep::{sweep_managed_root, ManagedRootSweepOptions};
 use super::{
     is_managed_attachment_temp, live_reference_unlink_relative_path,
-    normalize_unlink_relative_path, should_expire_temp, sweep_managed_root, validate_indexed_path,
-    ManagedPathState, RootKind,
+    normalize_unlink_relative_path, should_expire_temp, validate_indexed_path, ManagedPathState,
+    RootKind,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -237,13 +238,15 @@ async fn sweep_removes_only_strict_unindexed_regular_files() {
 
     let report = sweep_managed_root(
         &root,
-        RootKind::Attachment,
-        &HashSet::new(),
-        &HashSet::new(),
-        &HashSet::new(),
-        SystemTime::now(),
-        Duration::MAX,
-        32,
+        ManagedRootSweepOptions::new(
+            RootKind::Attachment,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            SystemTime::now(),
+            Duration::MAX,
+            32,
+        ),
     )
     .await;
     assert_eq!(report.removed, 2);
@@ -269,13 +272,15 @@ async fn symlinked_managed_root_is_fail_closed() {
     std::os::unix::fs::symlink(&outside, &managed_link).expect("创建受管 root symlink");
     let report = sweep_managed_root(
         &managed_link,
-        RootKind::Attachment,
-        &HashSet::new(),
-        &HashSet::new(),
-        &HashSet::new(),
-        SystemTime::now(),
-        Duration::ZERO,
-        32,
+        ManagedRootSweepOptions::new(
+            RootKind::Attachment,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            SystemTime::now(),
+            Duration::ZERO,
+            32,
+        ),
     )
     .await;
     assert_eq!(report.removed, 0);
@@ -301,13 +306,15 @@ async fn symlinked_managed_root_ancestor_is_fail_closed() {
         .join("attachments");
     let report = sweep_managed_root(
         &managed_root,
-        RootKind::Attachment,
-        &HashSet::new(),
-        &HashSet::new(),
-        &HashSet::new(),
-        SystemTime::now(),
-        Duration::ZERO,
-        32,
+        ManagedRootSweepOptions::new(
+            RootKind::Attachment,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            SystemTime::now(),
+            Duration::ZERO,
+            32,
+        ),
     )
     .await;
     assert_eq!(report.removed, 0);
@@ -373,13 +380,15 @@ async fn derived_names_do_not_accept_adjacent_hash_prefixes() {
     for kind in [RootKind::Thumbnail, RootKind::MultimodalCache] {
         let report = sweep_managed_root(
             &root,
-            kind,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            SystemTime::now(),
-            Duration::MAX,
-            32,
+            ManagedRootSweepOptions::new(
+                kind,
+                &HashSet::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                SystemTime::now(),
+                Duration::MAX,
+                32,
+            ),
         )
         .await;
         assert_eq!(report.removed, 0);

@@ -73,10 +73,11 @@ pub async fn cleanup_orphaned_attachments(
         report.reclaimed,
         report.retained,
         report.deferred,
-        report
-            .has_more
-            .then_some("，仍有分页待处理")
-            .unwrap_or_default()
+        if report.has_more {
+            "，仍有分页待处理"
+        } else {
+            ""
+        }
     ))
 }
 
@@ -143,8 +144,8 @@ async fn reclaim_with_commit_failure_at_roots(
         .await
         .map_err(|error| format!("获取附件 GC 数据库连接失败: {error}"))?;
     begin_gc_transaction(&mut connection).await?;
-    let cursor = read_gc_cursor(&mut *connection, ATTACHMENT_GC_CURSOR_KEY).await?;
-    let relation_cursor = read_gc_cursor(&mut *connection, RELATION_GC_CURSOR_KEY)
+    let cursor = read_gc_cursor(&mut connection, ATTACHMENT_GC_CURSOR_KEY).await?;
+    let relation_cursor = read_gc_cursor(&mut connection, RELATION_GC_CURSOR_KEY)
         .await?
         .parse::<i64>()
         .unwrap_or_default();
@@ -162,8 +163,8 @@ async fn reclaim_orphaned_attachments_at_roots(
         .await
         .map_err(|error| format!("获取附件 GC 数据库连接失败: {error}"))?;
     begin_gc_transaction(&mut connection).await?;
-    let cursor = read_gc_cursor(&mut *connection, ATTACHMENT_GC_CURSOR_KEY).await?;
-    let relation_cursor = read_gc_cursor(&mut *connection, RELATION_GC_CURSOR_KEY)
+    let cursor = read_gc_cursor(&mut connection, ATTACHMENT_GC_CURSOR_KEY).await?;
+    let relation_cursor = read_gc_cursor(&mut connection, RELATION_GC_CURSOR_KEY)
         .await?
         .parse::<i64>()
         .unwrap_or_default();

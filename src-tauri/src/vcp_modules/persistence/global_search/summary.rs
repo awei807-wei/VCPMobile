@@ -7,12 +7,7 @@ pub(crate) fn summarize(content: &str, terms: &[String]) -> String {
         return plain;
     }
 
-    let first_hit = terms
-        .iter()
-        .filter(|term| !term.is_empty())
-        .filter_map(|term| plain.find(term))
-        .min()
-        .map(|byte_offset| plain[..byte_offset].chars().count());
+    let first_hit = first_case_insensitive_hit(&plain, terms);
     let center = first_hit.unwrap_or(0);
     let has_prefix = center > 0;
     let has_suffix = center + SUMMARY_LIMIT < total_chars;
@@ -30,6 +25,28 @@ pub(crate) fn summarize(content: &str, terms: &[String]) -> String {
         window,
         if end < total_chars { "…" } else { "" }
     )
+}
+
+fn first_case_insensitive_hit(content: &str, terms: &[String]) -> Option<usize> {
+    let mut folded_content = String::with_capacity(content.len());
+    let mut original_char_positions = Vec::with_capacity(content.chars().count());
+    for (original_char_position, character) in content.chars().enumerate() {
+        for folded_character in character.to_lowercase() {
+            folded_content.push(folded_character);
+            original_char_positions.push(original_char_position);
+        }
+    }
+
+    terms
+        .iter()
+        .filter(|term| !term.is_empty())
+        .filter_map(|term| {
+            let folded_term: String = term.chars().flat_map(char::to_lowercase).collect();
+            let byte_offset = folded_content.find(&folded_term)?;
+            let folded_char_position = folded_content[..byte_offset].chars().count();
+            original_char_positions.get(folded_char_position).copied()
+        })
+        .min()
 }
 
 fn strip_markup_and_controls(content: &str) -> String {
@@ -83,5 +100,16 @@ mod tests {
         assert!(!summary.contains('<'));
         assert!(!summary.contains('>'));
         assert!(summary.contains("needle"));
+    }
+
+    #[test]
+    fn 摘要按不区分大小写的命中位置居中() {
+        let content = format!("{}Apple{}", "前".repeat(300), "后".repeat(300));
+        let summary = summarize(&content, &["apple".to_string()]);
+
+        assert!(summary.chars().count() <= SUMMARY_LIMIT);
+        assert!(summary.contains("Apple"));
+        assert!(summary.starts_with('…'));
+        assert!(summary.ends_with('…'));
     }
 }

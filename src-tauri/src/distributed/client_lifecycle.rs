@@ -1,7 +1,5 @@
-use super::super::tool_registry::ToolRegistry;
 use super::super::types::{ConnectionState, DistributedStatus};
-use super::{DistributedClient, StopRequest, SESSION_STOP_TIMEOUT};
-use std::sync::Arc;
+use super::{DistributedClient, ReconcileRequest, StopRequest, SESSION_STOP_TIMEOUT};
 use tauri::AppHandle;
 
 impl DistributedClient {
@@ -127,18 +125,19 @@ impl DistributedClient {
     }
 
     /// 在同一 transition 内执行设置调和或网络恢复，避免状态读取和启动/停止分离。
-    pub async fn reconcile_with_request(
+    pub(crate) async fn reconcile_with_request(
         &self,
-        request_id: u64,
         app: &AppHandle,
-        enabled: bool,
-        force_reconnect: bool,
-        trigger_reconnect: bool,
-        ws_url: String,
-        vcp_key: String,
-        device_name: String,
-        registry: Arc<ToolRegistry>,
+        request: ReconcileRequest,
     ) -> Result<(), String> {
+        let ReconcileRequest {
+            request_id,
+            enabled,
+            force_reconnect,
+            trigger_reconnect,
+            config,
+            registry,
+        } = request;
         let _transition = self.transition.lock().await;
         if !self.start_request_is_current(request_id) {
             log::info!("[Distributed] 已忽略过期的生命周期调和请求。");
@@ -171,9 +170,9 @@ impl DistributedClient {
         self.start_locked(
             request_id,
             app.clone(),
-            ws_url,
-            vcp_key,
-            device_name,
+            config.ws_url,
+            config.vcp_key,
+            config.device_name,
             registry,
         )
         .await

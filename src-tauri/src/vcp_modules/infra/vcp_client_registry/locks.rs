@@ -30,7 +30,7 @@ impl Drop for TransitionLock {
             return;
         };
         if let Entry::Occupied(entry) = registry.transitions.entry(self.key.clone()) {
-            if entry.get().as_ptr() == self as *const TransitionLock {
+            if std::ptr::eq(entry.get().as_ptr(), self) {
                 entry.remove();
             }
         };
@@ -66,7 +66,7 @@ impl Drop for TopicTransitionLock {
             return;
         };
         if let Entry::Occupied(entry) = registry.topic_transitions.entry(self.topic.clone()) {
-            if entry.get().as_ptr() == self as *const TopicTransitionLock {
+            if std::ptr::eq(entry.get().as_ptr(), self) {
                 entry.remove();
             }
         };

@@ -1,6 +1,6 @@
 use super::super::{
     attachment_gc_gate, commit_registered_attachment, commit_registered_attachment_unlocked,
-    get_attachments_root_dir, register_attachment_internal_unlocked,
+    get_attachments_root_dir, register_attachment_internal_unlocked, AttachmentRegistrationInput,
 };
 use crate::vcp_modules::infra::utils::calculate_sha256;
 use std::ffi::OsString;
@@ -250,11 +250,13 @@ async fn unlocked_registration_commits_new_cas_before_best_effort_derivation() {
     let data = register_attachment_internal_unlocked(
         fixture.app.handle(),
         &pool,
-        hash.clone(),
-        "new.bin".to_string(),
-        "application/octet-stream".to_string(),
-        content.len() as u64,
-        path.to_string_lossy().into_owned(),
+        AttachmentRegistrationInput::new(
+            hash.clone(),
+            "new.bin".to_string(),
+            "application/octet-stream".to_string(),
+            content.len() as u64,
+            path.to_string_lossy().into_owned(),
+        ),
         &gate,
     )
     .await
@@ -290,11 +292,13 @@ async fn derived_metadata_failure_keeps_committed_cas_and_empty_derivation() {
     let data = register_attachment_internal_unlocked(
         fixture.app.handle(),
         &pool,
-        hash.clone(),
-        "derivation.txt".to_string(),
-        "text/plain".to_string(),
-        content.len() as u64,
-        path.to_string_lossy().into_owned(),
+        AttachmentRegistrationInput::new(
+            hash.clone(),
+            "derivation.txt".to_string(),
+            "text/plain".to_string(),
+            content.len() as u64,
+            path.to_string_lossy().into_owned(),
+        ),
         &gate,
     )
     .await
@@ -353,11 +357,13 @@ async fn existing_cas_reuse_preserves_persisted_metadata_and_rejects_size_mismat
     let data = register_attachment_internal_unlocked(
         fixture.app.handle(),
         &pool,
-        hash.clone(),
-        "incoming-name.pdf".to_string(),
-        "text/plain".to_string(),
-        content.len() as u64,
-        path.to_string_lossy().into_owned(),
+        AttachmentRegistrationInput::new(
+            hash.clone(),
+            "incoming-name.pdf".to_string(),
+            "text/plain".to_string(),
+            content.len() as u64,
+            path.to_string_lossy().into_owned(),
+        ),
         &gate,
     )
     .await
@@ -374,11 +380,13 @@ async fn existing_cas_reuse_preserves_persisted_metadata_and_rejects_size_mismat
     let mismatch = register_attachment_internal_unlocked(
         fixture.app.handle(),
         &pool,
-        hash.clone(),
-        "wrong-size.pdf".to_string(),
-        "text/plain".to_string(),
-        content.len() as u64 + 1,
-        path.to_string_lossy().into_owned(),
+        AttachmentRegistrationInput::new(
+            hash.clone(),
+            "wrong-size.pdf".to_string(),
+            "text/plain".to_string(),
+            content.len() as u64 + 1,
+            path.to_string_lossy().into_owned(),
+        ),
         &gate,
     )
     .await;
@@ -411,11 +419,13 @@ async fn unlocked_registration_does_not_nest_read_lock_behind_waiting_writer() {
         register_attachment_internal_unlocked(
             fixture.app.handle(),
             &pool,
-            hash,
-            "unlocked.bin".to_string(),
-            "application/octet-stream".to_string(),
-            content.len() as u64,
-            path.to_string_lossy().into_owned(),
+            AttachmentRegistrationInput::new(
+                hash,
+                "unlocked.bin".to_string(),
+                "application/octet-stream".to_string(),
+                content.len() as u64,
+                path.to_string_lossy().into_owned(),
+            ),
             &read_gate,
         ),
     )

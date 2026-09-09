@@ -90,7 +90,7 @@ pub async fn debug_inject_invalid_attachment_for_wire14(
     let update = prepare_invalid_attachment(&mut tx, &key, &msg_id, &attachment_hash).await?;
     insert_attachment_relation(&mut tx, &key, &msg_id, &attachment_hash, &update).await?;
     crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
-        &mut *tx,
+        &mut tx,
         &attachment_hash,
         &roots,
     )

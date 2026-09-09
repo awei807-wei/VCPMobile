@@ -240,7 +240,7 @@ fn stream_error_uses_kind_stream_error_and_strict_error_contract() {
 #[test]
 fn ndjson_byte_split_preserves_utf8_and_enforces_budgets() {
     let bytes = serde_json::to_vec(&topic_frame("主题", "agent", "agent-a", json!([]))).unwrap();
-    let newline = [b'\n'];
+    let newline = *b"\n";
     let mut joined = bytes.clone();
     joined.extend_from_slice(&newline);
     let split = joined

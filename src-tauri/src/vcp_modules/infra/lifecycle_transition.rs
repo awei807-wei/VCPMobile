@@ -80,13 +80,13 @@ async fn apply_foreground_change(
         was_foreground,
         is_foreground
     );
-    crate::vcp_modules::infra::vcp_log_service::handle_foreground_state_change(&app, is_foreground)
+    crate::vcp_modules::infra::vcp_log_service::handle_foreground_state_change(app, is_foreground)
         .await;
-    emit_lifecycle_event(&app, is_foreground);
+    emit_lifecycle_event(app, is_foreground);
     if is_foreground {
-        return_foreground(&app, &state).await;
+        return_foreground(app, state).await;
     } else {
-        enter_background(&app, &state, transition_epoch).await;
+        enter_background(app, state, transition_epoch).await;
     }
 }
 

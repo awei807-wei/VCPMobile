@@ -9,7 +9,7 @@ fn 接续必须携带正整数helper纪元() {
 }
 
 #[test]
-fn agent接续上下文携带规范ownerId并保留agentId兼容字段() {
+fn agent接续上下文携带规范owner_id并保留agent_id兼容字段() {
     let context = build_resume_context("agent-owner", "agent", "topic-a");
 
     assert_eq!(context["ownerId"], "agent-owner");
@@ -20,7 +20,7 @@ fn agent接续上下文携带规范ownerId并保留agentId兼容字段() {
 }
 
 #[test]
-fn group接续上下文携带规范ownerId并保留groupId兼容字段() {
+fn group接续上下文携带规范owner_id并保留group_id兼容字段() {
     let context = build_resume_context("group-owner", "group", "topic-g");
 
     assert_eq!(context["ownerId"], "group-owner");

@@ -140,13 +140,17 @@ function removeSessionStream(
 ): void {
   const topicKey = topicIdentityKey(identity);
   const streams = deps.state.sessionActiveStreams.value[topicKey];
+  let removed = false;
   if (streams) {
     const index = streams.indexOf(messageId);
-    if (index !== -1) streams.splice(index, 1);
+    if (index !== -1) {
+      streams.splice(index, 1);
+      removed = true;
+    }
     if (streams.length === 0)
       delete deps.state.sessionActiveStreams.value[topicKey];
   }
-  if (!hasAnyStreams(deps.state) && !hasAnyPending(deps.state)) {
+  if (removed && !hasAnyStreams(deps.state) && !hasAnyPending(deps.state)) {
     releaseScreenKeep();
   }
   scheduleMessageCleanup(deps, identity, messageId, activeStreamKeySet);

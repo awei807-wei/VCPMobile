@@ -1479,7 +1479,7 @@ async fn expired_temp_file_referenced_by_attachment_is_retained() {
     let roots = roots(&root);
     let mut connection = pool.acquire().await.expect("获取 GC 测试连接");
     let path_index = PathReferenceIndex::load_for_paths(
-        &mut *connection,
+        &mut connection,
         &roots,
         &[(super::paths::RootKind::Attachment, temp.clone())],
         &[],
@@ -1487,7 +1487,7 @@ async fn expired_temp_file_referenced_by_attachment_is_retained() {
     .await
     .expect("加载附件路径快照");
     let report = super::paths::sweep_root_after_commit_for_test(
-        &mut *connection,
+        &mut connection,
         &roots.attachments,
         super::paths::RootKind::Attachment,
         &path_index,
@@ -1730,7 +1730,7 @@ async fn bounded_reference_probe_does_not_materialize_unrelated_large_tables() {
     let roots = roots(&root);
     let mut connection = pool.acquire().await.expect("获取引用探针连接");
     let index = PathReferenceIndex::load_for_records(
-        &mut *connection,
+        &mut connection,
         &roots,
         &[IndexedAttachment {
             hash: candidate_hash,
@@ -1756,7 +1756,7 @@ async fn outbox_final_db_check_keeps_file_when_referenced_after_snapshot() {
 
     let mut snapshot_connection = pool.acquire().await.expect("获取 outbox 快照连接");
     let stale_index = PathReferenceIndex::load_for_paths(
-        &mut *snapshot_connection,
+        &mut snapshot_connection,
         &roots,
         &[(super::paths::RootKind::Attachment, path.clone())],
         &[],
@@ -1767,7 +1767,7 @@ async fn outbox_final_db_check_keeps_file_when_referenced_after_snapshot() {
 
     insert_attachment_index(&pool, &hash, &path, None).await;
     let mut retry_connection = pool.acquire().await.expect("获取 outbox 重试连接");
-    let report = retry_unlink_outbox_with_index(&mut *retry_connection, &roots, &stale_index)
+    let report = retry_unlink_outbox_with_index(&mut retry_connection, &roots, &stale_index)
         .await
         .expect("执行 outbox 终检");
     assert_eq!(report.removed, 0);
@@ -1986,7 +1986,7 @@ async fn cross_page_production_symlink_aliases_protect_only_their_exact_debts() 
     fs::write(&unrelated_path, b"unrelated same name").expect("写入无关同名文件");
     fs::write(&thumbnail_path, b"thumbnail target").expect("写入缩略图目标");
     std::os::unix::fs::symlink(&custom_path, &external_alias).expect("创建 root 外附件 alias");
-    std::os::unix::fs::symlink(&root.join("attachments"), &ancestor_dir)
+    std::os::unix::fs::symlink(root.join("attachments"), &ancestor_dir)
         .expect("创建祖先附件 symlink");
     std::os::unix::fs::symlink(&thumbnail_path, &thumbnail_alias)
         .expect("创建 root 外缩略图 alias");

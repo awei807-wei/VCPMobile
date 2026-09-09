@@ -705,8 +705,22 @@ async fn 稳定锚点按同毫秒消息全序处理包含和不包含锚点() {
     for include_anchor in [false, true] {
         let pool = test_pool().await;
         insert_message(&pool, &agent, "anchor body", false).await;
-        insert_extra_message(&pool, &agent, "a-before", 100, false).await;
-        insert_extra_message(&pool, &agent, "z-after", 100, true).await;
+        insert_extra_message(&pool, &agent, "z-before", 100, false).await;
+        insert_extra_message(&pool, &agent, "a-after", 100, true).await;
+        sqlx::query(
+            "UPDATE messages SET rowid = CASE msg_id
+                 WHEN 'z-before' THEN 10
+                 WHEN 'same-message' THEN 20
+                 WHEN 'a-after' THEN 30
+             END
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+        )
+        .bind(&agent.owner_type)
+        .bind(&agent.owner_id)
+        .bind(&agent.topic_id)
+        .execute(&pool)
+        .await
+        .expect("设置与消息标识字典序相反的展示顺序");
         let result = truncate_history_after_timestamp_for_topic(
             &pool,
             &agent,
@@ -716,14 +730,49 @@ async fn 稳定锚点按同毫秒消息全序处理包含和不包含锚点() {
         .await
         .expect("按稳定锚点截断");
         let expected_deleted = if include_anchor {
-            vec!["same-message".to_string(), "z-after".to_string()]
+            vec!["same-message".to_string(), "a-after".to_string()]
         } else {
-            vec!["z-after".to_string()]
+            vec!["a-after".to_string()]
         };
         assert_eq!(result.deleted_ids, expected_deleted);
         assert_eq!(result.msg_count, if include_anchor { 1 } else { 2 });
-        assert_eq!(result.active_ids, vec!["z-after".to_string()]);
+        assert_eq!(result.active_ids, vec!["a-after".to_string()]);
         assert_eq!(result.anchor.unwrap().include_anchor, include_anchor);
+
+        let message_states: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT msg_id, deleted_at FROM messages
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
+             ORDER BY rowid",
+        )
+        .bind(&agent.owner_type)
+        .bind(&agent.owner_id)
+        .bind(&agent.topic_id)
+        .fetch_all(&pool)
+        .await
+        .expect("读取截断后的消息顺序和删除状态");
+        assert_eq!(message_states[0], ("z-before".to_string(), None));
+        assert_eq!(message_states[1].0, "same-message");
+        assert_eq!(message_states[1].1.is_some(), include_anchor);
+        assert_eq!(message_states[2].0, "a-after");
+        assert!(message_states[2].1.is_some());
+
+        let indexed_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT msg_id FROM messages_fts
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
+             ORDER BY msg_id",
+        )
+        .bind(&agent.owner_type)
+        .bind(&agent.owner_id)
+        .bind(&agent.topic_id)
+        .fetch_all(&pool)
+        .await
+        .expect("读取截断后的搜索索引");
+        let expected_indexed = if include_anchor {
+            vec!["z-before".to_string()]
+        } else {
+            vec!["same-message".to_string(), "z-before".to_string()]
+        };
+        assert_eq!(indexed_ids, expected_indexed);
     }
 }
 
@@ -874,7 +923,7 @@ async fn 编辑重发在单一事务内更新锚点并截断复合身份尾部()
     assert_eq!(result.deleted_ids, vec!["tail-a", "tail-z"]);
     assert_eq!(result.active_ids, vec!["tail-z"]);
     assert_eq!(result.msg_count, 1);
-    assert_eq!(result.anchor.as_ref().unwrap().include_anchor, false);
+    assert!(!result.anchor.as_ref().unwrap().include_anchor);
     assert!(!result.blocks.is_empty());
     assert_eq!(
         read_message_body(&pool, &key, "same-message").await,

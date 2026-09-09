@@ -40,8 +40,10 @@ pub(super) async fn build_gc_batch(
     relation_cursor: i64,
 ) -> Result<GcBatch, String> {
     let relation_page = scrub_deleted_attachment_links(connection, relation_cursor).await?;
-    let mut batch = GcBatch::default();
-    batch.first_page = cursor.is_empty();
+    let mut batch = GcBatch {
+        first_page: cursor.is_empty(),
+        ..GcBatch::default()
+    };
     let cycle_state = if batch.first_page {
         Some(AttachmentGcCycleState {
             token: uuid::Uuid::new_v4().to_string(),

@@ -30,11 +30,51 @@ type WsSink = Arc<
 const DISTRIBUTED_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
 const DISTRIBUTED_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(75);
 
-/// Immutable configuration for a single connection lifecycle.
-struct ConnectionConfig {
+/// 单次连接生命周期使用的不可变配置。
+pub(crate) struct ConnectionConfig {
     ws_url: String,
     vcp_key: String,
     device_name: String,
+}
+
+impl ConnectionConfig {
+    pub(crate) fn new(ws_url: String, vcp_key: String, device_name: String) -> Self {
+        Self {
+            ws_url,
+            vcp_key,
+            device_name,
+        }
+    }
+}
+
+/// 一次经过串行化边界处理的生命周期调和请求。
+pub(crate) struct ReconcileRequest {
+    request_id: u64,
+    enabled: bool,
+    force_reconnect: bool,
+    trigger_reconnect: bool,
+    config: ConnectionConfig,
+    registry: Arc<ToolRegistry>,
+}
+
+impl ReconcileRequest {
+    pub(crate) fn new(
+        request_id: u64,
+        enabled: bool,
+        force_reconnect: bool,
+        trigger_reconnect: bool,
+        config: ConnectionConfig,
+        registry: Arc<ToolRegistry>,
+    ) -> Self {
+        Self {
+            request_id,
+            enabled,
+            force_reconnect,
+            trigger_reconnect,
+            config,
+            registry,
+        }
+    }
 }
 
 /// Runtime context for a single connection lifecycle (channel receivers).

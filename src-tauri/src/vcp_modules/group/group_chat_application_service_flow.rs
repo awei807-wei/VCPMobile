@@ -29,7 +29,7 @@ struct TurnSummary {
 }
 
 enum SpeakerResult {
-    Completed(ChatMessage),
+    Completed(Box<ChatMessage>),
     Failed,
     Skipped,
 }
@@ -126,8 +126,8 @@ async fn process_speakers(
         .await?
         {
             SpeakerResult::Completed(message) => {
-                history.push(message.clone());
-                messages.push(message);
+                history.push((*message).clone());
+                messages.push(*message);
             }
             SpeakerResult::Failed => failures += 1,
             SpeakerResult::Skipped => skipped += 1,

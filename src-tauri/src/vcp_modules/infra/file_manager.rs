@@ -23,7 +23,7 @@ pub(crate) use attachment::{
     commit_registered_attachment_unlocked, normalize_attachment_mime,
     register_attachment_internal_unlocked, resolve_attachment_cas_file, safe_storage_extension,
     store_file_semaphore, validate_attachment_cas_path, verify_expected_hash, verify_file_sha256,
-    AttachmentReadGuard,
+    AttachmentReadGuard, AttachmentRegistrationInput,
 };
 
 #[cfg(test)]

@@ -103,19 +103,45 @@ async fn load_anchor(
     ))
 }
 
+/// 截断顺序与历史展示使用的 `(timestamp, rowid)` 保持一致。
+/// 关联子查询保留完整话题身份，同时继续兼容基于 `anchor_message_id` 的 mutation 接口。
 pub(crate) fn order_predicate(include_anchor: bool) -> &'static str {
     if include_anchor {
-        "(timestamp > ? OR (timestamp = ? AND msg_id >= ?))"
+        "(timestamp > ? OR (timestamp = ? AND rowid >= (
+            SELECT anchor.rowid FROM messages anchor
+            WHERE anchor.owner_type = messages.owner_type
+              AND anchor.owner_id = messages.owner_id
+              AND anchor.topic_id = messages.topic_id
+              AND anchor.msg_id = ?
+        )))"
     } else {
-        "(timestamp > ? OR (timestamp = ? AND msg_id > ?))"
+        "(timestamp > ? OR (timestamp = ? AND rowid > (
+            SELECT anchor.rowid FROM messages anchor
+            WHERE anchor.owner_type = messages.owner_type
+              AND anchor.owner_id = messages.owner_id
+              AND anchor.topic_id = messages.topic_id
+              AND anchor.msg_id = ?
+        )))"
     }
 }
 
 pub(crate) fn qualified_order_predicate(include_anchor: bool) -> &'static str {
     if include_anchor {
-        "(m.timestamp > ? OR (m.timestamp = ? AND m.msg_id >= ?))"
+        "(m.timestamp > ? OR (m.timestamp = ? AND m.rowid >= (
+            SELECT anchor.rowid FROM messages anchor
+            WHERE anchor.owner_type = m.owner_type
+              AND anchor.owner_id = m.owner_id
+              AND anchor.topic_id = m.topic_id
+              AND anchor.msg_id = ?
+        )))"
     } else {
-        "(m.timestamp > ? OR (m.timestamp = ? AND m.msg_id > ?))"
+        "(m.timestamp > ? OR (m.timestamp = ? AND m.rowid > (
+            SELECT anchor.rowid FROM messages anchor
+            WHERE anchor.owner_type = m.owner_type
+              AND anchor.owner_id = m.owner_id
+              AND anchor.topic_id = m.topic_id
+              AND anchor.msg_id = ?
+        )))"
     }
 }
 
@@ -130,7 +156,7 @@ pub(crate) async fn select_ordered_message_ids(
         "SELECT m.msg_id FROM messages m
          WHERE m.owner_type = ? AND m.owner_id = ? AND m.topic_id = ?
            AND m.deleted_at IS NULL AND {predicate}
-         ORDER BY m.timestamp ASC, m.msg_id ASC"
+         ORDER BY m.timestamp ASC, m.rowid ASC"
     );
     sqlx::query_scalar::<_, String>(&query)
         .bind(&key.owner_type)
@@ -158,7 +184,7 @@ pub(crate) async fn select_ordered_active_ids(
           AND m.topic_id = a.topic_id AND m.msg_id = a.msg_id
          WHERE a.owner_type = ? AND a.owner_id = ? AND a.topic_id = ?
            AND {predicate}
-         ORDER BY m.timestamp ASC, m.msg_id ASC"
+         ORDER BY m.timestamp ASC, m.rowid ASC"
     );
     sqlx::query_scalar::<_, String>(&query)
         .bind(&key.owner_type)

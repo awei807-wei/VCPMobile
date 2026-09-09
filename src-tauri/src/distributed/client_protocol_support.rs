@@ -1,14 +1,12 @@
-use super::super::super::tool_registry::ToolRegistry;
 use super::super::super::types::*;
 use super::{
-    acquire_wake_lock_helper, is_session_current, DistributedClient, SessionTaskRegistry,
-    WakeLockLease, WsSink,
+    acquire_wake_lock_helper, is_session_current, DistributedClient, ProtocolSessionContext,
+    SessionTaskRegistry, WakeLockLease, WsSink,
 };
 use serde_json::Value;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 pub(super) async fn spawn_ip_report(
@@ -83,23 +81,16 @@ pub(super) async fn report_ip(
     log::info!("[Distributed] 已发送 IP 报告。");
 }
 
-pub(super) async fn push_static_placeholders(
-    app: &AppHandle,
-    device_name: &str,
-    ws_tx: &WsSink,
-    registry: &Arc<ToolRegistry>,
-    session_id: u64,
-    session_generation: &Arc<AtomicU64>,
-    cancel_token: &CancellationToken,
-    task_registry: &SessionTaskRegistry,
-) {
-    let app = app.clone();
-    let device_name = device_name.to_string();
-    let ws_tx = ws_tx.clone();
-    let registry = registry.clone();
-    let session_generation = session_generation.clone();
-    let cancel_token = cancel_token.clone();
-    let _ = task_registry
+pub(super) async fn push_static_placeholders(context: &ProtocolSessionContext<'_>) {
+    let app = context.app.clone();
+    let device_name = context.device_name.to_string();
+    let ws_tx = context.ws_tx.clone();
+    let registry = context.registry.clone();
+    let session_id = context.session_id;
+    let session_generation = context.session_generation.clone();
+    let cancel_token = context.cancel_token.clone();
+    let _ = context
+        .task_registry
         .spawn(async move {
             let tag = format!("distributed:placeholder_push:session:{session_id}");
             if !acquire_wake_lock_helper(&app, &tag, session_id, &session_generation, &cancel_token)

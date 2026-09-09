@@ -200,4 +200,61 @@ describe("全局搜索控制器", () => {
     expect(controller.searchStatus.value).toBe("invalid");
     expect(controller.validationMessage.value).toContain("起始日期");
   });
+
+  it("关闭时取消防抖且重开后恢复同一有效查询", async () => {
+    vi.useFakeTimers();
+    const search = vi.fn(
+      async (): Promise<SearchPage> => ({
+        results: [result("resumed")],
+        nextCursor: null,
+      }),
+    );
+    const controller = new GlobalSearchController(adapterFor(search));
+
+    controller.setQuery("needle");
+    controller.close();
+    expect(controller.searchStatus.value).toBe("idle");
+    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    expect(search).not.toHaveBeenCalled();
+
+    controller.open();
+    expect(controller.searchStatus.value).toBe("loading");
+    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    await vi.waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+    expect(controller.results.value.map((item) => item.msgId)).toEqual([
+      "resumed",
+    ]);
+  });
+
+  it("关闭时失效后端请求且重开后由新请求恢复结果", async () => {
+    vi.useFakeTimers();
+    const first = deferred<SearchPage>();
+    const second = deferred<SearchPage>();
+    const search = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const controller = new GlobalSearchController(adapterFor(search));
+
+    controller.setQuery("needle");
+    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    expect(search).toHaveBeenCalledTimes(1);
+    controller.close();
+    expect(controller.searchStatus.value).toBe("idle");
+
+    controller.open();
+    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    expect(search).toHaveBeenCalledTimes(2);
+    first.resolve({ results: [result("stale")], nextCursor: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.results.value).toEqual([]);
+    expect(controller.searchStatus.value).toBe("loading");
+
+    second.resolve({ results: [result("fresh")], nextCursor: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.results.value.map((item) => item.msgId)).toEqual([
+      "fresh",
+    ]);
+    expect(controller.searchStatus.value).toBe("ready");
+  });
 });

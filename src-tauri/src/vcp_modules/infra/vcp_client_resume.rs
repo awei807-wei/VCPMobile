@@ -41,10 +41,6 @@ pub async fn resume_stream<R: Runtime>(
         &app,
         &state,
         &request_key,
-        &msg_id,
-        &owner_id,
-        &owner_type,
-        &topic_id,
         initial_content.as_deref(),
         &stream_channel,
         expected_generation,
@@ -57,12 +53,13 @@ pub async fn resume_stream<R: Runtime>(
         &app,
         &state,
         prepared,
-        msg_id.clone(),
-        request_key.clone(),
-        stream_channel.clone(),
-        last_event_index,
-        initial_content.clone(),
-        expected_generation,
+        ResumeRequest {
+            request_key: request_key.clone(),
+            stream_channel: stream_channel.clone(),
+            last_event_index,
+            initial_content: initial_content.clone(),
+            expected_generation,
+        },
     )
     .await;
     #[cfg(target_os = "android")]
@@ -82,16 +79,19 @@ pub(super) struct PreparedResumeRequest {
     pub(super) context: Value,
 }
 
-async fn run_prepared_resume_request<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &tauri::State<'_, ActiveRequests>,
-    prepared: PreparedResumeRequest,
-    msg_id: String,
+struct ResumeRequest {
     request_key: crate::vcp_modules::chat::topic_types::MessageKey,
     stream_channel: Channel<StreamEvent>,
     last_event_index: Option<i64>,
     initial_content: Option<String>,
     expected_generation: u64,
+}
+
+async fn run_prepared_resume_request<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &tauri::State<'_, ActiveRequests>,
+    prepared: PreparedResumeRequest,
+    request: ResumeRequest,
 ) -> Result<Value, String> {
     let PreparedResumeRequest {
         pool,
@@ -102,6 +102,14 @@ async fn run_prepared_resume_request<R: Runtime>(
         client,
         context,
     } = prepared;
+    let ResumeRequest {
+        request_key,
+        stream_channel,
+        last_event_index,
+        initial_content,
+        expected_generation,
+    } = request;
+    let msg_id = request_key.msg_id.clone();
     let (mut response, is_aborted) = execute_resume_request(
         app,
         &pool,

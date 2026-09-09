@@ -59,26 +59,59 @@ async fn test_pool() -> SqlitePool {
     pool
 }
 
-async fn insert_message(
-    pool: &SqlitePool,
-    owner_type: &str,
-    owner_id: &str,
-    topic_id: &str,
-    msg_id: &str,
-    speaker_agent_id: Option<&str>,
-    content: &str,
+struct TestMessage<'a> {
+    owner_type: &'a str,
+    owner_id: &'a str,
+    topic_id: &'a str,
+    msg_id: &'a str,
+    speaker_agent_id: Option<&'a str>,
+    content: &'a str,
     timestamp: i64,
     deleted_at: Option<i64>,
-) {
+}
+
+impl<'a> TestMessage<'a> {
+    fn new(
+        owner_type: &'a str,
+        owner_id: &'a str,
+        topic_id: &'a str,
+        msg_id: &'a str,
+        content: &'a str,
+        timestamp: i64,
+    ) -> Self {
+        Self {
+            owner_type,
+            owner_id,
+            topic_id,
+            msg_id,
+            speaker_agent_id: None,
+            content,
+            timestamp,
+            deleted_at: None,
+        }
+    }
+
+    fn spoken_by(mut self, speaker_agent_id: &'a str) -> Self {
+        self.speaker_agent_id = Some(speaker_agent_id);
+        self
+    }
+
+    fn deleted_at(mut self, deleted_at: i64) -> Self {
+        self.deleted_at = Some(deleted_at);
+        self
+    }
+}
+
+async fn insert_message(pool: &SqlitePool, message: TestMessage<'_>) {
     sqlx::query(
         "INSERT INTO topics(owner_type, owner_id, topic_id, title)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(owner_type, owner_id, topic_id) DO NOTHING",
     )
-    .bind(owner_type)
-    .bind(owner_id)
-    .bind(topic_id)
-    .bind(format!("{owner_type} topic"))
+    .bind(message.owner_type)
+    .bind(message.owner_id)
+    .bind(message.topic_id)
+    .bind(format!("{} topic", message.owner_type))
     .execute(pool)
     .await
     .expect("应插入搜索话题");
@@ -87,14 +120,14 @@ async fn insert_message(
             owner_type, owner_id, topic_id, msg_id, role, agent_id, content, timestamp, deleted_at
          ) VALUES (?, ?, ?, ?, 'user', ?, ?, ?, ?)",
     )
-    .bind(owner_type)
-    .bind(owner_id)
-    .bind(topic_id)
-    .bind(msg_id)
-    .bind(speaker_agent_id)
-    .bind(content.as_bytes())
-    .bind(timestamp)
-    .bind(deleted_at)
+    .bind(message.owner_type)
+    .bind(message.owner_id)
+    .bind(message.topic_id)
+    .bind(message.msg_id)
+    .bind(message.speaker_agent_id)
+    .bind(message.content.as_bytes())
+    .bind(message.timestamp)
+    .bind(message.deleted_at)
     .execute(pool)
     .await
     .expect("应插入搜索消息");
@@ -102,11 +135,11 @@ async fn insert_message(
         "INSERT INTO messages_fts(msg_id, topic_id, content, owner_type, owner_id)
          VALUES (?, ?, ?, ?, ?)",
     )
-    .bind(msg_id)
-    .bind(topic_id)
-    .bind(content)
-    .bind(owner_type)
-    .bind(owner_id)
+    .bind(message.msg_id)
+    .bind(message.topic_id)
+    .bind(message.content)
+    .bind(message.owner_type)
+    .bind(message.owner_id)
     .execute(pool)
     .await
     .expect("应插入搜索索引行");
@@ -116,50 +149,55 @@ async fn 准备搜索测试数据() -> SqlitePool {
     let pool = test_pool().await;
     insert_message(
         &pool,
-        "agent",
-        "owner-a",
-        "shared-topic",
-        "message-a1",
-        Some("speaker-a"),
-        "needle agent short 二字",
-        100,
-        None,
+        TestMessage::new(
+            "agent",
+            "owner-a",
+            "shared-topic",
+            "message-a1",
+            "needle agent short 二字",
+            100,
+        )
+        .spoken_by("speaker-a"),
     )
     .await;
     insert_message(
         &pool,
-        "agent",
-        "owner-a",
-        "shared-topic",
-        "message-a2",
-        Some("speaker-a"),
-        "needle agent second",
-        100,
-        None,
+        TestMessage::new(
+            "agent",
+            "owner-a",
+            "shared-topic",
+            "message-a2",
+            "needle agent second",
+            100,
+        )
+        .spoken_by("speaker-a"),
     )
     .await;
     insert_message(
         &pool,
-        "group",
-        "owner-g",
-        "shared-topic",
-        "message-g1",
-        Some("speaker-g"),
-        "needle group short 二字",
-        100,
-        None,
+        TestMessage::new(
+            "group",
+            "owner-g",
+            "shared-topic",
+            "message-g1",
+            "needle group short 二字",
+            100,
+        )
+        .spoken_by("speaker-g"),
     )
     .await;
     insert_message(
         &pool,
-        "agent",
-        "owner-a",
-        "shared-topic",
-        "message-deleted",
-        Some("speaker-a"),
-        "needle deleted",
-        100,
-        Some(200),
+        TestMessage::new(
+            "agent",
+            "owner-a",
+            "shared-topic",
+            "message-deleted",
+            "needle deleted",
+            100,
+        )
+        .spoken_by("speaker-a")
+        .deleted_at(200),
     )
     .await;
     pool
@@ -169,14 +207,14 @@ async fn 准备搜索测试数据() -> SqlitePool {
 fn 短词和混合查询只使用未压缩的索引正文列() {
     let short = SearchPlan::from_filter(&request("二字")).expect("短词查询应有效");
     let sql = super::build_sql(&short, &request("二字"));
-    assert!(sql.contains("instr(messages_fts.content, ?) > 0"));
+    assert!(sql.contains("instr(lower(messages_fts.content), lower(?)) > 0"));
     assert!(!sql.contains("instr(m.content"));
 
     let mixed_request = request("二字 needle");
     let mixed = SearchPlan::from_filter(&mixed_request).expect("混合查询应有效");
     let sql = super::build_sql(&mixed, &mixed_request);
     assert!(sql.contains("messages_fts.content MATCH ?"));
-    assert!(sql.contains("instr(messages_fts.content, ?) > 0"));
+    assert!(sql.contains("instr(lower(messages_fts.content), lower(?)) > 0"));
     assert!(!sql.contains("messages.content"));
 
     let mut short_rank_request = request("二字");
@@ -251,14 +289,15 @@ async fn 短词和混合统一码查询匹配索引正文() {
     let emoji = request("😀😀");
     insert_message(
         &pool,
-        "agent",
-        "owner-a",
-        "emoji-topic",
-        "emoji-message",
-        Some("speaker-a"),
-        "prefix 😀😀 suffix",
-        90,
-        None,
+        TestMessage::new(
+            "agent",
+            "owner-a",
+            "emoji-topic",
+            "emoji-message",
+            "prefix 😀😀 suffix",
+            90,
+        )
+        .spoken_by("speaker-a"),
     )
     .await;
     let emoji_results = search_messages(&pool, emoji).await.unwrap();
@@ -266,18 +305,42 @@ async fn 短词和混合统一码查询匹配索引正文() {
 }
 
 #[tokio::test]
+async fn 短英文词和混合查询不区分大小写() {
+    let pool = test_pool().await;
+    insert_message(
+        &pool,
+        TestMessage::new(
+            "agent",
+            "owner-a",
+            "case-topic",
+            "case-message",
+            "prefix apple suffix",
+            1,
+        ),
+    )
+    .await;
+
+    let short = search_messages(&pool, request("A")).await.unwrap();
+    assert_eq!(short.results.len(), 1);
+
+    let mixed = search_messages(&pool, request("APPLE A")).await.unwrap();
+    assert_eq!(mixed.results.len(), 1);
+    assert_eq!(mixed.results[0].msg_id, "case-message");
+}
+
+#[tokio::test]
 async fn 单双三字英文和特殊字符均按字面量查询() {
     let pool = test_pool().await;
     insert_message(
         &pool,
-        "agent",
-        "owner-a",
-        "literal-topic",
-        "literal-message",
-        None,
-        "一 二字 三个字 English a.b [方括号] 双\"引号",
-        1,
-        None,
+        TestMessage::new(
+            "agent",
+            "owner-a",
+            "literal-topic",
+            "literal-message",
+            "一 二字 三个字 English a.b [方括号] 双\"引号",
+            1,
+        ),
     )
     .await;
 
@@ -416,14 +479,8 @@ async fn 结果只包含有界纯文本摘要() {
     let content = format!("prefix <mark>needle</mark> {}", "正文".repeat(300));
     insert_message(
         &pool,
-        "agent",
-        "owner-a",
-        "topic",
-        "message",
-        Some("speaker-a"),
-        &content,
-        1,
-        None,
+        TestMessage::new("agent", "owner-a", "topic", "message", &content, 1)
+            .spoken_by("speaker-a"),
     )
     .await;
     let page = search_messages(&pool, request("needle")).await.unwrap();

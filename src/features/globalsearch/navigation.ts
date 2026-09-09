@@ -73,6 +73,7 @@ export async function loadSearchJumpHistory(
   pending: PendingSearchJump,
   identity: ConversationIdentity,
   historyStore: SearchHistoryStore,
+  isRequestCurrent: (requestId: number) => boolean,
   adapter: SearchAdapter = tauriSearchAdapter,
 ): Promise<boolean> {
   const target = makeMessageIdentity(
@@ -99,6 +100,7 @@ export async function loadSearchJumpHistory(
   });
   if (!window.messages.some((message) => message.id === target.messageId))
     return false;
+  if (!isRequestCurrent(pending.requestId)) return false;
   return historyStore.installAnchoredHistory(identity, window);
 }
 

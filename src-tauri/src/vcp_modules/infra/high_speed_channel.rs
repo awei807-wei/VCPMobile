@@ -263,11 +263,13 @@ async fn finalize_high_speed_upload<R: Runtime>(
     let result = crate::vcp_modules::file_manager::register_attachment_internal_unlocked(
         app_handle,
         pool,
-        hash,
-        metadata.name.clone(),
-        metadata.mime.clone(),
-        size,
-        destination.path.to_string_lossy().into_owned(),
+        crate::vcp_modules::file_manager::AttachmentRegistrationInput::new(
+            hash,
+            metadata.name.clone(),
+            metadata.mime.clone(),
+            size,
+            destination.path.to_string_lossy().into_owned(),
+        ),
         &gate,
     )
     .await;

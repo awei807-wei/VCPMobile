@@ -2,7 +2,7 @@ use super::super::tool_registry::ToolRegistry;
 use super::super::types::DistributedStatus;
 use super::{
     acquire_wake_lock_helper, is_distributed_connection_stale, is_session_current,
-    DistributedClient, SessionTaskRegistry, WakeLockLease,
+    protocol::ProtocolSessionContext, DistributedClient, SessionTaskRegistry, WakeLockLease,
 };
 use futures_util::{stream::SplitStream, StreamExt};
 use std::sync::atomic::AtomicU64;
@@ -16,18 +16,6 @@ use tokio_util::sync::CancellationToken;
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-struct SessionLoopContext<'a> {
-    app: &'a AppHandle,
-    device_name: &'a str,
-    ws_tx: &'a super::WsSink,
-    status: &'a Arc<RwLock<DistributedStatus>>,
-    registry: &'a Arc<ToolRegistry>,
-    session_id: u64,
-    session_generation: &'a Arc<AtomicU64>,
-    cancel_token: &'a CancellationToken,
-    task_registry: &'a SessionTaskRegistry,
-}
 
 struct SessionRuntime {
     ws_tx: super::WsSink,
@@ -79,7 +67,7 @@ impl DistributedClient {
         }
 
         let mut runtime = SessionRuntime::prepare(ws_stream).await;
-        let context = SessionLoopContext {
+        let context = ProtocolSessionContext {
             app,
             device_name,
             ws_tx: &runtime.ws_tx,
@@ -88,7 +76,7 @@ impl DistributedClient {
             session_id,
             session_generation,
             cancel_token,
-            task_registry: &task_registry,
+            task_registry,
         };
         let exit_reason = Self::run_session_loop(
             &context,
@@ -117,9 +105,8 @@ impl DistributedClient {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn run_session_loop(
-        context: &SessionLoopContext<'_>,
+        context: &ProtocolSessionContext<'_>,
         ws_rx: &mut SplitStream<WsStream>,
         re_register_rx: &mut tokio::sync::mpsc::Receiver<()>,
         placeholder_interval: &mut time::Interval,
@@ -161,44 +148,23 @@ impl DistributedClient {
     }
 
     async fn handle_session_poll(
-        context: &SessionLoopContext<'_>,
+        context: &ProtocolSessionContext<'_>,
         msg: Option<Result<Message, tokio_tungstenite::tungstenite::Error>>,
         last_inbound_at: &mut Instant,
     ) -> Option<String> {
         Self::handle_session_message(msg, last_inbound_at, context).await
     }
 
-    async fn handle_reregister_poll(context: &SessionLoopContext<'_>, opt: Option<()>) {
-        Self::handle_reregister(
-            opt,
-            context.app,
-            context.device_name,
-            context.ws_tx,
-            context.status,
-            context.registry,
-            context.session_id,
-            context.session_generation,
-            context.cancel_token,
-        )
-        .await;
+    async fn handle_reregister_poll(context: &ProtocolSessionContext<'_>, opt: Option<()>) {
+        Self::handle_reregister(opt, context).await;
     }
 
-    async fn push_placeholder_poll(context: &SessionLoopContext<'_>) {
-        Self::push_static_placeholders(
-            context.app,
-            context.device_name,
-            context.ws_tx,
-            context.registry,
-            context.session_id,
-            context.session_generation,
-            context.cancel_token,
-            context.task_registry,
-        )
-        .await;
+    async fn push_placeholder_poll(context: &ProtocolSessionContext<'_>) {
+        Self::push_static_placeholders(context).await;
     }
 
     async fn heartbeat_poll(
-        context: &SessionLoopContext<'_>,
+        context: &ProtocolSessionContext<'_>,
         last_inbound_at: &Instant,
     ) -> Result<(), String> {
         Self::send_heartbeat(
@@ -215,7 +181,7 @@ impl DistributedClient {
     async fn handle_session_message(
         msg: Option<Result<Message, tokio_tungstenite::tungstenite::Error>>,
         last_inbound_at: &mut Instant,
-        context: &SessionLoopContext<'_>,
+        context: &ProtocolSessionContext<'_>,
     ) -> Option<String> {
         match msg {
             Some(Ok(Message::Text(text))) => {
@@ -250,29 +216,17 @@ impl DistributedClient {
     async fn handle_text_message(
         text: String,
         last_inbound_at: &mut Instant,
-        context: &SessionLoopContext<'_>,
+        context: &ProtocolSessionContext<'_>,
     ) -> Option<String> {
         *last_inbound_at = Instant::now();
-        Self::handle_incoming(
-            context.app,
-            &text,
-            context.device_name,
-            context.ws_tx,
-            context.status,
-            context.registry,
-            context.session_id,
-            context.session_generation,
-            context.cancel_token,
-            context.task_registry,
-        )
-        .await;
+        Self::handle_incoming(&text, context).await;
         None
     }
 
     async fn handle_ping_message(
         data: tokio_tungstenite::tungstenite::Bytes,
         last_inbound_at: &mut Instant,
-        context: &SessionLoopContext<'_>,
+        context: &ProtocolSessionContext<'_>,
     ) -> Option<String> {
         *last_inbound_at = Instant::now();
         Self::send_ws_message(
@@ -286,35 +240,18 @@ impl DistributedClient {
         None
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn handle_reregister(
-        opt: Option<()>,
-        app: &AppHandle,
-        device_name: &str,
-        ws_tx: &super::WsSink,
-        status: &Arc<RwLock<DistributedStatus>>,
-        registry: &Arc<ToolRegistry>,
-        session_id: u64,
-        session_generation: &Arc<AtomicU64>,
-        cancel_token: &CancellationToken,
-    ) {
+    async fn handle_reregister(opt: Option<()>, context: &ProtocolSessionContext<'_>) {
         if opt.is_none() {
             return;
         }
         log::info!("[Distributed] 配置变化，重新注册工具。");
-        Self::register_tools(
-            app,
-            device_name,
-            ws_tx,
-            registry,
-            status,
-            session_id,
-            session_generation,
-            cancel_token,
-        )
-        .await;
-        if is_session_current(session_generation, session_id, cancel_token) {
-            Self::emit_status_with_app(app, status).await;
+        Self::register_tools(context).await;
+        if is_session_current(
+            context.session_generation,
+            context.session_id,
+            context.cancel_token,
+        ) {
+            Self::emit_status_with_app(context.app, context.status).await;
         }
     }
 

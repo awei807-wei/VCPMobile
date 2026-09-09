@@ -137,10 +137,12 @@ pub(crate) fn clear_live_attachment_unlink_debts_rusqlite(
     Ok(())
 }
 
+type LiveAttachmentPath = (String, Option<String>);
+
 fn load_live_attachment_paths_rusqlite(
     transaction: &rusqlite::Transaction<'_>,
     hash: &str,
-) -> rusqlite::Result<Option<Vec<(String, Option<String>)>>> {
+) -> rusqlite::Result<Option<Vec<LiveAttachmentPath>>> {
     let outbox_exists: i64 = transaction.query_row(
         "SELECT EXISTS(
             SELECT 1 FROM sqlite_master

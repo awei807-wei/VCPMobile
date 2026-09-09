@@ -103,18 +103,18 @@ async fn 状态扫描跨连接提交保持同一旧快照() {
     let mut connection_a = pool.acquire().await.expect("应取得快照连接");
     let mut connection_b = pool.acquire().await.expect("应取得写入连接");
     let mut transaction_a = connection_a.begin().await.expect("应开始快照事务");
-    status_scan::establish_snapshot(&mut *transaction_a)
+    status_scan::establish_snapshot(&mut transaction_a)
         .await
         .expect("应建立状态扫描快照");
 
     提交新增消息和索引(&mut connection_b, "m2", "new body").await;
-    let stale = status_scan::count_stale_rows(&mut *transaction_a)
+    let stale = status_scan::count_stale_rows(&mut transaction_a)
         .await
         .expect("旧快照应可继续扫描过期状态");
     assert_eq!(stale.stale_count, 0);
     assert_eq!(stale.decode_error_count, 0);
 
-    let status = status::status_in_connection(&mut *transaction_a)
+    let status = status::status_in_connection(&mut transaction_a)
         .await
         .expect("旧快照状态应可聚合");
     assert_counts(&status, [1, 1, 0, 0, 0, 0, 0, 1]);
@@ -141,13 +141,13 @@ async fn 身份扫描跨页删除保持旧快照且无误报() {
     let mut connection_a = pool.acquire().await.expect("应取得快照连接");
     let mut connection_b = pool.acquire().await.expect("应取得写入连接");
     let mut transaction_a = connection_a.begin().await.expect("应开始快照事务");
-    status_scan::establish_snapshot(&mut *transaction_a)
+    status_scan::establish_snapshot(&mut transaction_a)
         .await
         .expect("应建立身份扫描快照");
-    let first_live = status_scan::load_identity_page(&mut *transaction_a, false, None)
+    let first_live = status_scan::load_identity_page(&mut transaction_a, false, None)
         .await
         .expect("应读取消息首批");
-    let first_fts = status_scan::load_identity_page(&mut *transaction_a, true, None)
+    let first_fts = status_scan::load_identity_page(&mut transaction_a, true, None)
         .await
         .expect("应读取索引首批");
     assert_eq!(first_live.len(), status_scan::STATUS_BATCH_SIZE as usize);
@@ -163,11 +163,11 @@ async fn 身份扫描跨页删除保持旧快照且无误报() {
 
     提交删除消息和索引(&mut connection_b, "m256").await;
     let live_continuation =
-        status_scan::load_identity_page(&mut *transaction_a, false, Some(live_cursor))
+        status_scan::load_identity_page(&mut transaction_a, false, Some(live_cursor))
             .await
             .expect("旧快照应读取消息续页");
     let fts_continuation =
-        status_scan::load_identity_page(&mut *transaction_a, true, Some(fts_cursor))
+        status_scan::load_identity_page(&mut transaction_a, true, Some(fts_cursor))
             .await
             .expect("旧快照应读取索引续页");
     assert!(live_continuation
@@ -177,7 +177,7 @@ async fn 身份扫描跨页删除保持旧快照且无误报() {
         .iter()
         .any(|row| row.get::<String, _>("msg_id") == "m256"));
 
-    let status = status::status_in_connection(&mut *transaction_a)
+    let status = status::status_in_connection(&mut transaction_a)
         .await
         .expect("旧快照身份状态应可聚合");
     assert_counts(&status, [300, 300, 0, 0, 0, 0, 0, 1]);

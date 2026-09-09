@@ -42,7 +42,7 @@ pub(crate) async fn get_fts_index_status(pool: &SqlitePool) -> Result<FtsIndexSt
         .begin()
         .await
         .map_err(|_| "FTS_STATUS_TRANSACTION_FAILED".to_string())?;
-    let result = status_in_connection(&mut *transaction).await;
+    let result = status_in_connection(&mut transaction).await;
     match result {
         Ok(status) => {
             transaction
@@ -101,7 +101,7 @@ pub(crate) async fn inspect_schema(pool: &SqlitePool) -> Result<SchemaInfo, Stri
         .acquire()
         .await
         .map_err(|_| "FTS_SCHEMA_INSPECTION_FAILED".to_string())?;
-    inspect_schema_on_connection(&mut *connection).await
+    inspect_schema_on_connection(&mut connection).await
 }
 
 async fn inspect_schema_on_connection(

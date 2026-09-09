@@ -1129,14 +1129,14 @@ async fn real_worker_rejects_agent_and_group_pulls_after_interleaved_local_updat
     app.manage(AgentConfigState::with_owner_locks(owner_locks.clone()));
     app.manage(GroupManagerState::with_owner_locks(owner_locks.clone()));
     internal_write_agent_config(
-        &app.handle(),
+        app.handle(),
         "agent-live",
         &service_agent_config("agent-baseline"),
     )
     .await
     .expect("service Agent baseline write");
     internal_write_group_config(
-        &app.handle(),
+        app.handle(),
         "group-live",
         &service_group_config("group-baseline"),
     )
@@ -1168,7 +1168,7 @@ async fn real_worker_rejects_agent_and_group_pulls_after_interleaved_local_updat
     tokio::task::yield_now().await;
 
     internal_write_agent_config(
-        &app.handle(),
+        app.handle(),
         "agent-live",
         &service_agent_config("agent-local-save"),
     )
@@ -1198,7 +1198,7 @@ async fn real_worker_rejects_agent_and_group_pulls_after_interleaved_local_updat
         .expect("submit Group pull");
     tokio::task::yield_now().await;
     internal_write_group_config(
-        &app.handle(),
+        app.handle(),
         "group-live",
         &service_group_config("group-local-save"),
     )

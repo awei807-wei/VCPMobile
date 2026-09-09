@@ -18,8 +18,6 @@ pub(super) use helpers::{
     relative_to_string, resolve_relative_indexed_path, root_kind_from_key, root_kind_key,
     scan_cursor_key, should_expire_temp,
 };
-#[cfg(test)]
-pub(super) use sweep::sweep_managed_root;
 pub(super) use sweep::sweep_root_after_commit;
 #[cfg(test)]
 pub(super) use sweep::sweep_root_after_commit_for_test;

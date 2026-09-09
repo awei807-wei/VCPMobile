@@ -90,9 +90,7 @@ impl DistributedClient {
             request_id,
             app,
             next_session_id,
-            ws_url,
-            vcp_key,
-            device_name,
+            ConnectionConfig::new(ws_url, vcp_key, device_name),
             registry,
         )
         .await
@@ -103,9 +101,7 @@ impl DistributedClient {
         request_id: u64,
         app: AppHandle,
         session_id: u64,
-        ws_url: String,
-        vcp_key: String,
-        device_name: String,
+        config: ConnectionConfig,
         registry: Arc<ToolRegistry>,
     ) -> Result<(), String> {
         let parts = SessionLaunchParts::new();
@@ -125,17 +121,11 @@ impl DistributedClient {
             return Ok(());
         };
 
-        let (task_handle, re_register_tx, reconnect_tx) = Self::spawn_session_task(
+        let task_handle = Self::spawn_session_task(
             app.clone(),
             keepalive_lease,
             parts.cancel_token.clone(),
-            parts.re_register_tx,
-            parts.reconnect_tx,
-            ConnectionConfig {
-                ws_url,
-                vcp_key,
-                device_name,
-            },
+            config,
             Self::build_session_context(
                 status,
                 registry,
@@ -146,17 +136,15 @@ impl DistributedClient {
                 &parts.task_registry,
             ),
         );
-        self.finish_session_launch(
-            &app,
-            request_id,
+        let session = ConnectionSession {
             session_id,
-            parts.cancel_token,
-            re_register_tx,
-            reconnect_tx,
-            parts.task_registry,
+            cancel_token: parts.cancel_token,
+            re_register_tx: parts.re_register_tx,
+            reconnect_tx: parts.reconnect_tx,
+            task_registry: parts.task_registry,
             task_handle,
-        )
-        .await
+        };
+        self.finish_session_launch(&app, request_id, session).await
     }
 
     async fn prepare_keepalive_lease(
@@ -195,41 +183,23 @@ impl DistributedClient {
         app: AppHandle,
         keepalive_lease: WakeLockLease,
         cancel_token: CancellationToken,
-        re_register_tx: tokio::sync::mpsc::Sender<()>,
-        reconnect_tx: tokio::sync::mpsc::Sender<()>,
         config: ConnectionConfig,
         context: SessionContext,
-    ) -> (
-        tokio::task::JoinHandle<()>,
-        tokio::sync::mpsc::Sender<()>,
-        tokio::sync::mpsc::Sender<()>,
-    ) {
-        let task_handle = tokio::spawn(async move {
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
             let _keepalive_lease = keepalive_lease;
             Self::connection_loop(app, config, cancel_token, context).await;
-        });
-        (task_handle, re_register_tx, reconnect_tx)
+        })
     }
 
     async fn finish_session_launch(
         &self,
         app: &AppHandle,
         request_id: u64,
-        session_id: u64,
-        cancel_token: CancellationToken,
-        re_register_tx: tokio::sync::mpsc::Sender<()>,
-        reconnect_tx: tokio::sync::mpsc::Sender<()>,
-        task_registry: super::SessionTaskRegistry,
-        task_handle: tokio::task::JoinHandle<()>,
+        session: ConnectionSession,
     ) -> Result<(), String> {
-        let mut session = Some(ConnectionSession {
-            session_id,
-            cancel_token,
-            re_register_tx,
-            reconnect_tx,
-            task_registry,
-            task_handle,
-        });
+        let session_id = session.session_id;
+        let mut session = Some(session);
         let should_install = {
             let _reservation = self
                 .reservation_lock
@@ -248,7 +218,7 @@ impl DistributedClient {
                 .expect("未安装的分布式 session 必须保留以便收口");
             session.cancel_token.cancel();
             let _ = session.task_handle.await;
-            self.abort_start_locked(&app, session_id).await;
+            self.abort_start_locked(app, session_id).await;
             log::info!("[Distributed] 启动安装前收到更新请求，丢弃新 session。");
         } else {
             log::info!(

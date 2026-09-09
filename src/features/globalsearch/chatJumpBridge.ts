@@ -9,6 +9,7 @@ import type { PendingSearchJump } from "./types";
 
 interface SearchJumpStore {
   takePendingJump(identity: ConversationIdentity): PendingSearchJump | null;
+  isJumpRequestCurrent(requestId: number): boolean;
   resolveJump(requestId: number, status: "success" | "invalid" | "error"): void;
 }
 
@@ -28,7 +29,12 @@ export async function handlePendingSearchJump(
   const pending = searchStore.takePendingJump(identity);
   if (!pending) return false;
   try {
-    const loaded = await loadSearchJumpHistory(pending, identity, historyStore);
+    const loaded = await loadSearchJumpHistory(
+      pending,
+      identity,
+      historyStore,
+      (requestId) => searchStore.isJumpRequestCurrent(requestId),
+    );
     if (!loaded || !sameConversationIdentity(currentIdentity(), identity)) {
       searchStore.resolveJump(pending.requestId, "invalid");
       return true;

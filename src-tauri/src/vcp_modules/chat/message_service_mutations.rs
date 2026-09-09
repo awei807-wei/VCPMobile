@@ -79,11 +79,10 @@ pub async fn edit_message_and_truncate_history<R: tauri::Runtime>(
     let roots =
         crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(&app_handle)?;
     ensure_attachments_locally(&app_handle, &mut message).await?;
+    let key = topic_key(owner_id, owner_type, &topic_id)?;
     edit_message_and_truncate_history_with_loaded_attachments_with_gate(
         db_pool,
-        owner_id,
-        owner_type,
-        topic_id,
+        &key,
         anchor_message_id,
         message,
         Some(&roots),
@@ -102,11 +101,10 @@ pub async fn edit_message_and_truncate_history_with_loaded_attachments(
     message: ChatMessage,
 ) -> Result<EditMessageMutationResult, String> {
     let gate = attachment_gc_gate().read().await;
+    let key = topic_key(owner_id, owner_type, &topic_id)?;
     edit_message_and_truncate_history_with_loaded_attachments_with_gate(
         db_pool,
-        owner_id,
-        owner_type,
-        topic_id,
+        &key,
         anchor_message_id,
         message,
         None,
@@ -117,9 +115,7 @@ pub async fn edit_message_and_truncate_history_with_loaded_attachments(
 
 async fn edit_message_and_truncate_history_with_loaded_attachments_with_gate(
     db_pool: &sqlx::Pool<sqlx::Sqlite>,
-    owner_id: &str,
-    owner_type: &str,
-    topic_id: String,
+    key: &crate::vcp_modules::topic_types::TopicKey,
     anchor_message_id: String,
     message: ChatMessage,
     roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
@@ -127,9 +123,7 @@ async fn edit_message_and_truncate_history_with_loaded_attachments_with_gate(
 ) -> Result<EditMessageMutationResult, String> {
     edit::edit_message_and_truncate_history_with_loaded_attachments_with_gate(
         db_pool,
-        owner_id,
-        owner_type,
-        topic_id,
+        key,
         anchor_message_id,
         message,
         roots,
@@ -317,11 +311,10 @@ pub async fn patch_single_message<R: tauri::Runtime>(
     let roots =
         crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(&app_handle)?;
     ensure_attachments_locally(&app_handle, &mut message).await?;
+    let key = topic_key(owner_id, owner_type, &topic_id)?;
     patch_single_message_with_loaded_attachments_with_gate(
         db_pool,
-        owner_id,
-        owner_type,
-        topic_id,
+        &key,
         message,
         skip_bubble,
         Some(&roots),
@@ -340,11 +333,10 @@ pub async fn patch_single_message_with_loaded_attachments(
     skip_bubble: bool,
 ) -> Result<Vec<ContentBlock>, String> {
     let gate = attachment_gc_gate().read().await;
+    let key = topic_key(owner_id, owner_type, &topic_id)?;
     patch_single_message_with_loaded_attachments_with_gate(
         db_pool,
-        owner_id,
-        owner_type,
-        topic_id,
+        &key,
         message,
         skip_bubble,
         None,
@@ -355,15 +347,12 @@ pub async fn patch_single_message_with_loaded_attachments(
 
 async fn patch_single_message_with_loaded_attachments_with_gate(
     db_pool: &sqlx::Pool<sqlx::Sqlite>,
-    owner_id: &str,
-    owner_type: &str,
-    topic_id: String,
+    key: &crate::vcp_modules::topic_types::TopicKey,
     message: ChatMessage,
     skip_bubble: bool,
     roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
     gate: &crate::vcp_modules::infra::file_manager::AttachmentReadGuard,
 ) -> Result<Vec<ContentBlock>, String> {
-    let key = topic_key(owner_id, owner_type, &topic_id)?;
     let blocks = if let Some(blocks) = &message.blocks {
         serde_json::from_value(blocks.clone()).map_err(|error| error.to_string())?
     } else {
@@ -374,7 +363,7 @@ async fn patch_single_message_with_loaded_attachments_with_gate(
     MessageRepository::upsert_message_for_topic_with_attachment_gate_and_roots(
         &mut tx,
         &message,
-        &key,
+        key,
         &render_bytes,
         skip_bubble,
         gate,

@@ -11,21 +11,57 @@ use super::{
     SweepReport, ATTACHMENT_TEMP_GRACE, MAX_SCANNED_FILES_PER_ROOT,
 };
 
+/// 受管目录测试扫描所需的引用保护、时钟与分页策略。
+pub(super) struct ManagedRootSweepOptions<'a> {
+    kind: RootKind,
+    retained_paths: &'a HashSet<PathBuf>,
+    indexed_hashes: &'a HashSet<String>,
+    live_hashes: &'a HashSet<String>,
+    now: SystemTime,
+    temp_grace: Duration,
+    max_entries: usize,
+}
+
+impl<'a> ManagedRootSweepOptions<'a> {
+    pub(super) fn new(
+        kind: RootKind,
+        retained_paths: &'a HashSet<PathBuf>,
+        indexed_hashes: &'a HashSet<String>,
+        live_hashes: &'a HashSet<String>,
+        now: SystemTime,
+        temp_grace: Duration,
+        max_entries: usize,
+    ) -> Self {
+        Self {
+            kind,
+            retained_paths,
+            indexed_hashes,
+            live_hashes,
+            now,
+            temp_grace,
+            max_entries,
+        }
+    }
+}
+
 /// 清理受管目录树中的孤立 CAS 与过期上传临时文件。
 ///
 /// `retained_paths` 是从 attachments 表的精确路径字段建立的集合，`indexed_hashes` 和
 /// `live_hashes` 则用于 malformed/非标准路径的保守保护：只要数据库仍知道这个 hash，
 /// 就不因目录文件名猜测而删除它。
-pub async fn sweep_managed_root(
+pub(super) async fn sweep_managed_root(
     root: &Path,
-    kind: RootKind,
-    retained_paths: &HashSet<PathBuf>,
-    indexed_hashes: &HashSet<String>,
-    live_hashes: &HashSet<String>,
-    now: SystemTime,
-    temp_grace: Duration,
-    max_entries: usize,
+    options: ManagedRootSweepOptions<'_>,
 ) -> SweepReport {
+    let ManagedRootSweepOptions {
+        kind,
+        retained_paths,
+        indexed_hashes,
+        live_hashes,
+        now,
+        temp_grace,
+        max_entries,
+    } = options;
     let Ok(canonical_root) = canonical_managed_root(root) else {
         return SweepReport::default();
     };
@@ -35,20 +71,17 @@ pub async fn sweep_managed_root(
         has_more: page.has_more,
         ..SweepReport::default()
     };
+    let context = RegularSweepContext {
+        canonical_root: &canonical_root,
+        kind,
+        retained_paths,
+        indexed_hashes,
+        live_hashes,
+        now,
+        temp_grace,
+    };
     for candidate in page.candidates {
-        sweep_regular_file(
-            &canonical_root,
-            kind,
-            retained_paths,
-            indexed_hashes,
-            live_hashes,
-            now,
-            temp_grace,
-            &candidate.path,
-            candidate.metadata,
-            &mut report,
-        )
-        .await;
+        sweep_regular_file(&context, &candidate.path, candidate.metadata, &mut report).await;
     }
     report
 }
@@ -94,21 +127,20 @@ pub(crate) async fn sweep_root_after_commit_for_test(
         has_more: page.has_more,
         ..SweepReport::default()
     };
-    inspect_committed_candidates(
+    let context = CommittedSweepContext {
         root,
-        &canonical_root,
+        canonical_root: &canonical_root,
         kind,
         path_index,
         now,
         temp_grace,
-        page.candidates,
-        &mut report,
-    )
-    .await?;
-    let next_cursor = page
-        .has_more
-        .then_some(page.next_cursor)
-        .unwrap_or_default();
+    };
+    inspect_committed_candidates(&context, page.candidates, &mut report).await?;
+    let next_cursor = if page.has_more {
+        page.next_cursor
+    } else {
+        String::new()
+    };
     super::super::db::write_gc_cursor(connection, cursor_key, &next_cursor).await?;
     Ok(report)
 }
@@ -130,17 +162,15 @@ pub(crate) async fn sweep_snapshot_page_for_test(
         has_more: page.has_more,
         ..SweepReport::default()
     };
-    inspect_committed_candidates(
+    let context = CommittedSweepContext {
         root,
-        &canonical_root,
+        canonical_root: &canonical_root,
         kind,
         path_index,
-        SystemTime::now(),
-        ATTACHMENT_TEMP_GRACE,
-        page.candidates,
-        &mut report,
-    )
-    .await?;
+        now: SystemTime::now(),
+        temp_grace: ATTACHMENT_TEMP_GRACE,
+    };
+    inspect_committed_candidates(&context, page.candidates, &mut report).await?;
     Ok(report)
 }
 
@@ -182,58 +212,46 @@ async fn sweep_root_after_commit_with_clock(
         connection, roots, &path_keys, &hashes,
     )
     .await?;
-    inspect_committed_candidates(
+    let context = CommittedSweepContext {
         root,
-        &canonical_root,
+        canonical_root: &canonical_root,
         kind,
-        &path_index,
+        path_index: &path_index,
         now,
         temp_grace,
-        page.candidates,
-        &mut report,
-    )
-    .await?;
-    let next_cursor = page
-        .has_more
-        .then_some(page.next_cursor)
-        .unwrap_or_default();
+    };
+    inspect_committed_candidates(&context, page.candidates, &mut report).await?;
+    let next_cursor = if page.has_more {
+        page.next_cursor
+    } else {
+        String::new()
+    };
     super::super::db::write_gc_cursor(connection, cursor_key, &next_cursor).await?;
     Ok(report)
 }
 
-async fn inspect_committed_candidates(
-    root: &Path,
-    canonical_root: &Path,
+struct CommittedSweepContext<'a> {
+    root: &'a Path,
+    canonical_root: &'a Path,
     kind: RootKind,
-    path_index: &PathReferenceIndex,
+    path_index: &'a PathReferenceIndex,
     now: SystemTime,
     temp_grace: Duration,
+}
+
+async fn inspect_committed_candidates(
+    context: &CommittedSweepContext<'_>,
     candidates: Vec<super::scan::ManagedFileCandidate>,
     report: &mut SweepReport,
 ) -> Result<(), String> {
     for candidate in candidates {
-        inspect_committed_candidate(
-            root,
-            canonical_root,
-            kind,
-            path_index,
-            now,
-            temp_grace,
-            candidate,
-            report,
-        )
-        .await?;
+        inspect_committed_candidate(context, candidate, report).await?;
     }
     Ok(())
 }
 
 async fn inspect_committed_candidate(
-    root: &Path,
-    canonical_root: &Path,
-    kind: RootKind,
-    path_index: &PathReferenceIndex,
-    now: SystemTime,
-    temp_grace: Duration,
+    context: &CommittedSweepContext<'_>,
     candidate: super::scan::ManagedFileCandidate,
     report: &mut SweepReport,
 ) -> Result<(), String> {
@@ -245,38 +263,45 @@ async fn inspect_committed_candidate(
             return Ok(());
         };
         if !matches!(
-            path_index.path_reference_state(root, &canonical),
+            context
+                .path_index
+                .path_reference_state(context.root, &canonical),
             Ok(PathReferenceState::Unreferenced)
         ) {
             return Ok(());
         }
-        if should_expire_temp(candidate.metadata.modified(), now, temp_grace)
-            && remove_indexed_path(root, &candidate.path.to_string_lossy())
-                .await
-                .is_ok_and(|value| value)
+        if should_expire_temp(
+            candidate.metadata.modified(),
+            context.now,
+            context.temp_grace,
+        ) && remove_indexed_path(context.root, &candidate.path.to_string_lossy())
+            .await
+            .is_ok_and(|value| value)
         {
             report.removed += 1;
         }
         return Ok(());
     }
-    let Some(hash) = managed_hash_from_file_name(name, kind) else {
+    let Some(hash) = managed_hash_from_file_name(name, context.kind) else {
         return Ok(());
     };
     let Ok(canonical) = std::fs::canonicalize(&candidate.path) else {
         return Ok(());
     };
-    if !canonical.starts_with(canonical_root) {
+    if !canonical.starts_with(context.canonical_root) {
         return Ok(());
     }
     if !matches!(
-        path_index.path_reference_state(root, &canonical),
+        context
+            .path_index
+            .path_reference_state(context.root, &canonical),
         Ok(PathReferenceState::Unreferenced)
-    ) || path_index.has_indexed_hash(hash)
-        || path_index.has_live_reference(hash)
+    ) || context.path_index.has_indexed_hash(hash)
+        || context.path_index.has_live_reference(hash)
     {
         return Ok(());
     }
-    if remove_indexed_path(root, &canonical.to_string_lossy())
+    if remove_indexed_path(context.root, &canonical.to_string_lossy())
         .await
         .is_ok_and(|value| value)
     {
@@ -285,14 +310,18 @@ async fn inspect_committed_candidate(
     Ok(())
 }
 
-async fn sweep_regular_file(
-    canonical_root: &Path,
+struct RegularSweepContext<'a> {
+    canonical_root: &'a Path,
     kind: RootKind,
-    retained_paths: &HashSet<PathBuf>,
-    indexed_hashes: &HashSet<String>,
-    live_hashes: &HashSet<String>,
+    retained_paths: &'a HashSet<PathBuf>,
+    indexed_hashes: &'a HashSet<String>,
+    live_hashes: &'a HashSet<String>,
     now: SystemTime,
     temp_grace: Duration,
+}
+
+async fn sweep_regular_file(
+    context: &RegularSweepContext<'_>,
     path: &Path,
     metadata: std::fs::Metadata,
     report: &mut SweepReport,
@@ -301,27 +330,27 @@ async fn sweep_regular_file(
         return;
     };
     if is_managed_attachment_temp(name) {
-        if should_expire_temp(metadata.modified(), now, temp_grace)
-            && secure::remove_candidate(canonical_root, path).is_ok_and(|removed| removed)
+        if should_expire_temp(metadata.modified(), context.now, context.temp_grace)
+            && secure::remove_candidate(context.canonical_root, path).is_ok_and(|removed| removed)
         {
             report.removed += 1;
         }
         return;
     }
-    let Some(hash) = managed_hash_from_file_name(name, kind) else {
+    let Some(hash) = managed_hash_from_file_name(name, context.kind) else {
         return;
     };
     let Ok(canonical) = std::fs::canonicalize(path) else {
         return;
     };
-    if !canonical.starts_with(canonical_root)
-        || retained_paths.contains(&canonical)
-        || contains_hash(indexed_hashes, hash)
-        || contains_hash(live_hashes, hash)
+    if !canonical.starts_with(context.canonical_root)
+        || context.retained_paths.contains(&canonical)
+        || contains_hash(context.indexed_hashes, hash)
+        || contains_hash(context.live_hashes, hash)
     {
         return;
     }
-    if secure::remove_candidate(canonical_root, &canonical).is_ok_and(|removed| removed) {
+    if secure::remove_candidate(context.canonical_root, &canonical).is_ok_and(|removed| removed) {
         report.removed += 1;
     }
 }

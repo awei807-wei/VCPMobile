@@ -36,6 +36,7 @@ describe("全局搜索导航", () => {
       result,
       { ownerId: "owner-a", ownerType: "agent", topicId: result.topicId },
       history,
+      () => true,
       adapter,
     );
     expect(loaded).toBe(true);
@@ -78,6 +79,7 @@ describe("全局搜索导航", () => {
         result,
         { ownerId: "owner-a", ownerType: "agent", topicId: result.topicId },
         history,
+        () => true,
         adapter,
       ),
     ).resolves.toBe(false);
@@ -101,9 +103,50 @@ describe("全局搜索导航", () => {
         result,
         { ownerId: "owner-a", ownerType: "agent", topicId: result.topicId },
         history,
+        () => true,
         adapter,
       ),
     ).resolves.toBe(false);
     expect(history.installAnchoredHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("同会话的新跳转开始后拒绝安装旧请求返回的历史窗口", async () => {
+    let resolveWindow!: (window: {
+      messages: { id: string; role: string; timestamp: number }[];
+      nextOffset: number;
+      hasMoreHistory: boolean;
+    }) => void;
+    const windowPromise = new Promise<{
+      messages: { id: string; role: string; timestamp: number }[];
+      nextOffset: number;
+      hasMoreHistory: boolean;
+    }>((resolve) => {
+      resolveWindow = resolve;
+    });
+    const adapter: SearchAdapter = {
+      search: vi.fn(),
+      getIndexStatus: vi.fn(),
+      rebuildIndex: vi.fn(),
+      loadHistoryAround: vi.fn(() => windowPromise),
+    };
+    const history = { installAnchoredHistory: vi.fn(() => true) };
+    let currentRequestId = result.requestId;
+    const loading = loadSearchJumpHistory(
+      result,
+      { ownerId: "owner-a", ownerType: "agent", topicId: result.topicId },
+      history,
+      (requestId) => requestId === currentRequestId,
+      adapter,
+    );
+
+    currentRequestId += 1;
+    resolveWindow({
+      messages: [{ id: result.msgId, role: "user", timestamp: 1 }],
+      nextOffset: 1,
+      hasMoreHistory: false,
+    });
+
+    await expect(loading).resolves.toBe(false);
+    expect(history.installAnchoredHistory).not.toHaveBeenCalled();
   });
 });

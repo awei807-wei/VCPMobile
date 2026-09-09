@@ -313,7 +313,7 @@ async fn recover_claimed_generation<R: Runtime>(
     {
         return Ok(result);
     }
-    finalize_missing_generation(app, pool, &recovery_lease, msg_id).await
+    finalize_missing_generation(app, pool, recovery_lease, msg_id).await
 }
 
 async fn ensure_active_helper_generation(
@@ -372,9 +372,9 @@ async fn finalize_missing_generation<R: Runtime>(
     }
     log::warn!("[VCPClient] 未找到可恢复的生成，开始写入失败终态：result=error");
     let marked = mark_message_as_error_guarded_with_generation(
-        &app,
-        &pool,
-        &recovery_lease,
+        app,
+        pool,
+        recovery_lease,
         Some("后台进程已被系统销毁，流式对话中断".to_string()),
         Some(generation),
     )

@@ -111,7 +111,7 @@ fn build_sql(plan: &query::SearchPlan, filter: &FtsSearchFilter) -> String {
         sql.push_str(" AND messages_fts.content MATCH ?");
     }
     for _ in &plan.short_terms {
-        sql.push_str(" AND instr(messages_fts.content, ?) > 0");
+        sql.push_str(" AND instr(lower(messages_fts.content), lower(?)) > 0");
     }
     append_filters(&mut sql, filter);
     append_cursor_filter(&mut sql, plan);

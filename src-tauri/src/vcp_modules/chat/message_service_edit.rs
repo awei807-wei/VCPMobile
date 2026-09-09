@@ -13,28 +13,25 @@ use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) async fn edit_message_and_truncate_history_with_loaded_attachments_with_gate(
     db_pool: &sqlx::Pool<Sqlite>,
-    owner_id: &str,
-    owner_type: &str,
-    topic_id: String,
+    key: &TopicKey,
     anchor_message_id: String,
     mut message: ChatMessage,
     roots: Option<&ManagedAttachmentRoots>,
     gate: &AttachmentReadGuard,
 ) -> Result<EditMessageMutationResult, String> {
-    let key = super::super::message_service_support::topic_key(owner_id, owner_type, &topic_id)?;
-    validate_edit_identity(&key, &anchor_message_id, &message)?;
+    validate_edit_identity(key, &anchor_message_id, &message)?;
     let blocks = compile_message_blocks(&message)?;
     let render_bytes = MessageRenderCompiler::serialize(&blocks)?;
     let mut tx = db_pool
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|error| error.to_string())?;
-    let anchor = load_edit_anchor(&mut tx, &key, &anchor_message_id).await?;
-    apply_anchor_identity(&mut message, &key, &anchor)?;
+    let anchor = load_edit_anchor(&mut tx, key, &anchor_message_id).await?;
+    apply_anchor_identity(&mut message, key, &anchor)?;
     MessageRepository::upsert_message_for_topic_with_attachment_gate_and_roots(
         &mut tx,
         &message,
-        &key,
+        key,
         &render_bytes,
         true,
         gate,
@@ -44,7 +41,7 @@ pub(super) async fn edit_message_and_truncate_history_with_loaded_attachments_wi
     let predicate = qualified_order_predicate(false);
     let (deleted_ids, active_ids, now, msg_count) = truncate_edited_tail(
         &mut tx,
-        &key,
+        key,
         anchor.timestamp,
         &anchor_message_id,
         predicate,

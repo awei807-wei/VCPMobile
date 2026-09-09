@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type ConnectionError = Box<tokio_tungstenite::tungstenite::Error>;
 
 struct ConnectionLoopState {
     status: Arc<RwLock<DistributedStatus>>,
@@ -171,7 +172,7 @@ impl DistributedClient {
         session_id: u64,
         session_generation: &Arc<AtomicU64>,
         cancel_token: &CancellationToken,
-    ) -> Option<Result<WsStream, tokio_tungstenite::tungstenite::Error>> {
+    ) -> Option<Result<WsStream, ConnectionError>> {
         let tag = format!("distributed:connect:session:{session_id}");
         if !acquire_wake_lock_helper(app, &tag, session_id, session_generation, cancel_token) {
             return None;
@@ -181,7 +182,11 @@ impl DistributedClient {
             result = tokio_tungstenite::connect_async(connection_url) => Some(result),
             _ = cancel_token.cancelled() => None,
         };
-        result.map(|connection| connection.map(|(stream, _response)| stream))
+        match result {
+            Some(Ok((stream, _response))) => Some(Ok(stream)),
+            Some(Err(error)) => Some(Err(Box::new(error))),
+            None => None,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -232,7 +237,7 @@ impl DistributedClient {
         status: &Arc<RwLock<DistributedStatus>>,
         session_id: u64,
         session_generation: &Arc<AtomicU64>,
-        error: tokio_tungstenite::tungstenite::Error,
+        error: ConnectionError,
     ) {
         log::warn!("[Distributed] 连接失败：{}", error);
         let mut current = status.write().await;

@@ -64,6 +64,6 @@ pub(crate) async fn delete_message_attachment_in_pool(
     if changed.rows_affected() != 1 {
         return Err(format!("附件 {hash} 不存在、消息身份不完整或关联不唯一"));
     }
-    super::bubble_topic_hash(&mut tx, &key).await?;
+    super::bubble_topic_hash(&mut tx, key).await?;
     tx.commit().await.map_err(|error| error.to_string())
 }

@@ -106,15 +106,15 @@ async fn rebuild_on_connection(
     connection: &mut sqlx::pool::PoolConnection<Sqlite>,
     schema: SchemaInfo,
 ) -> Result<i64, String> {
-    let mmap_guard = match RebuildMmapGuard::prepare(&mut **connection).await {
+    let mmap_guard = match RebuildMmapGuard::prepare(connection).await {
         Ok(guard) => guard,
         Err(error) => {
             connection.close_on_drop();
             return Err(error);
         }
     };
-    let result = rebuild_transaction(&mut **connection, schema).await;
-    let restore_result = mmap_guard.restore(&mut **connection).await;
+    let result = rebuild_transaction(connection, schema).await;
+    let restore_result = mmap_guard.restore(connection).await;
     if restore_result.is_err() {
         connection.close_on_drop();
     }

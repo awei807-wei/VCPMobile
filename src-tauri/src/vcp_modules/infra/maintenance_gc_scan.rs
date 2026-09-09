@@ -63,7 +63,7 @@ pub(crate) async fn scan_managed_root_from_cursor(
     let mut selected = BinaryHeap::with_capacity(selection_limit);
     collect_candidates_after_cursor(&root, &root, &cursor, selection_limit, &mut selected).await;
     let mut selected = selected.into_vec();
-    selected.sort_unstable_by(|left, right| left.cmp(right));
+    selected.sort_unstable();
     let has_more = selected.len() > max_entries;
     selected.truncate(max_entries);
     let next_cursor = selected

@@ -115,7 +115,7 @@ fn completed_speaker_result(
     content: &str,
     finish_reason: Option<String>,
 ) -> SpeakerResult {
-    SpeakerResult::Completed(ChatMessage {
+    SpeakerResult::Completed(Box::new(ChatMessage {
         id: message_id,
         role: "assistant".to_string(),
         name: Some(speaker.name.clone()),
@@ -129,7 +129,7 @@ fn completed_speaker_result(
         is_group_message: Some(true),
         finish_reason,
         ..Default::default()
-    })
+    }))
 }
 
 async fn finalize_failure(

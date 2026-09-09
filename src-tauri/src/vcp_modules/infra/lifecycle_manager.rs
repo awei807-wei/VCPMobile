@@ -1,6 +1,6 @@
 use tauri::{AppHandle, Manager};
 
-use crate::distributed::client::DistributedClient;
+use crate::distributed::client::{ConnectionConfig, DistributedClient, ReconcileRequest};
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::infra::lifecycle_state::LifecycleState;
 use crate::vcp_modules::infra::local_server;
@@ -102,15 +102,15 @@ async fn reconcile_enabled_distributed(
     log::info!("[Lifecycle] 分布式已启用，开始调和节点连接。");
     if let Err(error) = client
         .reconcile_with_request(
-            request_id,
             app_handle,
-            true,
-            force_reconnect,
-            trigger_reconnect,
-            config.ws_url,
-            config.vcp_key,
-            config.device_name,
-            registry,
+            ReconcileRequest::new(
+                request_id,
+                true,
+                force_reconnect,
+                trigger_reconnect,
+                ConnectionConfig::new(config.ws_url, config.vcp_key, config.device_name),
+                registry,
+            ),
         )
         .await
     {
@@ -264,8 +264,10 @@ mod tests {
 
     #[test]
     fn 空地址或密钥拒绝连接配置() {
-        let mut settings = Settings::default();
-        settings.distributed_ws_url = "ws://127.0.0.1:5800".to_string();
+        let mut settings = Settings {
+            distributed_ws_url: "ws://127.0.0.1:5800".to_string(),
+            ..Settings::default()
+        };
         assert!(build_connection_config(&settings, "测试").is_err());
         settings.distributed_vcp_key = "密钥".to_string();
         settings.distributed_ws_url.clear();

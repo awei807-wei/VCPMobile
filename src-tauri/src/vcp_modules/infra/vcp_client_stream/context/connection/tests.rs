@@ -79,12 +79,13 @@ async fn bind_error_runs_authorized_stop_once_with_complete_identity() {
     .await;
 
     assert_eq!(result, Err("持久化绑定失败".to_string()));
-    let requests = stop_requests.lock().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].message_id, "message-a");
-    assert_eq!(requests[0].request_key, key);
-    assert_eq!(requests[0].generation, 41);
-    drop(requests);
+    {
+        let requests = stop_requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].message_id, "message-a");
+        assert_eq!(requests[0].request_key, key);
+        assert_eq!(requests[0].generation, 41);
+    }
     assert_eq!(stop_generation.load(Ordering::SeqCst), 41);
     assert!(registry.contains_key(&key));
     assert!(matches!(

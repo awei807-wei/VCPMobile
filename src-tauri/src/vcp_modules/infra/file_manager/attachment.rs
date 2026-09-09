@@ -21,7 +21,7 @@ pub use paths::{
 };
 pub(crate) use registration::{
     commit_registered_attachment, commit_registered_attachment_unlocked,
-    register_attachment_internal_unlocked,
+    register_attachment_internal_unlocked, AttachmentRegistrationInput,
 };
 pub use registration::{register_attachment_internal, AttachmentData};
 pub(crate) use validation::{

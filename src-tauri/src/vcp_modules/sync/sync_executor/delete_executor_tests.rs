@@ -386,7 +386,7 @@ fn command_app(pool: sqlx::SqlitePool) -> tauri::App<tauri::test::MockRuntime> {
 #[tokio::test]
 async fn owner_delete_wrapper_uses_owner_lock_for_agent() {
     let app = command_app(test_pool().await);
-    super::DeleteExecutor::soft_delete_agent(&app.handle(), "agent-a", 80)
+    super::DeleteExecutor::soft_delete_agent(app.handle(), "agent-a", 80)
         .await
         .expect("同步 Agent 删除包装应成功");
     assert_eq!(
@@ -403,7 +403,7 @@ async fn owner_delete_wrapper_uses_owner_lock_for_agent() {
 #[tokio::test]
 async fn owner_delete_wrapper_uses_owner_lock_for_group() {
     let app = command_app(test_pool().await);
-    super::DeleteExecutor::soft_delete_group(&app.handle(), "group-a", 90)
+    super::DeleteExecutor::soft_delete_group(app.handle(), "group-a", 90)
         .await
         .expect("同步 Group 删除包装应成功");
     assert_eq!(

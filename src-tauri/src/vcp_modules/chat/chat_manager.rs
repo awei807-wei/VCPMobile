@@ -274,6 +274,7 @@ pub async fn delete_messages(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC 要求每个命令字段保持独立参数。
 pub async fn truncate_history_after_timestamp(
     _app_handle: tauri::AppHandle,
     db_state: tauri::State<'_, crate::vcp_modules::db_manager::DbState>,

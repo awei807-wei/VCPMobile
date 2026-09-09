@@ -32,6 +32,41 @@ pub struct AttachmentData {
     pub thumbnail_path: Option<String>,
 }
 
+pub(crate) struct AttachmentRegistrationInput {
+    pub(crate) hash: String,
+    pub(crate) original_name: String,
+    pub(crate) mime_type: String,
+    pub(crate) size: u64,
+    pub(crate) internal_path: String,
+}
+
+impl AttachmentRegistrationInput {
+    pub(crate) fn new(
+        hash: String,
+        original_name: String,
+        mime_type: String,
+        size: u64,
+        internal_path: String,
+    ) -> Self {
+        Self {
+            hash,
+            original_name,
+            mime_type,
+            size,
+            internal_path,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RegisteredAttachmentRecord<'a> {
+    hash: &'a str,
+    mime_type: &'a str,
+    size: u64,
+    internal_path: &'a str,
+    now: i64,
+}
+
 pub(crate) async fn commit_registered_attachment(
     pool: &sqlx::SqlitePool,
     hash: &str,
@@ -43,11 +78,13 @@ pub(crate) async fn commit_registered_attachment(
     let _gate = attachment_gc_gate().read().await;
     commit_registered_attachment_unlocked_with_roots(
         pool,
-        hash,
-        mime_type,
-        size,
-        internal_path,
-        now,
+        RegisteredAttachmentRecord {
+            hash,
+            mime_type,
+            size,
+            internal_path,
+            now,
+        },
         None,
         &_gate,
     )
@@ -65,11 +102,13 @@ pub(crate) async fn commit_registered_attachment_unlocked(
 ) -> Result<(), String> {
     commit_registered_attachment_unlocked_with_roots(
         pool,
-        hash,
-        mime_type,
-        size,
-        internal_path,
-        now,
+        RegisteredAttachmentRecord {
+            hash,
+            mime_type,
+            size,
+            internal_path,
+            now,
+        },
         None,
         _gate,
     )
@@ -78,20 +117,18 @@ pub(crate) async fn commit_registered_attachment_unlocked(
 
 async fn commit_registered_attachment_unlocked_with_roots(
     pool: &sqlx::SqlitePool,
-    hash: &str,
-    mime_type: &str,
-    size: u64,
-    internal_path: &str,
-    now: i64,
+    record: RegisteredAttachmentRecord<'_>,
     roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
     _gate: &AttachmentReadGuard,
 ) -> Result<(), String> {
     let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
-    insert_attachment_record(&mut tx, hash, mime_type, size, internal_path, now).await?;
-    promote_live_attachment_relations(&mut tx, hash, internal_path).await?;
+    insert_attachment_record(&mut tx, record).await?;
+    promote_live_attachment_relations(&mut tx, record.hash, record.internal_path).await?;
     if let Some(roots) = roots {
         crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
-            &mut *tx, hash, roots,
+            &mut tx,
+            record.hash,
+            roots,
         )
         .await?;
     }
@@ -100,11 +137,7 @@ async fn commit_registered_attachment_unlocked_with_roots(
 
 async fn insert_attachment_record(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    hash: &str,
-    mime_type: &str,
-    size: u64,
-    internal_path: &str,
-    now: i64,
+    record: RegisteredAttachmentRecord<'_>,
 ) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO attachments (hash, mime_type, size, internal_path, created_at, updated_at)
@@ -115,12 +148,12 @@ async fn insert_attachment_record(
             internal_path = excluded.internal_path,
             updated_at = excluded.updated_at",
     )
-    .bind(hash)
-    .bind(mime_type)
-    .bind(size as i64)
-    .bind(internal_path)
-    .bind(now)
-    .bind(now)
+    .bind(record.hash)
+    .bind(record.mime_type)
+    .bind(record.size as i64)
+    .bind(record.internal_path)
+    .bind(record.now)
+    .bind(record.now)
     .execute(&mut **tx)
     .await
     .map(|_| ())
@@ -174,37 +207,39 @@ async fn promote_live_attachment_relations(
 async fn reuse_existing_attachment<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     pool: &sqlx::SqlitePool,
-    hash: &str,
-    original_name: String,
-    size: u64,
-    internal_path: &str,
+    input: &AttachmentRegistrationInput,
     now: u64,
     roots: &crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots,
     _gate: &AttachmentReadGuard,
 ) -> Result<Option<AttachmentData>, String> {
-    if !attachment_record_exists(pool, hash).await? {
+    if !attachment_record_exists(pool, &input.hash).await? {
         return Ok(None);
     }
-    let existing = resolve_attachment_cas_file(app_handle, pool, hash).await?;
-    if existing.size_bytes != size {
-        return Err(format!("附件 {hash} 的现有 CAS 大小与本次注册不一致"));
+    let existing = resolve_attachment_cas_file(app_handle, pool, &input.hash).await?;
+    if existing.size_bytes != input.size {
+        return Err(format!(
+            "附件 {} 的现有 CAS 大小与本次注册不一致",
+            input.hash
+        ));
     }
-    let (thumbnail_path, created_at) = load_existing_attachment_metadata(pool, hash).await?;
+    let (thumbnail_path, created_at) = load_existing_attachment_metadata(pool, &input.hash).await?;
     let existing_path = existing.path.to_string_lossy().into_owned();
     let redundant_candidate = validated_redundant_candidate(
         app_handle,
-        internal_path,
-        hash,
+        &input.internal_path,
+        &input.hash,
         existing.size_bytes,
         &existing.path,
     )?;
     commit_registered_attachment_unlocked_with_roots(
         pool,
-        hash,
-        &existing.mime_type,
-        existing.size_bytes,
-        &existing_path,
-        now as i64,
+        RegisteredAttachmentRecord {
+            hash: &input.hash,
+            mime_type: &existing.mime_type,
+            size: existing.size_bytes,
+            internal_path: &existing_path,
+            now: now as i64,
+        },
         Some(roots),
         _gate,
     )
@@ -215,8 +250,8 @@ async fn reuse_existing_attachment<R: tauri::Runtime>(
         }
     }
     Ok(Some(build_attachment_data(AttachmentDataParts {
-        hash,
-        original_name,
+        hash: &input.hash,
+        original_name: input.original_name.clone(),
         path: existing.path,
         internal_path: existing_path,
         mime_type: existing.mime_type,
@@ -280,11 +315,7 @@ pub async fn register_attachment_internal<R: tauri::Runtime>(
     register_attachment_internal_unlocked(
         app_handle,
         pool,
-        hash,
-        original_name,
-        mime_type,
-        size,
-        internal_path,
+        AttachmentRegistrationInput::new(hash, original_name, mime_type, size, internal_path),
         &_gate,
     )
     .await
@@ -294,44 +325,39 @@ pub async fn register_attachment_internal<R: tauri::Runtime>(
 pub(crate) async fn register_attachment_internal_unlocked<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     pool: &sqlx::SqlitePool,
-    hash: String,
-    original_name: String,
-    mime_type: String,
-    size: u64,
-    internal_path: String,
+    input: AttachmentRegistrationInput,
     _gate: &AttachmentReadGuard,
 ) -> Result<AttachmentData, String> {
-    if !crate::vcp_modules::infra::utils::is_valid_cas_hash(&hash) {
+    if !crate::vcp_modules::infra::utils::is_valid_cas_hash(&input.hash) {
         return Err("非法的 Content-Addressable Storage (CAS) 哈希指纹格式".to_string());
     }
     let now = crate::vcp_modules::infra::utils::now_secs() as u64;
     let roots =
         crate::vcp_modules::infra::maintenance_manager::managed_attachment_roots(app_handle)?;
-    if let Some(existing) = reuse_existing_attachment(
-        app_handle,
-        pool,
-        &hash,
-        original_name.clone(),
-        size,
-        &internal_path,
-        now,
-        &roots,
-        _gate,
-    )
-    .await?
+    if let Some(existing) =
+        reuse_existing_attachment(app_handle, pool, &input, now, &roots, _gate).await?
     {
         return Ok(existing);
     }
+    let AttachmentRegistrationInput {
+        hash,
+        original_name,
+        mime_type,
+        size,
+        internal_path,
+    } = input;
     let normalized_mime = normalize_attachment_mime(&mime_type)?;
     let canonical_path = validate_registered_path(app_handle, &internal_path, &hash, size)?;
     let canonical_path_str = canonical_path.to_string_lossy().into_owned();
     commit_registered_attachment_unlocked_with_roots(
         pool,
-        &hash,
-        &normalized_mime,
-        size,
-        &canonical_path_str,
-        now as i64,
+        RegisteredAttachmentRecord {
+            hash: &hash,
+            mime_type: &normalized_mime,
+            size,
+            internal_path: &canonical_path_str,
+            now: now as i64,
+        },
         Some(&roots),
         _gate,
     )
@@ -339,13 +365,17 @@ pub(crate) async fn register_attachment_internal_unlocked<R: tauri::Runtime>(
     registration_finalize::complete_registered_attachment(
         app_handle,
         pool,
-        &hash,
-        original_name,
-        normalized_mime,
-        size,
-        canonical_path,
-        canonical_path_str,
-        now,
+        AttachmentDataParts {
+            hash: &hash,
+            original_name,
+            path: canonical_path,
+            internal_path: canonical_path_str,
+            mime_type: normalized_mime,
+            size,
+            created_at: now,
+            extracted_text: None,
+            thumbnail_path: None,
+        },
         _gate,
     )
     .await

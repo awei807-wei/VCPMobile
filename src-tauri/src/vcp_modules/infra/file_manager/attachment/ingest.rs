@@ -45,11 +45,13 @@ pub async fn store_file(
     super::registration::register_attachment_internal_unlocked(
         &app_handle,
         &db_state.pool,
-        hash,
-        original_name,
-        refined_mime,
-        file_bytes.len() as u64,
-        internal_path_str,
+        super::registration::AttachmentRegistrationInput::new(
+            hash,
+            original_name,
+            refined_mime,
+            file_bytes.len() as u64,
+            internal_path_str,
+        ),
         &_gate,
     )
     .await

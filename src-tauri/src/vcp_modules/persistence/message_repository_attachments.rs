@@ -3,6 +3,13 @@ use crate::vcp_modules::chat_manager::Attachment;
 use crate::vcp_modules::infra::file_manager::AttachmentReadGuard;
 use crate::vcp_modules::topic_types::TopicKey;
 
+struct AttachmentUpsertContext<'a> {
+    key: &'a TopicKey,
+    msg_id: &'a str,
+    timestamp: i64,
+    roots: Option<&'a crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
+}
+
 impl MessageRepository {
     pub(crate) async fn upsert_attachments_for_message(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -34,8 +41,14 @@ impl MessageRepository {
         roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
     ) -> Result<(), String> {
         delete_attachment_relations(tx, key, msg_id).await?;
+        let context = AttachmentUpsertContext {
+            key,
+            msg_id,
+            timestamp,
+            roots,
+        };
         for (index, attachment) in ordered_attachments(attachments, key, msg_id)? {
-            upsert_attachment(tx, key, msg_id, timestamp, index, attachment, roots, gate).await?;
+            upsert_attachment(tx, &context, index, attachment, gate).await?;
         }
         Ok(())
     }
@@ -96,12 +109,9 @@ fn ordered_attachments<'a>(
 
 async fn upsert_attachment(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    key: &TopicKey,
-    msg_id: &str,
-    timestamp: i64,
+    context: &AttachmentUpsertContext<'_>,
     attachment_order: i32,
     attachment: &Attachment,
-    roots: Option<&crate::vcp_modules::infra::maintenance_manager::ManagedAttachmentRoots>,
     _gate: &AttachmentReadGuard,
 ) -> Result<(), String> {
     let hash = attachment.hash.clone().unwrap_or_else(|| {
@@ -111,20 +121,20 @@ async fn upsert_attachment(
         .image_frames
         .as_ref()
         .and_then(|frames| serde_json::to_string(frames).ok());
-    upsert_attachment_row(tx, attachment, &hash, image_frames, timestamp).await?;
+    upsert_attachment_row(tx, attachment, &hash, image_frames, context.timestamp).await?;
     insert_attachment_relation(
         tx,
-        key,
-        msg_id,
-        timestamp,
+        context.key,
+        context.msg_id,
+        context.timestamp,
         attachment_order,
         attachment,
         &hash,
     )
     .await?;
-    if let Some(roots) = roots {
+    if let Some(roots) = context.roots {
         crate::vcp_modules::infra::maintenance_manager::clear_live_attachment_unlink_debts(
-            &mut **tx, &hash, roots,
+            tx, &hash, roots,
         )
         .await?;
     }

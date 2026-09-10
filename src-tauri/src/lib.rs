@@ -45,6 +45,7 @@ use vcp_modules::lifecycle_manager::{
     get_core_status, get_last_error, get_system_snapshot, reconcile_distributed_node_cmd,
     reconcile_local_server_cmd,
 };
+use vcp_modules::logcenter::logcenter_fetch;
 use vcp_modules::maintenance_manager::{
     cleanup_orphaned_attachments, cleanup_single_orphaned_attachment, clear_webview_cache,
     reconstruct_system_cache,
@@ -186,6 +187,7 @@ macro_rules! build_invoke_handler {
                 init_vcp_log_connection,
                 send_vcp_log_message,
                 set_vcp_log_heartbeat,
+                logcenter_fetch,
                 init_vcp_info_connection,
                 get_vcp_info_connection_status,
                 get_vcp_info_metadata_list,

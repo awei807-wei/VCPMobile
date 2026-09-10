@@ -198,7 +198,10 @@ pub(super) async fn soft_delete_owner_data(
     key: &OwnerKey,
     deleted_at: i64,
 ) -> Result<DeleteReceipt, String> {
-    let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| error.to_string())?;
     let current = owner_deleted_at(&mut tx, key).await?;
     let Some(current_deleted_at) = current else {
         return Ok(DeleteReceipt::default());
@@ -334,7 +337,10 @@ pub(super) async fn soft_delete_topic_data(
     deleted_at: i64,
 ) -> Result<DeleteReceipt, String> {
     validate_topic_key(key)?;
-    let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| error.to_string())?;
     let current = topic_deleted_at(&mut tx, key).await?;
     if current.is_none() {
         insert_topic_tombstone(&mut tx, key, deleted_at).await?;

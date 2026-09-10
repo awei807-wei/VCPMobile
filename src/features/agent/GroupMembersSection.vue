@@ -21,7 +21,7 @@ const isMember = (agentId: string) => props.members.includes(agentId);
     title="群组成员"
     description="勾选要加入群组的助手，并设置其触发标签"
   >
-    <div class="card-modern overflow-hidden !p-0">
+    <div class="card-modern !p-0 max-h-80 overflow-y-auto vcp-scrollable">
       <div
         v-for="agent in props.agents"
         :key="agent.id"

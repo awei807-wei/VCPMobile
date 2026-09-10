@@ -9,8 +9,8 @@ import { installRuntimeDiagnostics } from "./core/utils/runtimeDiagnostics";
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
-import 'virtual:uno.css'
 import "@unocss/reset/tailwind.css"
+import 'virtual:uno.css'
 import "./assets/themes.css"
 import "./assets/message-blocks.css"
 import "katex/dist/katex.min.css"

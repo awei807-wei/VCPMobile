@@ -19,7 +19,7 @@ const isLoading = computed(() => props.file.status === "loading");
 
 <template>
   <div
-    class="relative shrink-0 rounded-xl overflow-hidden"
+    class="relative shrink-0 rounded-xl"
     :class="[isImage ? 'w-14 h-14' : 'max-w-[180px]']"
   >
     <!-- Use new component system -->

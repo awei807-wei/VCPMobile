@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, watch, ref } from "vue";
-import { X, Trash2, Bug, RefreshCw, BookOpen, Sparkles } from "lucide-vue-next";
+import { X, Trash2, Bug, RefreshCw, BookOpen, Sparkles, FileText } from "lucide-vue-next";
 import { useNotificationStore } from "../../core/stores/notification";
 import { useNotificationProcessor } from "../../core/composables/useNotificationProcessor";
 import { useSidebarSwipe } from "../../core/composables/useSidebarSwipe";
@@ -49,6 +49,11 @@ const openDailyNoteView = () => {
 
 const openRagObserverView = () => {
   overlayStore.openRagObserver();
+  emit("close");
+};
+
+const openLogCenterView = () => {
+  overlayStore.openLogCenter();
   emit("close");
 };
 
@@ -293,6 +298,14 @@ watch(
         >
           <Sparkles :size="14" class="text-blue-300" />
           <span class="font-bold text-[11px] leading-none">灵视中心</span>
+        </button>
+        <button
+          type="button"
+          class="col-span-2 py-3 px-4 rounded-full transition-all text-primary-text flex items-center justify-center gap-2 active:scale-95 border border-black/5 dark:border-white/5 bg-black/5 dark:bg-white/5"
+          @click="openLogCenterView"
+        >
+          <FileText :size="15" />
+          <span class="font-bold text-[11px] leading-none">日志中心 · 只读</span>
         </button>
       </div>
     </div>

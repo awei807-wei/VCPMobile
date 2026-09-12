@@ -4,6 +4,9 @@ import ciWorkflow from "../../../../.github/workflows/ci.yml?raw";
 import releaseWorkflow from "../../../../.github/workflows/release.yml?raw";
 import androidSettingsGenerator from "../../../../.github/generate-tauri-android-settings.mjs?raw";
 import packageManifestSource from "../../../../package.json?raw";
+import androidAppGradle from "../../../../src-tauri/gen/android/app/build.gradle.kts?raw";
+import androidManifest from "../../../../src-tauri/gen/android/app/src/main/AndroidManifest.xml?raw";
+import mainActivity from "../../../../src-tauri/gen/android/app/src/main/java/com/vcp/avatar/MainActivity.kt?raw";
 
 const IMMUTABLE_ACTION = /^[^@\s]+@[0-9a-f]{40}$/;
 
@@ -13,7 +16,47 @@ const workflowActions = (source: string) =>
     (match) => match[1],
   );
 
+const gradleSection = (source: string, start: string, end: string) => {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  return startIndex >= 0 && endIndex > startIndex
+    ? source.slice(startIndex, endIndex)
+    : "";
+};
+
 describe("Android toolchain governance", () => {
+  it("allows release builds to reach user-configured cleartext LAN services", () => {
+    const defaultConfig = gradleSection(
+      androidAppGradle,
+      "defaultConfig {",
+      "buildTypes {",
+    );
+    const releaseConfig = gradleSection(
+      androidAppGradle,
+      'getByName("release") {',
+      "kotlinOptions {",
+    );
+
+    expect(androidManifest).toContain(
+      'android:usesCleartextTraffic="${usesCleartextTraffic}"',
+    );
+    expect(defaultConfig).toContain(
+      'manifestPlaceholders["usesCleartextTraffic"] = "true"',
+    );
+    expect(defaultConfig).not.toContain(
+      'manifestPlaceholders["usesCleartextTraffic"] = "false"',
+    );
+    expect(releaseConfig).not.toContain(
+      'manifestPlaceholders["usesCleartextTraffic"] = "false"',
+    );
+  });
+
+  it("allows the embedded daily note to call a configured HTTP API", () => {
+    expect(mainActivity).toMatch(
+      /onWebViewCreate\(webView: WebView\)[\s\S]*webView\.settings\.mixedContentMode\s*=\s*WebSettings\.MIXED_CONTENT_ALWAYS_ALLOW/,
+    );
+  });
+
   it("pins CI and release toolchains to exact reproducible versions", () => {
     for (const workflow of [ciWorkflow, releaseWorkflow]) {
       expect(workflow).toContain("runs-on: ubuntu-22.04");

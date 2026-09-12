@@ -1,8 +1,9 @@
 # Android 插件管理体系规范
 
 > **文档编号**: ARCH-ANDROID-001  
-> **版本**: 1.0.3
+> **版本**: 1.0.4
 > **附录新增**: 2026-05-19 | 附录 A（插件生态速查）+ 附录 B（权限实战手册）  
+> **最近修订**: 2026-09-12 | Release 内网 HTTP 与主 WebView 混合内容契约
 > **状态**: 已迁移至 `tauri-plugin-vcp-mobile`  
 > **适用范围**: `src-tauri/plugins/vcp-mobile` 及 Android 原生层全部自定义代码
 
@@ -186,7 +187,16 @@ Android 13+ 上，没有 `POST_NOTIFICATIONS` 静态声明 + 动态请求，**�
 
 `Plugin.load(webView)` 的调用时机取决于 JNI 注册完成的时机。如果需要在 WebView 初始化后立即执行的逻辑（如返回键拦截），应放在 `MainActivity.onWebViewCreate(webView)` 中，这是 Wry 保证调用的钩子。
 
-### 7.4 PluginHandle.run_mobile_plugin 优先于 Raw JNI
+### 7.4 用户配置的内网 HTTP 有两层 Android 门禁
+
+VCP Mobile 的内网线路允许用户配置 `http://` 服务，Release 构建必须同时保持以下两项：
+
+1. `AndroidManifest.xml` 通过 `usesCleartextTraffic` 占位符允许明文流量。Android SSE helper 使用 OkHttp，关闭该项会直接产生 `CLEARTEXT communication ... not permitted by network security policy`。
+2. `MainActivity.onWebViewCreate(webView)` 将 `mixedContentMode` 设为 `MIXED_CONTENT_ALWAYS_ALLOW`。主页面运行在 `https://tauri.localhost`，日记 iframe 访问 HTTP API 时属于主动混合内容，只开启清单权限仍不足以放行。
+
+两项分别覆盖原生 OkHttp 和主 WebView，不可互相替代。HTTP 会明文传输 API Key 与管理员凭据，只应用于可信内网；外网线路使用 HTTPS。
+
+### 7.5 PluginHandle.run_mobile_plugin 优先于 Raw JNI
 
 对于 Rust 到 Kotlin 的复杂调用（如启动 Service），优先使用 `PluginHandle.run_mobile_plugin(command, payload)` 而非手动 JNI。前者使用 Tauri 官方桥接通道，类型安全且避免 `loadClass` 等 JNI 反射风险。
 

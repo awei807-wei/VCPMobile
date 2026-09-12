@@ -67,7 +67,8 @@ android {
     }
 
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // 产品支持用户配置可信内网 HTTP 服务；原生 OkHttp 会遵循此网络安全策略。
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         manifestPlaceholders["appName"] = "VCPMobile"
         applicationId = "com.vcp.avatar"
         minSdk = 26

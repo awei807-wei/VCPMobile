@@ -2,6 +2,8 @@ use crate::vcp_modules::sync_executor::batch_diff_handler::Phase3ProtocolError;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_types::{DeleteTarget, MessageDiffTopicState};
 use crate::vcp_modules::topic_types::TopicKey;
+use crate::vcp_modules::wire_protocol::DesktopBackendMode;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::future::Future;
@@ -17,33 +19,14 @@ pub(crate) type RoutedSyncCommand = (u64, mpsc::UnboundedSender<SyncCommand>);
 pub(crate) type SyncWebSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 pub(crate) type PendingFinalAck = Arc<Mutex<Option<FinalAckKey>>>;
 
-#[derive(Debug, Default)]
-pub(crate) struct MessagePhaseBarrier {
-    acknowledged: bool,
-    finalize_waiting: bool,
-}
-
-impl MessagePhaseBarrier {
-    pub(crate) fn reset(&mut self) {
-        self.acknowledged = false;
-        self.finalize_waiting = false;
-    }
-
-    pub(crate) fn defer_finalize(&mut self) -> bool {
-        if self.acknowledged {
-            false
-        } else {
-            self.finalize_waiting = true;
-            true
-        }
-    }
-
-    pub(crate) fn acknowledge(&mut self) -> bool {
-        self.acknowledged = true;
-        std::mem::take(&mut self.finalize_waiting)
-    }
-}
 pub(crate) type PendingDiffBatch = super::batching::Phase3DiffBatch;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopSyncInfo {
+    pub(crate) package_version: String,
+    pub(crate) backend_mode: DesktopBackendMode,
+}
 
 #[derive(Clone, Default)]
 pub struct SyncCommandRouter {
@@ -369,7 +352,7 @@ pub(crate) struct SyncCompletionSummary {
 }
 
 /// Messages sent by the session to the desktop are kept in one place so the
-/// frame dispatch module cannot bypass the Wire 1.4 serialization boundary.
+/// frame dispatch module cannot bypass the Wire 1.5 serialization boundary.
 pub(crate) fn text_message(value: Value) -> Message {
     Message::Text(value.to_string().into())
 }

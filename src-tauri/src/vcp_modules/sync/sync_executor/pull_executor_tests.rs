@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 const MAX_SAFE_JSON_INTEGER: u64 = crate::vcp_modules::sync::sync_types::MAX_SAFE_TIMESTAMP as u64;
+const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 fn message(id: &str) -> Value {
     json!({
@@ -20,6 +21,7 @@ fn message(id: &str) -> Value {
         "content": "你好",
         "timestamp": 1,
         "updatedAt": 2,
+        "contentHash": HASH_A,
     })
 }
 
@@ -43,7 +45,7 @@ fn topic_key(
 }
 
 #[test]
-fn wire14_topic_frame_requires_full_identity_and_canonical_updated_at() {
+fn wire15_topic_frame_requires_full_identity_and_canonical_updated_at() {
     let frame = parse_topic_ndjson_frame(
         &serde_json::to_vec(&topic_frame(
             "shared-topic",
@@ -53,7 +55,7 @@ fn wire14_topic_frame_requires_full_identity_and_canonical_updated_at() {
         ))
         .unwrap(),
     )
-    .expect("valid Wire 1.4 topic frame");
+    .expect("valid Wire 1.5 topic frame");
     assert_eq!(frame.topic, topic_key("group", "group-a", "shared-topic"));
     assert_eq!(frame.messages[0].updated_at, 2);
 
@@ -73,7 +75,7 @@ fn wire14_topic_frame_requires_full_identity_and_canonical_updated_at() {
 }
 
 #[test]
-fn wire14_message_numeric_fields_accept_max_safe_and_reject_two_to_the_53rd() {
+fn wire15_message_numeric_fields_accept_max_safe_and_reject_two_to_the_53rd() {
     let mut safe = message("safe");
     safe["timestamp"] = json!(MAX_SAFE_JSON_INTEGER);
     safe["updatedAt"] = json!(MAX_SAFE_JSON_INTEGER);
@@ -87,7 +89,7 @@ fn wire14_message_numeric_fields_accept_max_safe_and_reject_two_to_the_53rd() {
     parse_topic_ndjson_frame(
         &serde_json::to_vec(&topic_frame("topic", "agent", "agent-a", json!([safe]))).unwrap(),
     )
-    .expect("Wire 1.4 accepts JavaScript's largest safe integer");
+    .expect("Wire 1.5 accepts JavaScript's largest safe integer");
 
     for field in ["timestamp", "updatedAt"] {
         let mut unsafe_message = message("unsafe");
@@ -134,7 +136,7 @@ fn wire14_message_numeric_fields_accept_max_safe_and_reject_two_to_the_53rd() {
 }
 
 #[test]
-fn wire14_frame_rejects_local_wire_fields_and_tombstones() {
+fn wire15_frame_rejects_local_wire_fields_and_tombstones() {
     let mut local = message("local");
     local["src"] = json!("file:///private/path");
     assert!(parse_topic_ndjson_frame(

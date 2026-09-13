@@ -4,11 +4,9 @@ use super::types::{FinalAckKey, PendingFinalAck, SyncCommand, SyncWebSocket};
 use crate::vcp_modules::sync_error::encode_wire_sync_error;
 use crate::vcp_modules::sync_types::ManifestType;
 use crate::vcp_modules::topic_types::TopicKey;
-use crate::vcp_modules::wire_protocol::handshake::{
-    EXPECTED_PLUGIN_VERSION, WIRE_PROTOCOL_VERSION,
-};
+use crate::vcp_modules::wire_protocol::handshake::WIRE_PROTOCOL_VERSION;
 use crate::vcp_modules::wire_protocol::{
-    parse_version_handshake_json, VersionAck, VersionHandshakeFrame,
+    parse_version_handshake_json, VersionAck, VersionAckError, VersionHandshakeFrame,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -53,8 +51,16 @@ impl RetryBudget {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum VersionHandshakeError {
     Protocol(String),
+    Mismatch {
+        expected: String,
+        received: String,
+        package_version: String,
+    },
     Remote(String),
-    Closed { code: Option<u16>, reason: String },
+    Closed {
+        code: Option<u16>,
+        reason: String,
+    },
     Transport(String),
 }
 
@@ -63,7 +69,22 @@ pub(crate) enum VersionHandshakeError {
 pub(crate) fn parse_version_handshake_payload(
     payload: &str,
 ) -> Result<Option<VersionAck>, VersionHandshakeError> {
-    match parse_version_handshake_json(payload).map_err(VersionHandshakeError::Protocol)? {
+    let frame = match parse_version_handshake_json(payload) {
+        Ok(frame) => frame,
+        Err(VersionAckError::WireVersionMismatch {
+            expected,
+            received,
+            package_version,
+        }) => {
+            return Err(VersionHandshakeError::Mismatch {
+                expected,
+                received,
+                package_version,
+            })
+        }
+        Err(error) => return Err(VersionHandshakeError::Protocol(error.to_string())),
+    };
+    match frame {
         VersionHandshakeFrame::VersionAck(ack) => Ok(Some(ack)),
         VersionHandshakeFrame::SyncError(wire) => {
             let encoded = encode_wire_sync_error(&wire).map_err(VersionHandshakeError::Protocol)?;
@@ -312,10 +333,6 @@ pub(crate) async fn cancelled_during(token: &CancellationToken, duration: Durati
         _ = token.cancelled() => true,
         _ = tokio::time::sleep(duration) => false,
     }
-}
-
-pub(crate) fn expected_plugin_version() -> &'static str {
-    EXPECTED_PLUGIN_VERSION
 }
 
 pub(crate) fn expected_protocol_version() -> &'static str {

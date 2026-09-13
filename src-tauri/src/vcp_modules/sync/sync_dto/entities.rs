@@ -1,7 +1,8 @@
 use crate::vcp_modules::agent_types::AgentConfig;
 use crate::vcp_modules::group_types::GroupConfig;
-use crate::vcp_modules::sync_types::{deserialize_timestamp, serialize_timestamp};
-use crate::vcp_modules::topic_types::Topic;
+use crate::vcp_modules::sync_types::{
+    deserialize_sha256, deserialize_timestamp, serialize_timestamp,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -101,32 +102,16 @@ pub struct AgentTopicSyncDTO {
         serialize_with = "serialize_timestamp"
     )]
     pub created_at: i64,
-    #[serde(default = "default_locked")]
     pub locked: bool,
-    #[serde(default = "default_unread")]
     pub unread: bool,
     pub owner_id: String,
-}
-
-fn default_locked() -> bool {
-    true
-}
-
-fn default_unread() -> bool {
-    false
-}
-
-impl From<&Topic> for AgentTopicSyncDTO {
-    fn from(topic: &Topic) -> Self {
-        Self {
-            id: topic.id.clone(),
-            name: topic.name.clone(),
-            created_at: topic.created_at,
-            locked: topic.locked,
-            unread: topic.unread,
-            owner_id: topic.owner_id.clone(),
-        }
-    }
+    #[serde(deserialize_with = "deserialize_sha256")]
+    pub config_hash: String,
+    #[serde(
+        deserialize_with = "deserialize_timestamp",
+        serialize_with = "serialize_timestamp"
+    )]
+    pub updated_at: i64,
 }
 
 /// Group topic sync DTO.
@@ -141,15 +126,11 @@ pub struct GroupTopicSyncDTO {
     )]
     pub created_at: i64,
     pub owner_id: String,
-}
-
-impl From<&Topic> for GroupTopicSyncDTO {
-    fn from(topic: &Topic) -> Self {
-        Self {
-            id: topic.id.clone(),
-            name: topic.name.clone(),
-            created_at: topic.created_at,
-            owner_id: topic.owner_id.clone(),
-        }
-    }
+    #[serde(deserialize_with = "deserialize_sha256")]
+    pub config_hash: String,
+    #[serde(
+        deserialize_with = "deserialize_timestamp",
+        serialize_with = "serialize_timestamp"
+    )]
+    pub updated_at: i64,
 }

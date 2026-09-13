@@ -181,16 +181,15 @@ fn queue_failure(ctx: &AttemptContext, code: &'static str, message: String) -> A
 
 async fn start_messages(ctx: &mut AttemptContext) -> AttemptAction {
     emit_sync_log(ctx, "info", "=== Phase 3: Messages ===");
-    ctx.message_phase_barrier.reset();
-    if send_phase_start(ctx, SyncPhase::Messages).await == AttemptAction::Stop {
-        return AttemptAction::Stop;
-    }
     let changed_topics = ctx.changed_topics.lock().await.clone();
     if changed_topics.is_empty() {
         let _ = ctx.tx.send(SyncCommand::Finalize {
             attempt_id: ctx.attempt_id,
         });
         return AttemptAction::Continue;
+    }
+    if send_phase_start(ctx, SyncPhase::Messages).await == AttemptAction::Stop {
+        return AttemptAction::Stop;
     }
     let db = ctx.app.state::<DbState>();
     let states = match Phase3Message::get_topic_message_hashes(&db.pool, &changed_topics).await {

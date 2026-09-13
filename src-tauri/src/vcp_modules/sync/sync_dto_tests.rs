@@ -1,58 +1,86 @@
 use super::*;
 use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
-use crate::vcp_modules::topic_types::Topic;
+use crate::vcp_modules::sync_hash::HashAggregator;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const MAX_SAFE_JSON_INTEGER: u64 = crate::vcp_modules::sync::sync_types::MAX_SAFE_TIMESTAMP as u64;
 
 #[test]
-fn topic_dto_defaults_are_preserved_while_unknown_fields_are_rejected() {
+fn topic_dto_requires_the_complete_wire_1_5_version() {
     let dto: AgentTopicSyncDTO = serde_json::from_value(json!({
         "id": "topic-1",
         "name": "Topic",
         "createdAt": 123,
-        "ownerId": "agent-1"
+        "locked": true,
+        "unread": false,
+        "ownerId": "agent-1",
+        "configHash": HASH_A,
+        "updatedAt": 456
     }))
-    .expect("legacy-compatible topic defaults");
+    .expect("complete Wire 1.5 topic DTO");
 
     assert!(dto.locked);
     assert!(!dto.unread);
+    assert_eq!(dto.config_hash, HASH_A);
+    assert_eq!(dto.updated_at, 456);
+    for missing in ["locked", "unread", "configHash", "updatedAt"] {
+        let mut value = serde_json::to_value(&dto)
+            .expect("serialize topic DTO")
+            .as_object()
+            .expect("topic object")
+            .clone();
+        value.remove(missing);
+        assert!(
+            serde_json::from_value::<AgentTopicSyncDTO>(json!(value)).is_err(),
+            "unexpectedly accepted missing {missing}"
+        );
+    }
     assert!(serde_json::from_value::<AgentTopicSyncDTO>(json!({
         "id": "topic-1",
         "name": "Topic",
         "createdAt": 123,
+        "locked": true,
+        "unread": false,
         "ownerId": "agent-1",
+        "configHash": HASH_A,
+        "updatedAt": 456,
         "desktopOnly": true
     }))
     .is_err());
 }
 
 #[test]
-fn topic_dto_from_topic_preserves_owner_identity_and_contract_fields() {
-    let topic = Topic {
-        id: "topic-1".to_string(),
-        name: "Topic".to_string(),
-        created_at: 123,
-        locked: false,
-        unread: true,
-        unread_count: 2,
-        msg_count: 3,
-        owner_id: "owner-1".to_string(),
-        owner_type: "agent".to_string(),
-    };
-
-    let agent_dto = AgentTopicSyncDTO::from(&topic);
-    assert_eq!(agent_dto.id, "topic-1");
-    assert_eq!(agent_dto.name, "Topic");
-    assert_eq!(agent_dto.created_at, 123);
-    assert!(!agent_dto.locked);
-    assert!(agent_dto.unread);
-    assert_eq!(agent_dto.owner_id, "owner-1");
-
-    let group_dto = GroupTopicSyncDTO::from(&topic);
-    assert_eq!(group_dto.owner_id, "owner-1");
-    assert_eq!(group_dto.created_at, 123);
+fn topic_canonical_contract_matches_dto_bytes_and_config_hashes() {
+    let bundle: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/topic_canonical_contract.json"))
+            .expect("topic canonical contract JSON");
+    for case in bundle["cases"].as_array().expect("topic cases") {
+        let expected_hash = case["dto"]["configHash"].as_str().expect("configHash");
+        let (wire, computed_hash) = if case["ownerType"] == "agent" {
+            let dto: AgentTopicSyncDTO =
+                serde_json::from_value(case["dto"].clone()).expect("agent topic DTO");
+            let computed = HashAggregator::compute_agent_topic_metadata_hash(&dto);
+            (
+                serde_json::to_vec(&dto).expect("agent topic bytes"),
+                computed,
+            )
+        } else {
+            let dto: GroupTopicSyncDTO =
+                serde_json::from_value(case["dto"].clone()).expect("group topic DTO");
+            let computed = HashAggregator::compute_group_topic_metadata_hash(&dto);
+            (
+                serde_json::to_vec(&dto).expect("group topic bytes"),
+                computed,
+            )
+        };
+        assert_eq!(computed_hash, expected_hash);
+        assert_eq!(
+            hex::encode(Sha256::digest(wire)),
+            case["dtoSha256"].as_str().expect("DTO byte hash")
+        );
+    }
 }
 
 #[test]
@@ -145,21 +173,72 @@ fn message_sync_dto_requires_updated_at_and_rejects_local_fields() {
         "role": "user",
         "content": "hello",
         "timestamp": 123,
-        "updatedAt": 124
+        "updatedAt": 124,
+        "contentHash": HASH_A
     });
     let dto: MessageSyncDTO = serde_json::from_value(base.clone()).expect("valid message DTO");
     assert_eq!(dto.updated_at, 124);
+    let encoded = serde_json::to_value(&dto).expect("serialize message DTO");
+    for absent in [
+        "name",
+        "agentId",
+        "groupId",
+        "topicId",
+        "isGroupMessage",
+        "finishReason",
+        "attachments",
+    ] {
+        assert!(
+            encoded.get(absent).is_none(),
+            "optional field {absent} must be omitted"
+        );
+    }
 
     let mut missing_updated_at = base.as_object().unwrap().clone();
     missing_updated_at.remove("updatedAt");
     assert!(serde_json::from_value::<MessageSyncDTO>(json!(missing_updated_at)).is_err());
 
-    for local_field in ["avatarColor", "status", "deletedAt", "blocks"] {
+    let mut missing_content_hash = base.as_object().unwrap().clone();
+    missing_content_hash.remove("contentHash");
+    assert!(serde_json::from_value::<MessageSyncDTO>(json!(missing_content_hash)).is_err());
+
+    let mut uppercase_content_hash = base.as_object().unwrap().clone();
+    uppercase_content_hash.insert(
+        "contentHash".to_string(),
+        json!(HASH_A.to_ascii_uppercase()),
+    );
+    assert!(serde_json::from_value::<MessageSyncDTO>(json!(uppercase_content_hash)).is_err());
+
+    for local_field in ["avatarColor", "status", "deletedAt", "blocks", "isThinking"] {
         let mut value = base.as_object().unwrap().clone();
         value.insert(local_field.to_string(), json!("local-only"));
         assert!(
             serde_json::from_value::<MessageSyncDTO>(json!(value)).is_err(),
             "unexpectedly accepted local field {local_field}"
+        );
+    }
+}
+
+#[test]
+fn message_canonical_contract_matches_wire_bytes() {
+    let bundle: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/message_canonical_contract.json"))
+            .expect("message canonical contract JSON");
+    for case in bundle["validFrames"]
+        .as_array()
+        .expect("valid message frames")
+    {
+        let messages: Vec<MessageSyncDTO> =
+            serde_json::from_value(case["expected"]["canonicalMessages"].clone())
+                .expect("canonical message DTOs");
+        let bytes = serde_json::to_vec(&messages).expect("canonical message bytes");
+        assert_eq!(
+            hex::encode(Sha256::digest(bytes)),
+            case["expected"]["canonicalMessagesSha256"]
+                .as_str()
+                .expect("canonical message byte hash"),
+            "case {}",
+            case["name"].as_str().unwrap_or("unnamed")
         );
     }
 }
@@ -172,6 +251,7 @@ fn wire_numeric_fields_match_javascript_safe_integer_contract() {
         "content": "hello",
         "timestamp": MAX_SAFE_JSON_INTEGER,
         "updatedAt": MAX_SAFE_JSON_INTEGER,
+        "contentHash": HASH_A,
         "attachments": [{
             "type": "file",
             "name": "payload.bin",
@@ -212,7 +292,11 @@ fn entity_created_at_uses_the_same_safe_integer_contract() {
         "id": "topic-1",
         "name": "Topic",
         "createdAt": MAX_SAFE_JSON_INTEGER,
-        "ownerId": "agent-1"
+        "locked": false,
+        "unread": false,
+        "ownerId": "agent-1",
+        "configHash": HASH_A,
+        "updatedAt": MAX_SAFE_JSON_INTEGER
     }))
     .expect("safe createdAt should decode");
     assert_eq!(maximum.created_at, MAX_SAFE_JSON_INTEGER as i64);
@@ -220,7 +304,11 @@ fn entity_created_at_uses_the_same_safe_integer_contract() {
         "id": "topic-1",
         "name": "Topic",
         "createdAt": MAX_SAFE_JSON_INTEGER + 1,
-        "ownerId": "agent-1"
+        "locked": false,
+        "unread": false,
+        "ownerId": "agent-1",
+        "configHash": HASH_A,
+        "updatedAt": MAX_SAFE_JSON_INTEGER
     }))
     .is_err());
     let unsafe_outbound = AgentTopicSyncDTO {
@@ -237,7 +325,8 @@ fn wire_numeric_serialization_rejects_values_that_deserialization_rejects() {
         "role": "user",
         "content": "hello",
         "timestamp": MAX_SAFE_JSON_INTEGER,
-        "updatedAt": MAX_SAFE_JSON_INTEGER
+        "updatedAt": MAX_SAFE_JSON_INTEGER,
+        "contentHash": HASH_A
     }))
     .expect("safe message DTO");
     dto.timestamp = MAX_SAFE_JSON_INTEGER + 1;
@@ -278,7 +367,6 @@ fn message_sync_dto_round_trip_maps_local_attachment_paths_to_empty_values() {
         "content": "hello",
         "timestamp": 123,
         "updatedAt": 124,
-        "isThinking": false,
         "agentId": "agent-1",
         "groupId": "group-1",
         "topicId": "topic-1",
@@ -293,7 +381,7 @@ fn message_sync_dto_round_trip_maps_local_attachment_paths_to_empty_values() {
             "extractedText": "extracted",
             "createdAt": 200
         }],
-        "contentHash": "content-hash"
+        "contentHash": HASH_A
     }))
     .expect("valid canonical message DTO");
 
@@ -308,7 +396,8 @@ fn message_sync_dto_round_trip_maps_local_attachment_paths_to_empty_values() {
     assert_eq!(message.group_id.as_deref(), Some("group-1"));
     assert_eq!(message.topic_id.as_deref(), Some("topic-1"));
     assert_eq!(message.is_group_message, Some(true));
-    assert_eq!(message.content_hash.as_deref(), Some("content-hash"));
+    assert_eq!(message.content_hash.as_deref(), Some(HASH_A));
+    assert!(message.is_thinking.is_none());
     assert!(message.blocks.is_none());
     assert!(message.shell.is_none());
 
@@ -329,6 +418,7 @@ fn message_sync_dto_from_message_uses_explicit_update_clock_and_strips_local_fie
         content: "hello".to_string(),
         timestamp: 123,
         updated_at: Some(456),
+        content_hash: Some(HASH_A.to_string()),
         attachments: None,
         ..ChatMessage::default()
     };
@@ -338,6 +428,7 @@ fn message_sync_dto_from_message_uses_explicit_update_clock_and_strips_local_fie
     let value = serde_json::to_value(dto).expect("serialize message DTO");
     assert!(!value.as_object().unwrap().contains_key("avatarColor"));
     assert!(!value.as_object().unwrap().contains_key("blocks"));
+    assert!(!value.as_object().unwrap().contains_key("isThinking"));
 
     let legacy = MessageSyncDTO::from_message_legacy(&message).expect("build legacy DTO");
     assert_eq!(legacy.updated_at, 456);

@@ -1,7 +1,7 @@
 use super::GroupManagerState;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::group_types::GroupConfig;
-use crate::vcp_modules::sync_dto::GroupSyncDTO;
+use crate::vcp_modules::sync_dto::{GroupSyncDTO, GroupTopicSyncDTO};
 use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::sync_service::{SyncCommand, SyncState};
 use crate::vcp_modules::sync_types::{DeleteTarget, OwnerType};
@@ -102,15 +102,28 @@ async fn insert_group_topics(
     timestamp: i64,
 ) -> Result<(), String> {
     for topic in topics {
+        let config_hash = HashAggregator::compute_group_topic_metadata_hash(&GroupTopicSyncDTO {
+            id: topic.id.clone(),
+            name: topic.name.clone(),
+            created_at: topic.created_at,
+            owner_id: group_id.to_string(),
+            config_hash: "0".repeat(64),
+            updated_at: timestamp,
+        });
         sqlx::query(
-            "INSERT INTO topics (topic_id, owner_type, owner_id, title, created_at, updated_at)
-             VALUES (?, 'group', ?, ?, ?, ?)",
+            "INSERT INTO topics (
+                topic_id, owner_type, owner_id, title, created_at, updated_at,
+                locked, unread, config_hash
+             ) VALUES (?, 'group', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&topic.id)
         .bind(group_id)
         .bind(&topic.name)
         .bind(topic.created_at)
         .bind(timestamp)
+        .bind(i32::from(topic.locked))
+        .bind(i32::from(topic.unread))
+        .bind(config_hash)
         .execute(&mut **tx)
         .await
         .map_err(|e| e.to_string())?;

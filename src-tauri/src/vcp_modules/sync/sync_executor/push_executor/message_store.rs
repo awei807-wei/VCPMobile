@@ -18,7 +18,7 @@ pub(super) async fn load_outbound_message_page(
     let mut query = if cursor.is_some() {
         sqlx::query(
             "SELECT msg_id, role, name, agent_id, content, timestamp,
-                    is_group_message, group_id, finish_reason, updated_at
+                    is_group_message, group_id, finish_reason, content_hash, updated_at
              FROM messages
              WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL
                AND (timestamp > ? OR (timestamp = ? AND msg_id > ?))
@@ -28,7 +28,7 @@ pub(super) async fn load_outbound_message_page(
     } else {
         sqlx::query(
             "SELECT msg_id, role, name, agent_id, content, timestamp,
-                    is_group_message, group_id, finish_reason, updated_at
+                    is_group_message, group_id, finish_reason, content_hash, updated_at
              FROM messages
              WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL
              ORDER BY timestamp ASC, msg_id ASC
@@ -68,6 +68,20 @@ fn decode_message_row(
     }
     let (timestamp, updated_at, is_group_message, content) =
         decode_message_payload(row, key, &message_id)?;
+    let content_hash: String = row.try_get("content_hash").map_err(|error| {
+        format!(
+            "Message content hash decode failed for {}/{}: {error}",
+            key.topic_id, message_id
+        )
+    })?;
+    if !crate::vcp_modules::infra::utils::is_valid_cas_hash(&content_hash)
+        || content_hash.to_ascii_lowercase() != content_hash
+    {
+        return Err(format!(
+            "Outbound message {}/{}/{} requires a lowercase 64-character contentHash",
+            key.owner_id, key.topic_id, message_id
+        ));
+    }
     Ok(MessageSyncDTO {
         id: message_id.clone(),
         role,
@@ -80,7 +94,6 @@ fn decode_message_row(
         content,
         timestamp: timestamp as u64,
         updated_at: updated_at as u64,
-        is_thinking: None,
         agent_id: row.try_get("agent_id").map_err(|error| {
             format!(
                 "Message agent decode failed for {}/{}: {error}",
@@ -102,7 +115,7 @@ fn decode_message_row(
             )
         })?,
         attachments: None,
-        content_hash: None,
+        content_hash,
     })
 }
 

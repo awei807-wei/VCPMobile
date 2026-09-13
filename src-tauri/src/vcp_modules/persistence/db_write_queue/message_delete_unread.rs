@@ -1,3 +1,5 @@
+use super::DbWriteQueue;
+use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::TopicKey;
 use rusqlite::{ToSql, Transaction};
 
@@ -104,21 +106,58 @@ fn decrement_topic_unread_count(
         |row| row.get::<_, i64>(0),
     )? != 0;
     if has_unread_count {
-        tx.execute(
-            "UPDATE topics
-             SET unread_count = MAX(unread_count - ?1, 0),
-                 unread = CASE WHEN MAX(unread_count - ?1, 0) = 0 THEN 0 ELSE unread END,
-                 updated_at = MAX(COALESCE(updated_at, 0), ?2)
-             WHERE owner_type = ?3 AND owner_id = ?4 AND topic_id = ?5
-               AND deleted_at IS NULL",
-            rusqlite::params![
-                counted_unread,
-                crate::vcp_modules::infra::utils::now_millis(),
-                &key.owner_type,
-                &key.owner_id,
-                &key.topic_id,
-            ],
-        )?;
+        let config_changed = key.owner_type == "agent"
+            && tx.execute(
+                "UPDATE topics
+                 SET unread_count = MAX(unread_count - ?1, 0),
+                     unread = 0,
+                     updated_at = MAX(COALESCE(updated_at, 0), ?2)
+                 WHERE owner_type = ?3 AND owner_id = ?4 AND topic_id = ?5
+                   AND deleted_at IS NULL AND unread != 0
+                   AND MAX(unread_count - ?1, 0) = 0",
+                rusqlite::params![
+                    counted_unread,
+                    crate::vcp_modules::infra::utils::now_millis(),
+                    &key.owner_type,
+                    &key.owner_id,
+                    &key.topic_id,
+                ],
+            )? == 1;
+        if !config_changed {
+            tx.execute(
+                "UPDATE topics
+                 SET unread_count = MAX(unread_count - ?1, 0),
+                     unread = CASE WHEN MAX(unread_count - ?1, 0) = 0 THEN 0 ELSE unread END
+                 WHERE owner_type = ?2 AND owner_id = ?3 AND topic_id = ?4
+                   AND deleted_at IS NULL",
+                rusqlite::params![
+                    counted_unread,
+                    &key.owner_type,
+                    &key.owner_id,
+                    &key.topic_id,
+                ],
+            )?;
+        }
+        if config_changed {
+            refresh_agent_topic_config_hash(tx, key)?;
+        }
     }
     Ok(())
+}
+
+fn refresh_agent_topic_config_hash(tx: &Transaction<'_>, key: &TopicKey) -> rusqlite::Result<()> {
+    let dto = DbWriteQueue::rusqlite_load_agent_topic_dto_for_key(tx, key)?;
+    let config_hash = HashAggregator::compute_agent_topic_metadata_hash(&dto);
+    let changed = tx.execute(
+        "UPDATE topics SET config_hash = ?
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL",
+        rusqlite::params![config_hash, &key.owner_type, &key.owner_id, &key.topic_id],
+    )?;
+    if changed != 1 {
+        return Err(DbWriteQueue::sync_contract_error(format!(
+            "Topic {}/{}/{} disappeared during unread config hash update",
+            key.owner_type, key.owner_id, key.topic_id
+        )));
+    }
+    DbWriteQueue::rusqlite_bubble_agent_hash(tx, &key.owner_id)
 }

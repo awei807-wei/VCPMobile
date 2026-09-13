@@ -8,6 +8,8 @@ last_updated: 2026-05-13
 # 附录A - WebSocket 消息类型完整参考
 
 > 本附录以纯参考表格式列出同步会话中全部 WebSocket（WS）消息类型。方向列中 **M→D** 表示 Mobile（移动端）发往 Desktop（桌面端），**D→M** 表示 Desktop 发往 Mobile。
+>
+> **Wire 1.5 勘误（2026-09-13）**：握手改为精确 `versions[]` 声明；普通 `PHASE_START`/`PHASE_COMPLETED` 不再产生可接受的 ACK；唯一最终 `PHASE_ACK` 必须精确回显 `phase/sessionId/attemptId/nonce`。完整契约见 `16_Wire_1_5契约与迁移.md`，下表其余旧版处理位置仅作架构索引。
 
 ---
 
@@ -15,11 +17,11 @@ last_updated: 2026-05-13
 
 | 序号 | 消息名称 | 方向 | 触发时机 | Payload 关键字段 | 移动端处理函数/位置 | 桌面端处理函数/位置 | 对应代码文件 |
 |-----|---------|------|---------|-----------------|-------------------|-------------------|------------|
-| 1 | `VERSION_CHECK` | M→D | WS 连接建立后，移动端主动发送版本校验请求，作为同步会话第一条业务消息 | `mobileVersion: string`（移动端应用版本号） | `run_sync_session` 中直接构造 JSON 并通过 `ws_stream.send` 发送；发送后启动 `VERSION_CHECK_TIMEOUT` 定时器 | `index.js` 中 switch-case 匹配 `"VERSION_CHECK"`，读取 `plugin-manifest.json` 的 `version` 字段构造 `VERSION_ACK` 返回 | `sync_service.rs:318-325`, `index.js` |
-| 2 | `VERSION_ACK` | D→M | 桌面端收到 `VERSION_CHECK` 后立即回复，携带自身插件版本 | `version: string`（桌面端插件版本号） | `run_sync_session` 中接收并校验版本字符串精确匹配；不匹配则断开连接并提示用户更新插件 | `index.js` 中读取 `plugin-manifest.json` 的 `version` 字段返回 | `sync_service.rs:328-382`, `index.js` |
-| 3 | `PHASE_START` | M→D | 各同步阶段（Phase）开始时由移动端发送，通知桌面端进入新阶段 | `phase: string`，取值：`owner_metadata`、`topic_metadata`、`messages` | `run_sync_session` 中在每个 Phase 入口通过 `ws_stream.send` 发送；同时更新前端 `vcp-sync-progress` 事件 | `index.js` 中记录日志 `logger.logInfo`，返回 `PHASE_ACK` 确认帧 | `sync_service.rs`, `index.js` |
-| 4 | `PHASE_COMPLETED` | M→D | 各阶段完成后由移动端发送，通知桌面端阶段结束；Finalize 阶段也使用此消息 | `phase: string`（可选，Finalize 阶段可省略） | `SyncCommand::Finalize` 或阶段自然结束时触发发送；发送后可能立即关闭 WS | `index.js` 中记录日志，返回 `PHASE_ACK` | `sync_service.rs`, `index.js` |
-| 5 | `PHASE_ACK` | D→M | 桌面端确认收到 `PHASE_START` 或 `PHASE_COMPLETED` | `phase: string` | 移动端仅接收并输出日志，无显式状态机处理；作为冗余确认防止消息丢失 | `index.js` 中统一返回确认帧，结构为 `{ type: "PHASE_ACK", phase }` | `sync_service.rs`, `index.js` |
+| 1 | `VERSION_CHECK` | M→D | WS 建立后的首个业务请求 | `versions` 精确包含 `mobile_app` 与 `wire=1.5` | `wire_protocol/handshake.rs` 构造并严格序列化；启动 5 秒超时 | 桌面校验声明集合并返回结构化 ACK | `wire_protocol/handshake.rs`, `sync_service/session_support.rs` |
+| 2 | `VERSION_ACK` | D→M | 桌面接受 `VERSION_CHECK` 后返回 | `versions` 精确包含 `desktop_plugin` 与 `wire`；`backendMode` 为 `cds`/`legacy` | 严格 JSON 和集合校验；Wire 不匹配则关闭，包版本仅记录诊断 | 返回插件包、Wire 与实际后端声明 | `wire_protocol/handshake.rs`, `sync_service/protocol.rs` |
+| 3 | `PHASE_START` | M→D | 通知桌面进入实际执行的阶段；messages 无变化时不发送 | `phase: string` | 发送后继续处理，不建立普通 ACK barrier | 记录阶段并启动相应处理，不回普通 ACK | `sync_service/phase.rs`, 桌面 transport |
+| 4 | `PHASE_COMPLETED` | M→D | owner/topic 阶段单向通知；finalization 后发送唯一可确认帧 | 普通通知为 `phase`；最终帧另含 `sessionId`、`attemptId`、`nonce` | 最终帧发送前先登记 pending ACK，随后启动超时 | 仅对最终帧精确回显身份字段 | `sync_service/commands.rs`, `sync_service/types.rs` |
+| 5 | `PHASE_ACK` | D→M | 仅确认 pending 的最终 `PHASE_COMPLETED` | 精确五字段：`type`、`phase`、`sessionId`、`attemptId`、`nonce` | 原子匹配并只消费一次；普通、迟到、重复或带未知字段的 ACK 均失败 | 对最终帧原样回显身份 | `sync_service/frames.rs`, `sync_service/protocol.rs` |
 | 6 | `SYNC_LOG_EVENT` | D→M | 桌面端主动上报日志事件，通过 WS 广播给所有已连接客户端；用于前端 Mini Log Terminal 实时展示 | `level: string`（`info`/`success`/`warning`/`error`），`message: string`，`phase: string`（可选） | 通过 `emit_sync_log` 函数转发到前端 `vcp-log` 事件；`level` 映射到 UI 颜色 | 桌面端内部 `SyncLogger` 触发 WS 广播，三个输出通道（控制台、文件、WS）同时写入 | `sync_service.rs`, `core/logger.js` |
 | 7 | `DESKTOP_PHASE_START` | D→M | 桌面端报告自身阶段开始，与移动端的 `PHASE_START` 对应 | `phase: string` | 日志输出格式：`[Desktop] Phase X started`；前端以灰色前缀展示 | 桌面端 `logger.startPhase` 方法触发 WS 广播 | `sync_service.rs`, `core/logger.js` |
 | 8 | `DESKTOP_PHASE_PROGRESS` | D→M | 桌面端报告阶段进度，每处理 100 条记录自动触发 | `phase: string`，`processed: number`，`success: number`，`errors: number` | 日志输出：`[Desktop] Phase X in progress (OK:N ERR:M)` | 桌面端 `logOperation` 中 `processed % 100 === 0` 时自动触发 | `sync_service.rs`, `core/logger.js` |

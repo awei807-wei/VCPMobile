@@ -37,13 +37,13 @@ pub(crate) fn http_status_error(
     match encode_http_sync_error_body(bytes) {
         Ok(Some(encoded)) => encoded,
         Ok(None) => {
-            format!("{operation} failed with HTTP {status} without a Wire 1.4 error object")
+            format!("{operation} failed with HTTP {status} without a Wire 1.5 error object")
         }
-        Err(error) => format!("{operation} returned an invalid Wire 1.4 error: {error}"),
+        Err(error) => format!("{operation} returned an invalid Wire 1.5 error: {error}"),
     }
 }
 
-/// Parse the only stream-level error accepted by the Wire 1.4 message pull.
+/// Parse the only stream-level error accepted by the Wire 1.5 message pull.
 pub(crate) fn parse_stream_error_frame(bytes: &[u8]) -> Result<Option<String>, String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("Malformed NDJSON stream error: {error}"))?;
@@ -61,7 +61,7 @@ pub(crate) fn parse_stream_error_frame(bytes: &[u8]) -> Result<Option<String>, S
     let error = object
         .get("error")
         .filter(|value| !value.is_null())
-        .ok_or_else(|| "NDJSON streamError requires a Wire 1.4 error object".to_string())?;
+        .ok_or_else(|| "NDJSON streamError requires a Wire 1.5 error object".to_string())?;
     encode_wire_sync_error_value(error).map(Some)
 }
 

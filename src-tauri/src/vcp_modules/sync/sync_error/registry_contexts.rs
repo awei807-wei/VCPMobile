@@ -9,8 +9,11 @@ pub(super) const CONTEXTS: &[(&str, Origin, Stage)] = &[
     ),
     ("BATTERY_TOO_LOW", Origin::MobileNative, Stage::Preflight),
     ("CANCELLED", Origin::DesktopCds, Stage::Shutdown),
+    ("CDS_BINARY_NOT_FOUND", Origin::DesktopCds, Stage::Startup),
     ("CDS_ERROR", Origin::DesktopCds, Stage::Startup),
     ("CDS_PROTOCOL_MISMATCH", Origin::DesktopCds, Stage::Startup),
+    ("CDS_SCHEMA_MISMATCH", Origin::DesktopCds, Stage::Startup),
+    ("CDS_STARTUP_FAILED", Origin::DesktopCds, Stage::Startup),
     ("CDS_UNAVAILABLE", Origin::DesktopCds, Stage::Startup),
     ("FINAL_ACK_TIMEOUT", Origin::MobileSync, Stage::Finalize),
     ("HEALTH_CHECK_FAILED", Origin::DesktopCds, Stage::Startup),
@@ -210,6 +213,11 @@ pub(super) const CONTEXTS: &[(&str, Origin, Stage)] = &[
     ),
     (
         "VERSION_CHECK_TIMEOUT",
+        Origin::MobileSync,
+        Stage::Handshake,
+    ),
+    (
+        "WIRE_VERSION_MISMATCH",
         Origin::MobileSync,
         Stage::Handshake,
     ),

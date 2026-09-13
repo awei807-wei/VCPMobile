@@ -1,7 +1,7 @@
-//! Wire 1.4 synchronization data-transfer objects.
+//! Wire 1.5 synchronization data-transfer objects.
 //!
 //! The implementation is split by contract boundary so the module root stays
-//! a stable import surface while Wire 1.4 canonical DTOs evolve independently.
+//! a stable import surface while Wire 1.5 canonical DTOs evolve independently.
 
 mod attachments;
 mod canonical;

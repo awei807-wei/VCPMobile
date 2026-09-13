@@ -100,11 +100,11 @@ fn parse_http_error<T>(
         Ok(Some(error)) => Err(error),
         Ok(None) => Err(protocol_error(
             stage,
-            format!("{operation} failed with HTTP {status} without a Wire 1.4 error object"),
+            format!("{operation} failed with HTTP {status} without a Wire 1.5 error object"),
         )),
         Err(error) => Err(protocol_error(
             stage,
-            format!("{operation} returned an invalid Wire 1.4 error: {error}"),
+            format!("{operation} returned an invalid Wire 1.5 error: {error}"),
         )),
     }
 }

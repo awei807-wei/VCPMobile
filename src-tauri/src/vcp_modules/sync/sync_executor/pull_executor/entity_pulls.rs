@@ -51,7 +51,7 @@ impl PullExecutor {
 
     /// Compatibility facade for an old caller that only knows a topic id.
     /// The local database must resolve exactly one owner namespace before the
-    /// request can cross the Wire 1.4 boundary.
+    /// request can cross the Wire 1.5 boundary.
     pub async fn pull_agent_topic<R: Runtime>(
         app: &AppHandle<R>,
         client: &reqwest::Client,

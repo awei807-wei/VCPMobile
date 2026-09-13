@@ -13,7 +13,7 @@ pub const MAX_MESSAGES_PER_TOPIC: usize = 10_000;
 pub(crate) const MAX_SAFE_TIMESTAMP: i64 = 9_007_199_254_740_991;
 
 /// JavaScript's `Number.isSafeInteger` upper bound used by every numeric
-/// value crossing the Wire 1.4 JSON boundary.  Keeping this predicate next
+/// value crossing the Wire 1.5 JSON boundary. Keeping this predicate next
 /// to the timestamp deserializers prevents DTOs from silently accepting a
 /// value that would round differently in the desktop plugin.
 pub(crate) fn is_safe_non_negative_u64(value: u64) -> bool {
@@ -218,7 +218,7 @@ where
 {
     let values = Vec::<T>::deserialize(deserializer)?;
     if values.len() > MAX_MANIFEST_ITEMS {
-        return Err(D::Error::custom("item count exceeds the Wire 1.4 budget"));
+        return Err(D::Error::custom("item count exceeds the Wire 1.5 budget"));
     }
     Ok(values)
 }

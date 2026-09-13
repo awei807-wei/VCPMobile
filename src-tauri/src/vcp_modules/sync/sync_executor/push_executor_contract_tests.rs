@@ -389,7 +389,8 @@ async fn test_pool() -> sqlx::SqlitePool {
             msg_id TEXT NOT NULL, role TEXT NOT NULL, name TEXT, agent_id TEXT,
             content BLOB NOT NULL, timestamp INTEGER NOT NULL, is_group_message INTEGER NOT NULL,
             group_id TEXT, finish_reason TEXT, updated_at INTEGER NOT NULL,
-            deleted_at INTEGER, PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
+            content_hash TEXT NOT NULL, deleted_at INTEGER,
+            PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
          );
          CREATE TABLE message_attachments (
             owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
@@ -425,8 +426,8 @@ async fn insert_message(pool: &sqlx::SqlitePool, fixture: MessageFixture<'_>) {
     sqlx::query(
         "INSERT INTO messages(
             owner_type, owner_id, topic_id, msg_id, role, content, timestamp,
-            is_group_message, updated_at, deleted_at
-         ) VALUES (?, ?, ?, ?, 'user', ?, ?, 0, ?, ?)",
+            is_group_message, updated_at, content_hash, deleted_at
+         ) VALUES (?, ?, ?, ?, 'user', ?, ?, 0, ?, ?, ?)",
     )
     .bind(fixture.owner_type)
     .bind(fixture.owner_id)
@@ -435,6 +436,7 @@ async fn insert_message(pool: &sqlx::SqlitePool, fixture: MessageFixture<'_>) {
     .bind(fixture.content)
     .bind(fixture.timestamp)
     .bind(fixture.timestamp)
+    .bind(hash('a'))
     .bind(fixture.deleted_at)
     .execute(pool)
     .await

@@ -170,12 +170,10 @@ async fn refresh_message_topic(
     .map_err(|error| error.to_string())?;
     sqlx::query(
         "UPDATE topics
-         SET updated_at = MAX(updated_at, ?),
-             last_message_updated_at = MAX(last_message_updated_at, ?),
+         SET last_message_updated_at = MAX(last_message_updated_at, ?),
              msg_count = ?
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
     )
-    .bind(message.timestamp as i64)
     .bind(message.updated_at.unwrap_or(message.timestamp) as i64)
     .bind(msg_count)
     .bind(&key.owner_type)
@@ -187,7 +185,7 @@ async fn refresh_message_topic(
     .map_err(|error| error.to_string())
 }
 
-/// Reads an uncompressed message body using the complete Wire 1.4 identity.
+/// Reads an uncompressed message body using the complete Wire 1.5 identity.
 #[tauri::command]
 pub async fn fetch_raw_message_content(
     app_handle: tauri::AppHandle,
@@ -200,7 +198,7 @@ pub async fn fetch_raw_message_content(
         .await
 }
 
-/// Wire 1.4 raw-content lookup with explicit owner/topic identity.
+/// Wire 1.5 raw-content lookup with explicit owner/topic identity.
 pub async fn fetch_raw_message_content_for_key(
     app_handle: &tauri::AppHandle,
     owner_type: &str,
@@ -231,7 +229,7 @@ pub async fn fetch_raw_message_content_for_key(
     decode_message_content(&row, "content")
 }
 
-/// Rebuilds a render-cache entry using the complete Wire 1.4 identity.
+/// Rebuilds a render-cache entry using the complete Wire 1.5 identity.
 #[tauri::command]
 pub async fn re_render_message(
     app_handle: tauri::AppHandle,
@@ -243,7 +241,7 @@ pub async fn re_render_message(
     re_render_message_for_key(&app_handle, &owner_type, &owner_id, &topic_id, &message_id).await
 }
 
-/// Wire 1.4 render-cache rebuild with full composite message identity.
+/// Wire 1.5 render-cache rebuild with full composite message identity.
 pub async fn re_render_message_for_key(
     app_handle: &tauri::AppHandle,
     owner_type: &str,
@@ -372,11 +370,9 @@ async fn patch_single_message_with_loaded_attachments_with_gate(
     .await?;
     sqlx::query(
         "UPDATE topics
-         SET updated_at = MAX(updated_at, ?),
-             last_message_updated_at = MAX(last_message_updated_at, ?)
+         SET last_message_updated_at = MAX(last_message_updated_at, ?)
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
     )
-    .bind(chrono::Utc::now().timestamp_millis())
     .bind(message.updated_at.unwrap_or(message.timestamp) as i64)
     .bind(&key.owner_type)
     .bind(&key.owner_id)

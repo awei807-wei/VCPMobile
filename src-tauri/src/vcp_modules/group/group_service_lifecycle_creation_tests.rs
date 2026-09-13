@@ -155,7 +155,14 @@ async fn assert_initial_group_topic_persisted(
     .expect("读取初始 Group 话题失败");
     let topic = &loaded.topics[0];
     let expected_topic_config_hash =
-        HashAggregator::compute_group_topic_metadata_hash(&GroupTopicSyncDTO::from(topic));
+        HashAggregator::compute_group_topic_metadata_hash(&GroupTopicSyncDTO {
+            id: topic.id.clone(),
+            name: topic.name.clone(),
+            created_at: topic.created_at,
+            owner_id: topic.owner_id.clone(),
+            config_hash: "a".repeat(64),
+            updated_at: 0,
+        });
     let expected_topic_content_hash = compute_merkle_root(Vec::new());
     let expected_group_content_hash =
         compute_merkle_root(vec![HashAggregator::compute_topic_leaf_hash(

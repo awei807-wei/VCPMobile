@@ -101,6 +101,42 @@ describe("sync session event ownership", () => {
     expect(store.status).toBe("connected");
   });
 
+  it("keeps desktop diagnostics scoped to the current connected attempt", async () => {
+    const store = useSyncSessionStore();
+    store.open();
+    await store.startSync();
+
+    emitTauriEvent("vcp-sync-status", {
+      sessionId: 99,
+      attemptId: 1,
+      status: "open",
+      desktop: { packageVersion: "2.0.0", backendMode: "cds" },
+    });
+    expect(store.desktopInfo).toBeNull();
+
+    emitTauriEvent("vcp-sync-status", {
+      sessionId: 1,
+      attemptId: 1,
+      status: "open",
+      desktop: { packageVersion: "2.0.0", backendMode: "cds" },
+    });
+    expect(store.desktopInfo).toEqual({
+      packageVersion: "2.0.0",
+      backendMode: "cds",
+    });
+
+    const wrapper = mount(SyncSessionView);
+    expect(wrapper.text()).toContain("桌面后端 CDS");
+    expect(wrapper.text()).toContain("同步插件 v2.0.0");
+
+    emitTauriEvent("vcp-sync-status", {
+      sessionId: 1,
+      attemptId: 1,
+      status: "retrying",
+    });
+    expect(store.desktopInfo).toBeNull();
+  });
+
   it("ignores stale sessions and attempts", async () => {
     const store = useSyncSessionStore();
     store.open();
@@ -240,6 +276,40 @@ describe("sync session event ownership", () => {
       .findAll("button")
       .filter((button) => button.text().includes("重新同步"));
     expect(retryButtons).toHaveLength(1);
+  });
+
+  it("offers and copies the CDS rebuild command for actionable errors", async () => {
+    const writeText = vi.mocked(navigator.clipboard.writeText);
+    writeText.mockClear();
+    const store = useSyncSessionStore();
+    store.open();
+    store.status = "error";
+    store.terminalError = {
+      code: "CDS_SCHEMA_MISMATCH",
+      category: "compatibility",
+      origin: "desktop_cds",
+      stage: "startup",
+      retryAction: "after_user_action",
+      message: "电脑端 CDS 数据库 Schema 版本不匹配",
+      guidance:
+        "请在 VCPChat 根目录执行 node rust_chat_data_service/build-runtime.js 重新编译 CDS。",
+      failedTopicIds: [],
+      logFile: null,
+    };
+    const wrapper = mount(SyncSessionView);
+
+    expect(wrapper.text()).toContain(
+      "node rust_chat_data_service/build-runtime.js",
+    );
+    await wrapper.get('[aria-label="复制 CDS 编译命令"]').trigger("click");
+
+    expect(writeText).toHaveBeenCalledWith(
+      "node rust_chat_data_service/build-runtime.js",
+    );
+    expect(wrapper.text()).toContain("已复制");
+    expect(store.logs[store.logs.length - 1]?.message).toBe(
+      "CDS 编译命令已复制到剪贴板",
+    );
   });
 
   it("accepts only a validated completion summary and exposes warnings", async () => {

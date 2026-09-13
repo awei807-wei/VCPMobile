@@ -4,8 +4,10 @@ use crate::vcp_modules::agent_service::AgentConfigState;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::db_write_queue::ExpectedMessageStates;
 use crate::vcp_modules::group_service::GroupManagerState;
+use crate::vcp_modules::sync_dto::AgentTopicSyncDTO;
+use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::sync_types::{
-    MessageDeleteDecision, MessageLiveState, MessageVersionState,
+    compute_merkle_root, MessageDeleteDecision, MessageLiveState, MessageVersionState,
 };
 use crate::vcp_modules::topic_types::{MessageKey, OwnerKey, TopicKey};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -38,7 +40,8 @@ async fn seed_test_pool(pool: sqlx::SqlitePool) -> sqlx::SqlitePool {
          );
          CREATE TABLE topics (
             owner_type TEXT, owner_id TEXT, topic_id TEXT, title TEXT,
-            created_at INTEGER, locked INTEGER, unread INTEGER, msg_count INTEGER,
+            created_at INTEGER, locked INTEGER, unread INTEGER,
+            unread_count INTEGER NOT NULL DEFAULT 0, msg_count INTEGER,
             updated_at INTEGER, last_message_updated_at INTEGER,
             config_hash TEXT, content_hash TEXT, deleted_at INTEGER,
             PRIMARY KEY(owner_type, owner_id, topic_id)
@@ -57,6 +60,12 @@ async fn seed_test_pool(pool: sqlx::SqlitePool) -> sqlx::SqlitePool {
          );
          CREATE TABLE active_generations (
             owner_type TEXT, owner_id TEXT, topic_id TEXT, msg_id TEXT
+         );
+         CREATE TABLE message_unread_receipts (
+            owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
+            msg_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+            counted_unread INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(owner_type, owner_id, topic_id, msg_id)
          );
          CREATE TABLE group_member_tags (
             group_id TEXT, agent_id TEXT, member_tag TEXT, updated_at INTEGER,
@@ -300,6 +309,89 @@ async fn message_batch_is_monotonic_and_missing_topic_is_a_noop() {
     .await
     .expect("read missing topic");
     assert_eq!(missing_rows, 0);
+}
+
+#[tokio::test]
+async fn message_delete_recomputes_unread_config_and_owner_root() {
+    let pool = test_pool().await;
+    let key = topic("agent", "agent-a", "shared");
+    let unread_config = HashAggregator::compute_agent_topic_metadata_hash(&AgentTopicSyncDTO {
+        id: key.topic_id.clone(),
+        name: "agent topic".to_string(),
+        created_at: 1,
+        locked: false,
+        unread: true,
+        owner_id: key.owner_id.clone(),
+        config_hash: String::new(),
+        updated_at: 7,
+    });
+    sqlx::query(
+        "UPDATE topics SET unread = 1, unread_count = 1, config_hash = ?
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(unread_config)
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .execute(&pool)
+    .await
+    .expect("seed unread topic state");
+    sqlx::query(
+        "INSERT INTO message_unread_receipts (
+            owner_type, owner_id, topic_id, msg_id, created_at, counted_unread
+         ) VALUES (?, ?, ?, 'm1', 9, 1)",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .execute(&pool)
+    .await
+    .expect("seed unread receipt");
+
+    soft_delete_messages_data(
+        &pool,
+        &key,
+        &[MessageDeleteDecision {
+            msg_id: "m1".to_string(),
+            deleted_at: 30,
+        }],
+        true,
+        None,
+    )
+    .await
+    .expect("delete unread message");
+
+    let state: (i64, i64, i64, String, String, String) = sqlx::query_as(
+        "SELECT t.unread, t.unread_count, t.updated_at, t.config_hash,
+                t.content_hash, a.content_hash
+         FROM topics t JOIN agents a ON a.agent_id = t.owner_id
+         WHERE t.owner_type = ? AND t.owner_id = ? AND t.topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read corrected unread hashes");
+    assert_eq!((state.0, state.1), (0, 0));
+    assert!(state.2 > 7);
+    let expected_config = HashAggregator::compute_agent_topic_metadata_hash(&AgentTopicSyncDTO {
+        id: key.topic_id.clone(),
+        name: "agent topic".to_string(),
+        created_at: 1,
+        locked: false,
+        unread: false,
+        owner_id: key.owner_id.clone(),
+        config_hash: state.3.clone(),
+        updated_at: state.2,
+    });
+    assert_eq!(state.3, expected_config);
+    let expected_owner = compute_merkle_root(vec![HashAggregator::compute_topic_leaf_hash(
+        &key.topic_id,
+        &state.3,
+        &state.4,
+    )]);
+    assert_eq!(state.5, expected_owner);
 }
 
 #[tokio::test]

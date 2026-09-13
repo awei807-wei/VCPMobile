@@ -72,7 +72,7 @@ describe("Android Debug Agent governance", () => {
     }
   });
 
-  it("keeps Wire 1.4 debug support out of release command registration", () => {
+  it("keeps Wire 1.5 E2E debug support out of release command registration", () => {
     expect(syncModuleSource).toMatch(
       /#\[cfg\(debug_assertions\)\]\s+pub mod wire14_debug;/,
     );

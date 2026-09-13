@@ -9,7 +9,7 @@ use rusqlite::OptionalExtension;
 use rusqlite::ToSql;
 
 impl DbWriteQueue {
-    /// Tombstone one message under a complete Wire 1.4 message identity.
+    /// Tombstone one message under a complete Wire 1.5 message identity.
     /// Returns `true` only when a live row was changed.
     pub(super) fn rusqlite_delete_message_for_key(
         tx: &rusqlite::Transaction<'_>,

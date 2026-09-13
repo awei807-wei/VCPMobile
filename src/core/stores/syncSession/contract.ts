@@ -1,5 +1,6 @@
 import type {
   SyncErrorCategory,
+  DesktopSyncInfo,
   SyncErrorOrigin,
   SyncErrorStage,
   SyncRetryAction,
@@ -48,7 +49,8 @@ const RETRY_ACTIONS = new Set<SyncRetryAction>([
 
 const MAX_FAILED_TOPIC_IDS = 8;
 
-export const WIRE_PROTOCOL_VERSION = "1.4";
+export const WIRE_PROTOCOL_VERSION = "1.5";
+export const CDS_BUILD_COMMAND = "node rust_chat_data_service/build-runtime.js";
 export const MAX_BUFFERED_SESSION_EVENTS = 32;
 
 const LOCAL_ERROR_COPY: Record<
@@ -87,7 +89,7 @@ const LOCAL_ERROR_COPY: Record<
     origin: "mobile_ui",
     stage: "finalize",
     retryAction: "after_user_action",
-    message: "同步响应不符合 Wire 1.4 规范，已安全停止",
+    message: "同步响应不符合 Wire 1.5 规范，已安全停止",
     guidance:
       "确认两端版本一致并重启电脑端同步插件；若仍出现，请保留最新日志。",
   },
@@ -106,6 +108,60 @@ const LOCAL_ERROR_COPY: Record<
     retryAction: "manual",
     message: "上一同步任务未能正常结束",
     guidance: "重启应用后再试；若仍失败，请保留最新同步日志。",
+  },
+  WIRE_VERSION_MISMATCH: {
+    category: "compatibility",
+    origin: "mobile_sync",
+    stage: "handshake",
+    retryAction: "after_user_action",
+    message: "手机端与电脑端 Wire 同步协议不兼容",
+    guidance:
+      "请更新 VChat 以同步最新插件；若两端版本差异较大，请同时更新 Mobile 与 VChat，并在电脑端运行 node rust_chat_data_service/build-runtime.js 重新编译 CDS，重启 VChat 后再试。",
+  },
+  CDS_BINARY_NOT_FOUND: {
+    category: "configuration",
+    origin: "desktop_cds",
+    stage: "startup",
+    retryAction: "after_user_action",
+    message: "电脑端 CDS Rust 可执行文件不存在",
+    guidance:
+      "请更新 VChat 桌面端以同步插件代码，并在 VCPChat 根目录执行 node rust_chat_data_service/build-runtime.js 重新编译 CDS，重启电脑端后再试。",
+  },
+  CDS_PROTOCOL_MISMATCH: {
+    category: "compatibility",
+    origin: "desktop_cds",
+    stage: "startup",
+    retryAction: "after_user_action",
+    message: "电脑端 CDS 数据服务协议版本不匹配",
+    guidance:
+      "请更新 VChat 桌面端以同步插件代码，并在 VCPChat 根目录执行 node rust_chat_data_service/build-runtime.js 重新编译 CDS，重启电脑端后再试。",
+  },
+  CDS_SCHEMA_MISMATCH: {
+    category: "compatibility",
+    origin: "desktop_cds",
+    stage: "startup",
+    retryAction: "after_user_action",
+    message: "电脑端 CDS 数据库 Schema 版本不匹配",
+    guidance:
+      "请更新 VChat 桌面端以同步插件代码，并在 VCPChat 根目录执行 node rust_chat_data_service/build-runtime.js 重新编译 CDS，重启电脑端后再试。",
+  },
+  CDS_UNAVAILABLE: {
+    category: "configuration",
+    origin: "desktop_cds",
+    stage: "startup",
+    retryAction: "after_user_action",
+    message: "电脑端 CDS 数据服务不可用或未就绪",
+    guidance:
+      "请更新 VChat 以同步插件，并在电脑端运行 node rust_chat_data_service/build-runtime.js 重新编译 CDS 后重启 VChat。",
+  },
+  CDS_STARTUP_FAILED: {
+    category: "internal",
+    origin: "desktop_cds",
+    stage: "startup",
+    retryAction: "manual",
+    message: "电脑端 CDS 数据服务未能启动",
+    guidance:
+      "请更新 VChat 并确保依赖完整，在电脑端运行 node rust_chat_data_service/build-runtime.js 重新编译 CDS 后重启 VChat；若仍失败请查看电脑端同步日志。",
   },
   SYNC_ATTEMPT_FAILED: {
     category: "internal",
@@ -245,6 +301,22 @@ export const readSummary = (value: unknown) => {
     failedTopics,
     legacyAttachmentWarnings,
     failedTopicIds: failedTopicIds.slice(0, MAX_FAILED_TOPIC_IDS),
+  };
+};
+
+export const readDesktopInfo = (value: unknown): DesktopSyncInfo | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (
+    typeof source.packageVersion !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(source.packageVersion) ||
+    (source.backendMode !== "legacy" && source.backendMode !== "cds")
+  ) {
+    return null;
+  }
+  return {
+    packageVersion: source.packageVersion,
+    backendMode: source.backendMode,
   };
 };
 

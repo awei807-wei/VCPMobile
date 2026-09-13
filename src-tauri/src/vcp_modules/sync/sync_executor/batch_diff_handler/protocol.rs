@@ -7,7 +7,7 @@ pub(crate) const MAX_PHASE3_MESSAGES_PER_TOPIC: usize = 10_000;
 pub(crate) const MAX_PHASE3_MESSAGES: usize = 100_000;
 pub(crate) const MAX_SAFE_JSON_INTEGER: i64 = (1_i64 << 53) - 1;
 
-/// Parse only the Wire 1.4 message-diff result frame.
+/// Parse only the Wire 1.5 message-diff result frame.
 pub fn parse_message_diff_result_frame(
     text: &str,
 ) -> Result<MessageDiffResultFrame, Phase3ProtocolError> {

@@ -25,7 +25,7 @@ pub(crate) fn validate_target(
     attachment_hash: &str,
 ) -> Result<(), String> {
     if !matches!(owner_type, "agent" | "group") {
-        return Err("Wire 1.4 debug fixture ownerType must be agent or group".to_string());
+        return Err("Wire 1.5 debug fixture ownerType must be agent or group".to_string());
     }
     validate_fixture_id(owner_id, "ownerId", E2E_PREFIX)?;
     validate_fixture_id(topic_id, "topicId", TOPIC_PREFIX)?;
@@ -36,7 +36,7 @@ pub(crate) fn validate_target(
         || is_sha256(attachment_hash)
     {
         return Err(
-            "Wire 1.4 debug fixture attachmentHash must be a bounded malformed CAS hash"
+            "Wire 1.5 debug fixture attachmentHash must be a bounded malformed CAS hash"
                 .to_string(),
         );
     }
@@ -50,7 +50,7 @@ fn validate_fixture_id(value: &str, field: &str, prefix: &str) -> Result<(), Str
         || !value.bytes().all(is_safe_fixture_byte)
     {
         return Err(format!(
-            "Wire 1.4 debug fixture {field} must stay inside the {prefix} namespace"
+            "Wire 1.5 debug fixture {field} must stay inside the {prefix} namespace"
         ));
     }
     Ok(())
@@ -67,7 +67,7 @@ fn is_sha256(value: &str) -> bool {
 pub(crate) fn validate_scale_owner(owner_type: &str, owner_id: &str) -> Result<(), String> {
     if owner_type != "agent" {
         return Err(
-            "Wire 1.4 debug scale hash ownerType must be agent synthetic owner".to_string(),
+            "Wire 1.5 debug scale hash ownerType must be agent synthetic owner".to_string(),
         );
     }
     validate_fixture_id(owner_id, "ownerId", SCALE_OWNER_PREFIX)
@@ -109,12 +109,12 @@ pub(crate) async fn load_scale_topic_hashes(
 
 pub(crate) fn next_update_clock(previous: i64) -> Result<i64, String> {
     if !(0..=MAX_SAFE_TIMESTAMP).contains(&previous) {
-        return Err("Wire 1.4 debug fixture message updatedAt is invalid".to_string());
+        return Err("Wire 1.5 debug fixture message updatedAt is invalid".to_string());
     }
     let now = chrono::Utc::now().timestamp_millis();
     let next = now.max(previous.saturating_add(1));
     if next > MAX_SAFE_TIMESTAMP {
-        return Err("Wire 1.4 debug fixture update clock exceeds safe integer range".to_string());
+        return Err("Wire 1.5 debug fixture update clock exceeds safe integer range".to_string());
     }
     Ok(next)
 }
@@ -138,7 +138,7 @@ pub(crate) async fn ensure_live_owner(
         .await
         .map_err(|error| format!("Read debug fixture owner failed: {error}"))?;
     if !exists {
-        return Err("Wire 1.4 debug fixture owner is missing or deleted".to_string());
+        return Err("Wire 1.5 debug fixture owner is missing or deleted".to_string());
     }
     Ok(())
 }
@@ -160,7 +160,7 @@ pub(crate) async fn ensure_live_topic(
     .await
     .map_err(|error| format!("Read debug fixture topic failed: {error}"))?;
     if !exists {
-        return Err("Wire 1.4 debug fixture topic is missing or deleted".to_string());
+        return Err("Wire 1.5 debug fixture topic is missing or deleted".to_string());
     }
     Ok(())
 }
@@ -183,7 +183,7 @@ pub(crate) async fn load_live_message(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| format!("Read debug fixture message failed: {error}"))?
-    .ok_or_else(|| "Wire 1.4 debug fixture message is missing or deleted".to_string())?;
+    .ok_or_else(|| "Wire 1.5 debug fixture message is missing or deleted".to_string())?;
     let timestamp = decode_safe_timestamp(&row, "timestamp")?;
     let updated_at = decode_safe_timestamp_i64(&row, "updated_at")?;
     Ok(MessageFixture {
@@ -241,7 +241,7 @@ pub(crate) async fn ensure_relation_is_new(
     .await
     .map_err(|error| format!("Read debug attachment relation failed: {error}"))?;
     if exists {
-        return Err("Wire 1.4 debug fixture attachment relation already exists".to_string());
+        return Err("Wire 1.5 debug fixture attachment relation already exists".to_string());
     }
     let catalog_exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE hash = ?)")
@@ -250,7 +250,7 @@ pub(crate) async fn ensure_relation_is_new(
             .await
             .map_err(|error| format!("Read debug attachment catalog failed: {error}"))?;
     if catalog_exists {
-        return Err("Wire 1.4 debug fixture attachment catalog entry already exists".to_string());
+        return Err("Wire 1.5 debug fixture attachment catalog entry already exists".to_string());
     }
     Ok(())
 }
@@ -274,7 +274,7 @@ pub(crate) async fn next_attachment_order(
     max_order
         .unwrap_or(-1)
         .checked_add(1)
-        .ok_or_else(|| "Wire 1.4 debug fixture attachment order overflowed".to_string())
+        .ok_or_else(|| "Wire 1.5 debug fixture attachment order overflowed".to_string())
 }
 
 pub(crate) async fn load_attachment_hashes(

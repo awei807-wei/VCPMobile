@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import {
   AlertTriangle,
   CircleCheck,
+  Copy,
   Play,
 } from "lucide-vue-next";
 import SettingsSwitch from "../../../components/settings/SettingsSwitch.vue";
 import { useSettingsStore } from "../../../core/stores/settings";
 import { useOverlayStore } from "../../../core/stores/overlay";
 import { useSyncSessionStore } from "../../../core/stores/syncSession";
+import { CDS_BUILD_COMMAND } from "../../../core/stores/syncSession/contract";
 
 const store = useSyncSessionStore();
 const settingsStore = useSettingsStore();
@@ -73,6 +75,11 @@ const errorOriginLabels: Record<string, string> = {
 const errorOriginLabel = computed(
   () => errorOriginLabels[store.terminalError?.origin ?? ""] ?? "同步组件",
 );
+const requiresCdsBuild = computed(
+  () => store.terminalError?.guidance.includes("build-runtime.js") ?? false,
+);
+const buildCommandCopied = ref(false);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 const logColor = (level: string) =>
   ({
@@ -102,6 +109,19 @@ const handlePrerenderToggle = async (value: boolean) => {
   }
   await settingsStore.updateSettings({ syncPrerenderEnabled: value });
 };
+
+const copyCdsBuildCommand = async () => {
+  if (!(await store.copyCdsBuildCommand())) return;
+  buildCommandCopied.value = true;
+  if (copiedTimer) clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    buildCommandCopied.value = false;
+  }, 2000);
+};
+
+onUnmounted(() => {
+  if (copiedTimer) clearTimeout(copiedTimer);
+});
 </script>
 
 <template>
@@ -194,6 +214,16 @@ const handlePrerenderToggle = async (value: boolean) => {
       </div>
 
       <div
+        v-if="store.desktopInfo"
+        class="mx-4 flex items-center gap-2 border-y border-white/8 py-2 font-mono text-[9px] text-white/40"
+        aria-label="桌面同步环境"
+      >
+        <span>桌面后端 {{ store.desktopInfo.backendMode === "cds" ? "CDS" : "Legacy" }}</span>
+        <span aria-hidden="true">·</span>
+        <span>同步插件 v{{ store.desktopInfo.packageVersion }}</span>
+      </div>
+
+      <div
         v-if="
           store.summary.totalTopics > 0 ||
           ['completed', 'completed_with_warnings', 'error'].includes(
@@ -255,6 +285,35 @@ const handlePrerenderToggle = async (value: boolean) => {
         </div>
         <div class="mt-1 text-[10px] leading-relaxed text-white/55 break-words">
           {{ store.terminalError.guidance }}
+        </div>
+        <div
+          v-if="requiresCdsBuild"
+          class="mt-2.5 rounded border border-white/10 bg-black/40 p-2"
+        >
+          <div class="mb-1 flex items-center justify-between gap-3">
+            <span class="text-[9px] text-white/40"
+              >电脑端 VCPChat 根目录</span
+            >
+            <button
+              type="button"
+              aria-label="复制 CDS 编译命令"
+              class="flex min-h-9 shrink-0 items-center gap-1 rounded px-2 text-[9px] text-blue-300 transition-colors hover:bg-white/8 hover:text-blue-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300"
+              @click="copyCdsBuildCommand"
+            >
+              <CircleCheck
+                v-if="buildCommandCopied"
+                :size="12"
+                class="text-green-300"
+                aria-hidden="true"
+              />
+              <Copy v-else :size="12" aria-hidden="true" />
+              {{ buildCommandCopied ? "已复制" : "复制命令" }}
+            </button>
+          </div>
+          <code
+            class="block select-all break-all font-mono text-[10px] leading-relaxed text-yellow-200/90"
+            >{{ CDS_BUILD_COMMAND }}</code
+          >
         </div>
         <div
           class="mt-2 font-mono text-[9px] leading-relaxed text-white/35 break-all"

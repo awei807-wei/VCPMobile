@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-/// Hashing and canonicalization shared by every Wire 1.4 sync phase.
+/// Hashing and canonicalization shared by every Wire 1.5 sync phase.
 pub struct HashAggregator;
 
 const DEFAULT_INVITE_PROMPT: &str = "现在轮到你{{VCPChatAgentName}}发言了。系统已经为大家添加[xxx的发言：]这样的标记头，以用于区分不同发言来自谁。大家不用自己再输出自己的发言标记头，也不需要讨论发言标记系统，正常聊天即可。";

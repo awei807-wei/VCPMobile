@@ -137,7 +137,7 @@ fn topic_manifest_state(
             deleted_at,
         }));
     }
-    let (config_hash, content_hash, updated_at) =
+    let (config_hash, updated_at) =
         decode_topic_live_fields(row, &owner_type, &owner_id, &topic_id)?;
     Ok(TopicManifestState::Live(TopicManifestLive {
         owner_type,
@@ -147,11 +147,6 @@ fn topic_manifest_state(
             config_hash,
             &format!("Topic {owner_type} configHash"),
             false,
-        )?,
-        content_hash: required_hash(
-            content_hash,
-            &format!("Topic {owner_type} contentHash"),
-            true,
         )?,
         updated_at: required_timestamp(updated_at, &format!("Topic {owner_type} updatedAt"))?,
     }))
@@ -253,7 +248,7 @@ impl Phase1Metadata {
                 .collect::<Vec<_>>()
                 .join(" OR ");
             let query_sql = format!(
-                "SELECT topic_id, config_hash, content_hash, updated_at, owner_type, owner_id, deleted_at
+                "SELECT topic_id, config_hash, updated_at, owner_type, owner_id, deleted_at
                  FROM topics WHERE {predicates}
                  ORDER BY owner_type, owner_id, topic_id"
             );

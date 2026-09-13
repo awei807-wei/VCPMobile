@@ -1,5 +1,5 @@
 use crate::vcp_modules::db_manager::DbState;
-use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::sync_hash::{HashAggregator, HashInitializer};
 use crate::vcp_modules::topic_types::TopicKey;
 use serde::Serialize;
 use sqlx::{Row, Sqlite, Transaction};
@@ -79,10 +79,11 @@ pub(crate) async fn set_topic_unread_in_pool(
         "UPDATE topics
          SET unread = ?,
              unread_count = CASE WHEN ? = 0 THEN 0 ELSE unread_count END,
-             updated_at = ?
+             updated_at = CASE WHEN owner_type = 'agent' AND unread != ? THEN ? ELSE updated_at END
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
            AND deleted_at IS NULL",
     )
+    .bind(unread_int)
     .bind(unread_int)
     .bind(unread_int)
     .bind(updated_at)
@@ -96,7 +97,8 @@ pub(crate) async fn set_topic_unread_in_pool(
     if !unread {
         clear_counted_unread_receipts(&mut tx, topic_key).await?;
     }
-    HashAggregator::bubble_from_topic_for_key(&mut tx, topic_key).await?;
+    HashInitializer::recompute_topic_config_hash(&mut tx, topic_key).await?;
+    HashAggregator::bubble_owner_from_topic_key(&mut tx, topic_key).await?;
     let state = load_topic_unread_state(&mut tx, topic_key).await?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(state)
@@ -262,12 +264,9 @@ pub(crate) async fn record_topic_unread_for_message_in_pool(
     if msg_id.trim().is_empty() {
         return Err("消息未读记账要求非空 msg_id".to_string());
     }
-    // Acquire SQLite's write lock before reading the topic or inserting the
-    // receipt. A deferred transaction can establish a read snapshot first;
-    // when several stream events then promote that snapshot to a writer,
-    // SQLite may reject the promotion with SQLITE_BUSY_SNAPSHOT instead of
-    // waiting for the other writer to commit. BEGIN IMMEDIATE serializes the
-    // short receipt/count transaction while keeping both updates atomic.
+    // BEGIN IMMEDIATE acquires SQLite's write lock before reading the receipt.
+    // This avoids SQLITE_BUSY_SNAPSHOT during concurrent writer promotion and
+    // keeps the receipt/count update atomic.
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -314,7 +313,9 @@ pub(crate) async fn record_topic_unread_for_message_in_tx(
     if inserted.rows_affected() == 1 && mark_unread {
         let changed = sqlx::query(
             "UPDATE topics
-             SET unread = 1, unread_count = unread_count + 1, updated_at = ?
+             SET unread = 1, unread_count = unread_count + 1,
+                 updated_at = CASE WHEN owner_type = 'agent' AND unread = 0
+                                   THEN ? ELSE updated_at END
              WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
                AND deleted_at IS NULL",
         )
@@ -326,6 +327,7 @@ pub(crate) async fn record_topic_unread_for_message_in_tx(
         .await
         .map_err(|e| format!("增加话题未读计数失败：{e}"))?;
         ensure_single_topic_change(changed.rows_affected(), topic_key)?;
+        HashInitializer::recompute_topic_config_hash(tx, topic_key).await?;
         HashAggregator::bubble_from_topic_for_key(tx, topic_key).await?;
     }
     let state = load_topic_unread_state(tx, topic_key).await?;

@@ -31,22 +31,24 @@ pub struct MessageSyncDTO {
         serialize_with = "serialize_safe_u64"
     )]
     pub updated_at: u64,
-    #[serde(default)]
-    pub is_thinking: Option<bool>,
-    #[serde(rename = "agentId", default)]
+    #[serde(rename = "agentId", default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    #[serde(rename = "groupId", default)]
+    #[serde(rename = "groupId", default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
-    #[serde(rename = "topicId", default)]
+    #[serde(rename = "topicId", default, skip_serializing_if = "Option::is_none")]
     pub topic_id: Option<String>,
-    #[serde(rename = "isGroupMessage", default)]
+    #[serde(
+        rename = "isGroupMessage",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub is_group_message: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentSyncDTO>>,
-    #[serde(rename = "contentHash", skip_serializing_if = "Option::is_none")]
-    pub content_hash: Option<String>,
+    #[serde(rename = "contentHash", deserialize_with = "deserialize_content_hash")]
+    pub content_hash: String,
 }
 
 impl MessageSyncDTO {
@@ -70,6 +72,12 @@ impl MessageSyncDTO {
             })
             .transpose()?;
 
+        let content_hash = msg
+            .content_hash
+            .as_deref()
+            .filter(|hash| is_lowercase_sha256(hash))
+            .ok_or_else(|| "Message requires a lowercase SHA-256 contentHash".to_string())?
+            .to_string();
         Ok(Self {
             id: msg.id.clone(),
             role: msg.role.clone(),
@@ -77,14 +85,13 @@ impl MessageSyncDTO {
             content: msg.content.clone(),
             timestamp: msg.timestamp,
             updated_at,
-            is_thinking: msg.is_thinking,
             agent_id: msg.agent_id.clone(),
             group_id: msg.group_id.clone(),
             topic_id: msg.topic_id.clone(),
             is_group_message: msg.is_group_message,
             finish_reason: msg.finish_reason.clone(),
             attachments,
-            content_hash: msg.content_hash.clone(),
+            content_hash,
         })
     }
 
@@ -112,7 +119,7 @@ impl From<MessageSyncDTO> for ChatMessage {
             content: dto.content,
             timestamp: dto.timestamp,
             updated_at: Some(dto.updated_at),
-            is_thinking: dto.is_thinking,
+            is_thinking: None,
             agent_id: dto.agent_id,
             group_id: dto.group_id,
             topic_id: dto.topic_id,
@@ -137,8 +144,28 @@ impl From<MessageSyncDTO> for ChatMessage {
                     .collect()
             }),
             blocks: None,
-            content_hash: dto.content_hash,
+            content_hash: Some(dto.content_hash),
             shell: None,
         }
     }
+}
+
+fn deserialize_content_hash<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if is_lowercase_sha256(&value) {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "contentHash must be a lowercase 64-character SHA-256",
+        ))
+    }
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && value.bytes().all(|byte| !byte.is_ascii_uppercase())
 }

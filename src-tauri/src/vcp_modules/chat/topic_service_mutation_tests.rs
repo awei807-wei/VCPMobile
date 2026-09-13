@@ -252,7 +252,7 @@ async fn 更新话题标题哈希失败时标题和哈希均回滚() {
     seed_topic(&pool, &key, false, 0, None).await;
     sqlx::query(
         "CREATE TRIGGER fail_topic_bubble
-         BEFORE UPDATE OF content_hash ON topics
+         BEFORE UPDATE OF config_hash ON topics
          BEGIN SELECT RAISE(ABORT, 'injected topic bubble failure'); END",
     )
     .execute(&pool)
@@ -291,7 +291,7 @@ async fn 更新话题锁状态哈希失败时锁和哈希均回滚() {
     seed_topic(&pool, &key, false, 0, None).await;
     sqlx::query(
         "CREATE TRIGGER fail_topic_bubble
-         BEFORE UPDATE OF content_hash ON topics
+         BEFORE UPDATE OF config_hash ON topics
          BEGIN SELECT RAISE(ABORT, 'injected topic bubble failure'); END",
     )
     .execute(&pool)

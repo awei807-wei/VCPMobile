@@ -31,6 +31,11 @@ export interface SyncSummary {
   failedTopicIds: string[];
 }
 
+export interface DesktopSyncInfo {
+  packageVersion: string;
+  backendMode: "legacy" | "cds";
+}
+
 export type SyncErrorCategory =
   | "device"
   | "configuration"

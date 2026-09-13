@@ -104,7 +104,7 @@ impl PullExecutor {
             "vcp-sync-log",
             serde_json::json!({
                 "level": "info",
-                "message": "[PullExecutor] Wire 1.4 entity pull completed"
+                "message": "[PullExecutor] Wire 1.5 entity pull completed"
             }),
         );
         Ok(())

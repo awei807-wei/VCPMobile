@@ -26,7 +26,7 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 pub struct BatchDiffHandler;
 
 impl BatchDiffHandler {
-    /// Apply one strict Wire 1.4 message-diff result and stop on the first failure.
+    /// Apply one strict Wire 1.5 message-diff result and stop on the first failure.
     #[allow(clippy::too_many_arguments)]
     pub async fn handle_diff_batch(
         app_handle: &AppHandle,

@@ -1,5 +1,10 @@
 import { getVersion } from "@tauri-apps/api/app";
-import type { SyncStatus, SyncSummary, SyncTerminalError } from "./types";
+import type {
+  DesktopSyncInfo,
+  SyncStatus,
+  SyncSummary,
+  SyncTerminalError,
+} from "./types";
 import { WIRE_PROTOCOL_VERSION } from "./contract";
 
 export const sanitizeDiagnosticText = (value: string) =>
@@ -21,6 +26,7 @@ export const buildDiagnostics = async (
   sessionId: number | null,
   summary: SyncSummary,
   terminalError: SyncTerminalError | null,
+  desktopInfo: DesktopSyncInfo | null,
 ) => {
   const mobileVersion = await getVersion().catch(() => "unavailable");
   const safeFailedTopicIds = [...new Set(summary.failedTopicIds)]
@@ -30,6 +36,8 @@ export const buildDiagnostics = async (
   return [
     `VCP Mobile: ${mobileVersion}`,
     `Wire protocol: ${WIRE_PROTOCOL_VERSION}`,
+    `Desktop sync plugin: ${desktopInfo?.packageVersion ?? "unavailable"}`,
+    `Desktop backend: ${desktopInfo?.backendMode ?? "unavailable"}`,
     `Session: ${sessionId ?? "none"}`,
     `Status: ${status}`,
     `Topics: ${summary.successfulTopics}/${summary.totalTopics}`,
@@ -55,7 +63,9 @@ export const copyTextToClipboard = async (
   try {
     await navigator.clipboard.writeText(text);
     pushLog("success", successMessage);
+    return true;
   } catch {
     pushLog("error", failureMessage);
+    return false;
   }
 };

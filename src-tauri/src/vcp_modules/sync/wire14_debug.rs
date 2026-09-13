@@ -1,9 +1,11 @@
-//! Debug-only database fixtures for exercising the Wire 1.4 push boundary.
+//! Debug-only database fixtures for exercising the Wire 1.5 push boundary.
 //!
 //! This module is intentionally compiled only for debug builds.  The command
 //! is not a general SQL escape hatch: it accepts only deterministic
 //! `wire14-e2e-*` fixture namespaces and only reads scale hashes or creates
 //! the malformed attachment relation needed by the Android E2E contract.
+//! Historical `wire14` symbols and fixture prefixes remain stable for the
+//! existing QA harness; they do not enable the Wire 1.4 protocol.
 
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::sync_hash::HashAggregator;
@@ -97,7 +99,7 @@ pub async fn debug_inject_invalid_attachment_for_wire14(
     .await?;
     update_message_hash(&mut tx, &key, &msg_id, &update).await?;
     update_render_hash(&mut tx, &key, &msg_id, &update).await?;
-    update_topic_clock(&mut tx, &key, &update).await?;
+    update_topic_activity_clock(&mut tx, &key, &update).await?;
 
     HashAggregator::bubble_from_topic_for_key(&mut tx, &key).await?;
     tx.commit()
@@ -211,19 +213,17 @@ async fn update_render_hash(
     Ok(())
 }
 
-async fn update_topic_clock(
+async fn update_topic_activity_clock(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
     key: &TopicKey,
     update: &InvalidAttachmentUpdate,
 ) -> Result<(), String> {
     sqlx::query(
         "UPDATE topics
-         SET updated_at = MAX(updated_at, ?),
-             last_message_updated_at = MAX(last_message_updated_at, ?)
+         SET last_message_updated_at = MAX(last_message_updated_at, ?)
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
            AND deleted_at IS NULL",
     )
-    .bind(update.updated_at)
     .bind(update.updated_at)
     .bind(&key.owner_type)
     .bind(&key.owner_id)

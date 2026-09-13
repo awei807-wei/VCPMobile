@@ -65,7 +65,7 @@ async fn invalid_non_text(ctx: &mut AttemptContext, kind: &str) -> AttemptAction
     fail(
         ctx,
         "PROTOCOL_FRAME_INVALID",
-        format!("{kind} WebSocket frames are not valid Wire 1.4 business frames"),
+        format!("{kind} WebSocket frames are not valid Wire 1.5 business frames"),
         Vec::new(),
     )
     .await
@@ -93,7 +93,7 @@ async fn handle_text(ctx: &mut AttemptContext, text: &str) -> AttemptAction {
             fail(
                 ctx,
                 "PROTOCOL_FRAME_INVALID",
-                format!("Unknown Wire 1.4 frame type {other}"),
+                format!("Unknown Wire 1.5 frame type {other}"),
                 Vec::new(),
             )
             .await
@@ -304,28 +304,16 @@ async fn handle_phase_ack(ctx: &mut AttemptContext, payload: &Value) -> AttemptA
             )
             .await
         }
-        None if is_valid_intermediate_ack(payload) => handle_intermediate_ack(ctx, payload),
         None => {
             fail(
                 ctx,
                 "FINAL_ACK_INVALID",
-                "Intermediate PHASE_ACK must contain exactly type and phase".to_string(),
+                "Received PHASE_ACK without a pending final acknowledgement".to_string(),
                 Vec::new(),
             )
             .await
         }
     }
-}
-
-fn handle_intermediate_ack(ctx: &mut AttemptContext, payload: &Value) -> AttemptAction {
-    if payload.get("phase").and_then(Value::as_str) == Some("messages")
-        && ctx.message_phase_barrier.acknowledge()
-    {
-        let _ = ctx.tx.send(SyncCommand::Finalize {
-            attempt_id: ctx.attempt_id,
-        });
-    }
-    AttemptAction::Continue
 }
 
 async fn complete_after_final_ack(ctx: &mut AttemptContext) -> AttemptAction {
@@ -343,18 +331,6 @@ async fn complete_after_final_ack(ctx: &mut AttemptContext) -> AttemptAction {
     ctx.success = publish_sync_completed(&ctx.app, ctx.session_id, &ctx.status, summary).await;
     ctx.close().await;
     AttemptAction::Stop
-}
-
-pub(crate) fn is_valid_intermediate_ack(payload: &Value) -> bool {
-    let Some(object) = payload.as_object() else {
-        return false;
-    };
-    object.len() == 2
-        && object.get("type").and_then(Value::as_str) == Some("PHASE_ACK")
-        && matches!(
-            object.get("phase").and_then(Value::as_str),
-            Some("owner_metadata" | "topic_metadata" | "messages")
-        )
 }
 
 async fn handle_close(

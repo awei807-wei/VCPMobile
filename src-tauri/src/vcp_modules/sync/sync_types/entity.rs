@@ -69,7 +69,7 @@ impl EntitySelector {
         }
     }
 
-    /// Validate that the selector carries a complete Wire 1.4 identity.
+    /// Validate that the selector carries a complete Wire 1.5 identity.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::Owner {

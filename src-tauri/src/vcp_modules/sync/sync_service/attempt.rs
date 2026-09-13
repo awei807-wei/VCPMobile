@@ -2,8 +2,8 @@ use super::commands;
 use super::frames;
 use super::phase;
 use super::types::{
-    MessagePhaseBarrier, NetworkAwareSemaphore, PendingDiffBatch, PendingFinalAck, Phase3Tracker,
-    SyncCommand, SyncTaskTracker, SyncWebSocket,
+    NetworkAwareSemaphore, PendingDiffBatch, PendingFinalAck, Phase3Tracker, SyncCommand,
+    SyncTaskTracker, SyncWebSocket,
 };
 use super::Phase3MessageSnapshots;
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
@@ -102,7 +102,6 @@ pub(crate) struct AttemptContext {
     pub(crate) expected_manifest_types: Arc<Mutex<HashSet<ManifestType>>>,
     pub(crate) manifest_phase: Arc<AtomicU8>,
     pub(crate) expected_topic_hash_results: Arc<AsyncMutex<Option<HashSet<TopicKey>>>>,
-    pub(crate) message_phase_barrier: MessagePhaseBarrier,
     pub(crate) awaiting_final_ack: PendingFinalAck,
     pub(crate) heartbeat: Interval,
     pub(crate) success: bool,
@@ -157,7 +156,6 @@ impl AttemptContext {
             expected_manifest_types: Arc::new(Mutex::new(HashSet::new())),
             manifest_phase: Arc::new(AtomicU8::new(1)),
             expected_topic_hash_results: Arc::new(AsyncMutex::new(None)),
-            message_phase_barrier: MessagePhaseBarrier::default(),
             awaiting_final_ack: Arc::new(Mutex::new(None)),
             heartbeat: interval(std::time::Duration::from_secs(15)),
             success: false,

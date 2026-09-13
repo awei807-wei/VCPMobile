@@ -9,7 +9,6 @@ use crate::vcp_modules::sync_dto::MessageSyncDTO;
 use crate::vcp_modules::sync_error::{
     decode_wire_sync_error, encode_local_sync_error, SyncErrorStage,
 };
-use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::TopicKey;
 use std::collections::HashSet;
 use tauri::{Manager, Runtime};
@@ -206,21 +205,7 @@ fn validate_message(
         message.updated_at,
         &format!("Message {} updatedAt", message.id),
     )?;
-    validate_content_hash(message)?;
     validate_message_attachments(message)
-}
-
-fn validate_content_hash(message: &MessageSyncDTO) -> Result<(), String> {
-    if let Some(received_hash) = message.content_hash.as_deref() {
-        let expected_hash = HashAggregator::compute_message_fingerprint_for_dto(message);
-        if received_hash != expected_hash {
-            return Err(format!(
-                "Message {} contentHash does not match canonical content",
-                message.id
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn validate_message_attachments(message: &MessageSyncDTO) -> Result<(), String> {

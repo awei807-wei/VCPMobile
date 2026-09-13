@@ -421,7 +421,7 @@ async function runAttachments(context) {
   let invalidAttempt = null;
   const invalidMessage = message(
     `wire14-e2e-invalid-attachment-${context.fixture.runId || "static"}`,
-    "Synthetic message for the Wire 1.4 invalid attachment boundary.",
+    "Synthetic message for the Wire 1.5 invalid attachment boundary.",
     1700001100002,
   );
   await appendMessage(

@@ -1,11 +1,11 @@
 use super::connection_config::ConnectionSettings;
-use super::errors::{publish_sync_error, publish_sync_nonterminal_status};
+use super::errors::publish_sync_error;
 use super::logs::emit_operator_sync_log;
 use super::protocol::{
     close_ws_with_deadline, parse_version_handshake_payload, schedule_sync_retry,
     send_ws_with_deadline, RetryBudget, VersionHandshakeError,
 };
-use super::types::SyncState;
+use super::types::{DesktopSyncInfo, SyncState};
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
 use crate::vcp_modules::sync_hash::HashInitializer;
@@ -111,9 +111,10 @@ pub(crate) async fn connect_with_cancel(
 pub(crate) async fn perform_handshake(
     mut ws: super::types::SyncWebSocket,
     cancel: &CancellationToken,
-) -> Result<super::types::SyncWebSocket, VersionHandshakeError> {
+) -> Result<(super::types::SyncWebSocket, DesktopSyncInfo), VersionHandshakeError> {
     let version =
-        crate::vcp_modules::wire_protocol::build_version_check_json(env!("CARGO_PKG_VERSION"));
+        crate::vcp_modules::wire_protocol::build_version_check_json(env!("CARGO_PKG_VERSION"))
+            .map_err(|error| VersionHandshakeError::Protocol(error.to_string()))?;
     send_ws_with_deadline(&mut ws, Message::Text(version.into()))
         .await
         .map_err(VersionHandshakeError::Transport)?;
@@ -121,7 +122,12 @@ pub(crate) async fn perform_handshake(
         while let Some(result) = ws.next().await {
             match result {
                 Ok(Message::Text(text)) => match parse_version_handshake_payload(&text)? {
-                    Some(_) => return Ok(()),
+                    Some(ack) => {
+                        return Ok(DesktopSyncInfo {
+                            package_version: ack.package_version,
+                            backend_mode: ack.backend_mode,
+                        })
+                    }
                     None => continue,
                 },
                 Ok(Message::Close(frame)) => return Err(close_error(frame)),
@@ -149,10 +155,17 @@ pub(crate) async fn perform_handshake(
             reason: String::new(),
         })
     };
-    tokio::select! {
+    let result = tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(VersionHandshakeError::Transport("sync cancelled".to_string())),
-        result = tokio::time::timeout(super::protocol::VERSION_CHECK_TIMEOUT, receive) => result.map_err(|_| VersionHandshakeError::Transport("version handshake timed out".to_string()))?.map(|_| ws),
+        result = tokio::time::timeout(super::protocol::VERSION_CHECK_TIMEOUT, receive) => result.map_err(|_| VersionHandshakeError::Transport("version handshake timed out".to_string()))?,
+    };
+    match result {
+        Ok(desktop_info) => Ok((ws, desktop_info)),
+        Err(error) => {
+            let _ = close_ws_with_deadline(&mut ws).await;
+            Err(error)
+        }
     }
 }
 
@@ -176,6 +189,7 @@ pub(crate) async fn start_owner_phase(
     session_id: u64,
     status: &Arc<RwLock<String>>,
     ws: &mut super::types::SyncWebSocket,
+    desktop_info: &DesktopSyncInfo,
 ) -> bool {
     let value = serde_json::json!({"type":"PHASE_START","phase":"owner_metadata"});
     if send_ws_with_deadline(ws, Message::Text(value.to_string().into()))
@@ -186,7 +200,7 @@ pub(crate) async fn start_owner_phase(
         emit_operator_sync_log(app, session_id, "warning", "无法启动 owner metadata 阶段");
         return false;
     }
-    publish_sync_nonterminal_status(app, session_id, status, "open", "同步服务已连接").await;
+    super::errors::publish_sync_open_status(app, session_id, status, desktop_info).await;
     true
 }
 
@@ -226,6 +240,22 @@ pub(crate) async fn handle_handshake_error(
         VersionHandshakeError::Protocol(message) => {
             publish_handshake_failure(app, session_id, status, "VERSION_ACK_INVALID", &message)
                 .await
+        }
+        VersionHandshakeError::Mismatch {
+            expected,
+            received,
+            package_version,
+        } => {
+            publish_handshake_failure(
+                app,
+                session_id,
+                status,
+                "WIRE_VERSION_MISMATCH",
+                &format!(
+                    "wire protocol mismatch: expected {expected}, received {received}; desktop plugin {package_version}"
+                ),
+            )
+            .await
         }
         VersionHandshakeError::Closed {
             code: Some(4001), ..

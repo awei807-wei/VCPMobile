@@ -253,7 +253,7 @@ pub(crate) async fn load_attachments_for_message_keys(
 }
 
 /// Bind attachment metadata only to a file already verified in the local CAS.
-/// Wire 1.4 transfers metadata, never an implicit unverified network blob.
+/// Wire 1.5 transfers metadata, never an implicit unverified network blob.
 pub(crate) async fn ensure_attachments_locally<R: tauri::Runtime>(
     app: &AppHandle<R>,
     message: &mut ChatMessage,

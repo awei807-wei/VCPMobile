@@ -1,4 +1,4 @@
-//! Message-service facade for Wire 1.4 composite message identity.
+//! Message-service facade for Wire 1.5 composite message identity.
 //!
 //! The implementation is split by responsibility so query, attachment,
 //! mutation, deletion and stream paths can evolve independently. Existing

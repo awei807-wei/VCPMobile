@@ -1,9 +1,11 @@
-//! Debug-only database fixtures for exercising the Wire 1.4 push boundary.
+//! Debug-only database fixtures for exercising the Wire 1.5 push boundary.
 //!
 //! This module is intentionally compiled only for debug builds.  The command
 //! is not a general SQL escape hatch: it accepts only deterministic
 //! `wire14-e2e-*` fixture namespaces and only reads scale hashes or creates
 //! the malformed attachment relation needed by the Android E2E contract.
+//! Historical `wire14` symbols and fixture prefixes remain stable for the
+//! existing QA harness; they do not enable the Wire 1.4 protocol.
 
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::sync_hash::HashAggregator;

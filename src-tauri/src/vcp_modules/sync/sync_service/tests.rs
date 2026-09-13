@@ -2,7 +2,7 @@ use super::batching::{build_diff_batches, MAX_MESSAGES_PER_BATCH, MAX_WS_DIFF_BA
 use super::connection_config::resolve_connection_settings;
 use super::diagnostics::{check_loopback_on_mobile, diagnose_connection_failure};
 use super::errors::{build_sync_error_payload, encode_sync_command_error};
-use super::frames::{is_valid_intermediate_ack, validate_changed_topics};
+use super::frames::validate_changed_topics;
 use super::lifecycle::cancel_and_join_session;
 use super::lifecycle::create_session_command_channel;
 use super::logs::count_log_removal;
@@ -13,7 +13,7 @@ use super::protocol::{
     VersionHandshakeError, MAX_SYNC_RETRIES, MAX_SYNC_TOPICS,
 };
 use super::session_support::perform_handshake;
-use super::types::{FinalAckKey, MessagePhaseBarrier, SyncSessionHandle, SyncTaskTracker};
+use super::types::{FinalAckKey, SyncSessionHandle, SyncTaskTracker};
 use super::*;
 use crate::vcp_modules::settings_manager::{ConnectionProfile, Settings};
 use crate::vcp_modules::sync_error::decode_wire_sync_error;
@@ -23,6 +23,7 @@ use crate::vcp_modules::sync_types::{
     TopicDiffResultFrame,
 };
 use crate::vcp_modules::topic_types::TopicKey;
+use crate::vcp_modules::wire_protocol::DesktopBackendMode;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -306,32 +307,34 @@ async fn missing_topic_hash_frame_fails_the_current_attempt() {
 }
 
 #[test]
-fn protocol_1_4_version_ack_is_strict_and_uses_public_field_names() {
+fn protocol_1_5_version_ack_is_strict_and_uses_component_claims() {
     let ack = parse_version_handshake_payload(
-        r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#,
+        r#"{"type":"VERSION_ACK","versions":[{"component":"wire","version":"1.5"},{"component":"desktop_plugin","version":"2.0.0"}],"backendMode":"cds"}"#,
     )
-    .expect("strict 1.4 acknowledgement")
+    .expect("strict 1.5 acknowledgement")
     .expect("version acknowledgement frame");
-    assert_eq!(ack.plugin_version, "1.4.0");
-    assert_eq!(ack.protocol_version, "1.4");
+    assert_eq!(ack.package_version, "2.0.0");
+    assert_eq!(ack.wire_version, "1.5");
+    assert_eq!(ack.backend_mode, DesktopBackendMode::Cds);
 
-    assert!(
-        parse_version_handshake_payload(r#"{"type":"VERSION_ACK","version":"1.4.0"}"#).is_err()
-    );
     assert!(parse_version_handshake_payload(
-        r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":1.4}"#
+        r#"{"type":"VERSION_ACK","pluginVersion":"2.0.0","protocolVersion":"1.5","backendMode":"cds"}"#
     )
     .is_err());
     assert!(parse_version_handshake_payload(
-            r#"{"type":"VERSION_ACK","type":"SYNC_LOG_EVENT","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#
-        )
-        .is_err());
+        r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":1.5}],"backendMode":"cds"}"#
+    )
+    .is_err());
+    assert!(parse_version_handshake_payload(
+        r#"{"type":"VERSION_ACK","type":"SYNC_LOG_EVENT","versions":[],"backendMode":"cds"}"#
+    )
+    .is_err());
 }
 
 #[test]
 fn handshake_preserves_a_structured_desktop_error_before_version_ack() {
     let result = parse_version_handshake_payload(
-        r#"{"type":"SYNC_ERROR","error":{"code":"PLUGIN_VERSION_MISMATCH","origin":"desktop_plugin","stage":"handshake","kind":"compatibility","retry":"after_user_action","message":"plugin package mismatch","failedTopicIds":[]}}"#,
+        r#"{"type":"SYNC_ERROR","error":{"code":"WIRE_VERSION_MISMATCH","origin":"desktop_plugin","stage":"handshake","kind":"compatibility","retry":"after_user_action","message":"wire mismatch","failedTopicIds":[]}}"#,
     );
     let VersionHandshakeError::Remote(encoded) = result.expect_err("remote error") else {
         panic!("expected structured remote error");
@@ -340,7 +343,7 @@ fn handshake_preserves_a_structured_desktop_error_before_version_ack() {
         decode_wire_sync_error(&encoded)
             .expect("encoded error")
             .code,
-        "PLUGIN_VERSION_MISMATCH"
+        "WIRE_VERSION_MISMATCH"
     );
     assert!(parse_version_handshake_payload(
         r#"{"type":"SYNC_LOG_EVENT","level":"info","phase":"websocket","message":"connected","ts":1}"#
@@ -387,13 +390,15 @@ async fn handshake_accepts_the_current_linux_pre_ack_log_sequence() {
             payload,
             json!({
                 "type": "VERSION_CHECK",
-                "mobileVersion": env!("CARGO_PKG_VERSION"),
-                "protocolVersion": "1.4"
+                "versions": [
+                    {"component": "mobile_app", "version": env!("CARGO_PKG_VERSION")},
+                    {"component": "wire", "version": "1.5"}
+                ]
             })
         );
 
         ws.send(Message::Text(
-            r#"{"type":"VERSION_ACK","pluginVersion":"1.4.0","protocolVersion":"1.4"}"#.into(),
+            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.5"}],"backendMode":"legacy"}"#.into(),
         ))
         .await
         .expect("send version acknowledgement");
@@ -403,9 +408,11 @@ async fn handshake_accepts_the_current_linux_pre_ack_log_sequence() {
     let (client, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
         .await
         .expect("connect local websocket");
-    let mut established = perform_handshake(client, &CancellationToken::new())
+    let (mut established, desktop_info) = perform_handshake(client, &CancellationToken::new())
         .await
         .expect("complete strict handshake after diagnostic log");
+    assert_eq!(desktop_info.package_version, "2.0.0");
+    assert_eq!(desktop_info.backend_mode, DesktopBackendMode::Legacy);
     established
         .close(None)
         .await
@@ -443,7 +450,7 @@ fn changed_topic_list_rejects_wrong_types_empty_ids_and_duplicates() {
 }
 
 #[test]
-fn topic_diff_results_and_intermediate_acks_require_exact_current_shapes() {
+fn topic_diff_results_require_exact_current_shapes() {
     let topic_a = TopicKey::new("agent", "agent-a", "topic-a");
     let topic_b = TopicKey::new("group", "group-b", "topic-b");
     let expected = HashSet::from([topic_a.clone(), topic_b.clone()]);
@@ -472,17 +479,6 @@ fn topic_diff_results_and_intermediate_acks_require_exact_current_shapes() {
         "debug":true
     }))
     .is_err());
-
-    assert!(is_valid_intermediate_ack(
-        &json!({"type":"PHASE_ACK","phase":"owner_metadata"})
-    ));
-    for payload in [
-        json!({"type":"PHASE_ACK","phase":"topic_validation"}),
-        json!({"type":"PHASE_ACK","phase":"messages","debug":true}),
-        json!({"type":"PHASE_ACK","phase":3}),
-    ] {
-        assert!(!is_valid_intermediate_ack(&payload));
-    }
 }
 
 #[test]
@@ -713,21 +709,6 @@ fn final_ack_rejects_unknown_fields_even_when_identity_matches() {
 }
 
 #[test]
-fn finalization_waits_for_the_messages_phase_ack_in_both_event_orders() {
-    let mut command_first = MessagePhaseBarrier::default();
-    assert!(command_first.defer_finalize());
-    assert!(command_first.acknowledge());
-    assert!(!command_first.defer_finalize());
-
-    let mut ack_first = MessagePhaseBarrier::default();
-    assert!(!ack_first.acknowledge());
-    assert!(!ack_first.defer_finalize());
-
-    ack_first.reset();
-    assert!(ack_first.defer_finalize());
-}
-
-#[test]
 fn command_router_tracks_the_current_session_owner() {
     let router = SyncCommandRouter::default();
     assert!(router.send(SyncCommand::Cancel).is_err());
@@ -755,7 +736,7 @@ fn a_new_session_queues_the_initial_owner_manifest_command() {
 }
 
 #[test]
-fn delete_notifications_require_complete_wire_1_4_identity() {
+fn delete_notifications_require_complete_wire_1_5_identity() {
     let frame = DeleteNotificationFrame::new(
         DeleteTarget::Topic(TopicKey::new("agent", "agent-a", "topic-a")),
         7,

@@ -41,7 +41,7 @@ pub struct AvatarPullTarget<'a> {
     pub expected_hash: Option<&'a str>,
 }
 
-/// Shared request context for a Wire 1.4 message batch pull.
+/// Shared request context for a Wire 1.5 message batch pull.
 pub struct MessageBatchPullRequest<'a, R: tauri::Runtime> {
     pub app: &'a tauri::AppHandle<R>,
     pub client: &'a reqwest::Client,

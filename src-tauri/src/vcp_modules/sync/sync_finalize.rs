@@ -6,19 +6,12 @@ use crate::vcp_modules::sync_pipeline::SyncPipeline;
 use crate::vcp_modules::sync_service::emit_sync_log;
 use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
 use sqlx::{Row, Sqlite, Transaction};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::AppHandle;
 
 pub struct SyncFinalizer;
-
-struct TopicBubbleMeta {
-    title: String,
-    created_at: i64,
-    locked: bool,
-    unread: bool,
-}
 
 #[derive(Debug)]
 struct FinalizationStats {
@@ -29,7 +22,7 @@ struct FinalizationStats {
 
 const SQLITE_BIND_CHUNK: usize = 300;
 
-fn decode_topic_meta(row: sqlx::sqlite::SqliteRow) -> Result<(TopicKey, TopicBubbleMeta), String> {
+fn decode_topic_key(row: sqlx::sqlite::SqliteRow) -> Result<TopicKey, String> {
     let topic_id: String = row
         .try_get("topic_id")
         .map_err(|error| format!("解码同步收尾 topic_id 失败: {error}"))?;
@@ -43,30 +36,14 @@ fn decode_topic_meta(row: sqlx::sqlite::SqliteRow) -> Result<(TopicKey, TopicBub
     if !key.is_valid() {
         return Err(format!("同步收尾话题身份非法: {:?}", key));
     }
-    let meta = TopicBubbleMeta {
-        title: row
-            .try_get("title")
-            .map_err(|error| format!("解码同步收尾 title 失败: {error}"))?,
-        created_at: row
-            .try_get("created_at")
-            .map_err(|error| format!("解码同步收尾 created_at 失败: {error}"))?,
-        locked: row
-            .try_get::<i64, _>("locked")
-            .map_err(|error| format!("解码同步收尾 locked 失败: {error}"))?
-            != 0,
-        unread: row
-            .try_get::<i64, _>("unread")
-            .map_err(|error| format!("解码同步收尾 unread 失败: {error}"))?
-            != 0,
-    };
-    Ok((key, meta))
+    Ok(key)
 }
 
-async fn load_topic_metadata(
+async fn load_live_topics(
     tx: &mut Transaction<'_, Sqlite>,
     topic_keys: &[&TopicKey],
-) -> Result<HashMap<TopicKey, TopicBubbleMeta>, String> {
-    let mut metadata = HashMap::new();
+) -> Result<HashSet<TopicKey>, String> {
+    let mut topics = HashSet::new();
     for chunk in topic_keys.chunks(SQLITE_BIND_CHUNK) {
         let placeholders = chunk
             .iter()
@@ -74,7 +51,7 @@ async fn load_topic_metadata(
             .collect::<Vec<_>>()
             .join(",");
         let query_sql = format!(
-            "SELECT topic_id, owner_id, owner_type, title, created_at, locked, unread
+            "SELECT topic_id, owner_id, owner_type
              FROM topics WHERE deleted_at IS NULL
                AND (owner_type, owner_id, topic_id) IN ({placeholders})"
         );
@@ -90,21 +67,20 @@ async fn load_topic_metadata(
             .await
             .map_err(|error| format!("读取同步收尾话题元数据失败: {error}"))?;
         for row in rows {
-            let (key, meta) = decode_topic_meta(row)?;
-            if metadata.insert(key.clone(), meta).is_some() {
+            let key = decode_topic_key(row)?;
+            if !topics.insert(key.clone()) {
                 return Err(format!("同步收尾话题元数据重复: {:?}", key));
             }
         }
     }
-    Ok(metadata)
+    Ok(topics)
 }
 
-fn ensure_metadata_complete(
+fn ensure_topics_complete(
     modified_topics: &HashSet<TopicKey>,
-    metadata: &HashMap<TopicKey, TopicBubbleMeta>,
+    actual_topics: &HashSet<TopicKey>,
 ) -> Result<(), String> {
-    let actual_topics = metadata.keys().cloned().collect::<HashSet<_>>();
-    if actual_topics == *modified_topics {
+    if actual_topics == modified_topics {
         return Ok(());
     }
     let mut missing = modified_topics
@@ -160,20 +136,15 @@ async fn refresh_message_state(
 
 async fn bubble_topics(
     tx: &mut Transaction<'_, Sqlite>,
-    metadata: &HashMap<TopicKey, TopicBubbleMeta>,
+    topics: &HashSet<TopicKey>,
 ) -> Result<HashSet<OwnerKey>, String> {
     let mut owners = HashSet::new();
-    for (key, meta) in metadata {
-        HashAggregator::bubble_topic_hash_with_meta_for_key(
-            tx,
-            key,
-            &meta.title,
-            meta.created_at,
-            meta.locked,
-            meta.unread,
-        )
-        .await
-        .map_err(|error| format!("冒泡同步话题哈希失败 ({}): {error}", key.topic_id))?;
+    let mut ordered = topics.iter().collect::<Vec<_>>();
+    ordered.sort();
+    for key in ordered {
+        HashAggregator::bubble_topic_hash_for_key(tx, key)
+            .await
+            .map_err(|error| format!("冒泡同步话题哈希失败 ({}): {error}", key.topic_id))?;
         owners.insert(key.owner_key());
     }
     Ok(owners)
@@ -225,16 +196,16 @@ async fn finalize_modified_topics(
         .await
         .map_err(|error| format!("开启同步收尾事务失败: {error}"))?;
     let topic_keys = modified_topics.iter().collect::<Vec<_>>();
-    let metadata = load_topic_metadata(&mut tx, &topic_keys).await?;
-    ensure_metadata_complete(modified_topics, &metadata)?;
+    let actual_topics = load_live_topics(&mut tx, &topic_keys).await?;
+    ensure_topics_complete(modified_topics, &actual_topics)?;
     refresh_message_state(&mut tx, &topic_keys).await?;
-    let owners = bubble_topics(&mut tx, &metadata).await?;
+    let owners = bubble_topics(&mut tx, &actual_topics).await?;
     let (affected_agents, affected_groups) = bubble_owners(&mut tx, &owners).await?;
     tx.commit()
         .await
         .map_err(|error| format!("提交同步收尾事务失败: {error}"))?;
     Ok(FinalizationStats {
-        bubbled_topics: metadata.len(),
+        bubbled_topics: actual_topics.len(),
         affected_agents,
         affected_groups,
     })

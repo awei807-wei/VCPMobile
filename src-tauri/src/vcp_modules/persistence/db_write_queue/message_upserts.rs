@@ -74,8 +74,8 @@ impl DbWriteQueue {
         )
     }
 
-    /// Canonical Wire 1.4 queue write. Hashes are derived from the DTO and
-    /// cannot be supplied by a local-only caller.
+    /// Canonical Wire 1.5 queue write. The validated wire content hash is
+    /// persisted unchanged so push and pull remain symmetric.
     pub(super) fn rusqlite_upsert_messages_batch_for_key(
         tx: &rusqlite::Transaction<'_>,
         key: &TopicKey,

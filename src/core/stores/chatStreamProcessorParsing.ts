@@ -208,7 +208,7 @@ function buildParsedStreamEvent(
 }
 
 /**
- * Resolve the owner namespace carried by legacy and Wire 1.4 stream events.
+ * Resolve the owner namespace carried by legacy and Wire 1.5 stream events.
  * Incomplete or contradictory events are intentionally dropped: choosing an
  * Agent namespace here would let a Group response contaminate an Agent topic.
  */

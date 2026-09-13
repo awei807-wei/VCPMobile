@@ -170,9 +170,6 @@ async fn start_messages(ctx: &mut AttemptContext) -> AttemptAction {
 }
 
 async fn finalize(ctx: &mut AttemptContext) -> AttemptAction {
-    if ctx.message_phase_barrier.defer_finalize() {
-        return AttemptAction::Continue;
-    }
     let modified = ctx.pending_topics.modified.lock().await.clone();
     let db = ctx.app.state::<DbState>();
     if let Err(error) = crate::vcp_modules::sync::sync_finalize::SyncFinalizer::execute(

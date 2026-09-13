@@ -161,8 +161,8 @@ async fn request_stream(
     .await?;
     let detail = match encode_http_sync_error_body(&body) {
         Ok(Some(error)) => error,
-        Ok(None) => format!("HTTP {status} without a Wire 1.4 error object"),
-        Err(error) => format!("invalid Wire 1.4 error: {error}"),
+        Ok(None) => format!("HTTP {status} without a Wire 1.5 error object"),
+        Err(error) => format!("invalid Wire 1.5 error: {error}"),
     };
     Err(format!("Message pull failed: {detail}"))
 }

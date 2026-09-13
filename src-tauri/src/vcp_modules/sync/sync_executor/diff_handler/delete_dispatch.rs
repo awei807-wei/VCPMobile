@@ -5,7 +5,7 @@ use crate::vcp_modules::sync_types::ManifestAction;
 
 /// Apply a remote manifest tombstone to local storage.
 ///
-/// Every delete is dispatched with its complete Wire 1.4 identity. In
+/// Every delete is dispatched with its complete Wire 1.5 identity. In
 /// particular, topics must never be reduced to a bare `topicId`, because that
 /// identifier is only unique inside an owner namespace.
 pub(crate) async fn execute_delete(
@@ -63,7 +63,7 @@ pub(crate) async fn execute_delete(
     }
 }
 
-/// Notify the desktop of a local tombstone using the exact Wire 1.4 frame.
+/// Notify the desktop of a local tombstone using the exact Wire 1.5 frame.
 pub(crate) fn notify_push_delete(ctx: &DiffContext, item: &ManifestDecision) -> Result<(), String> {
     if !matches!(item.action(), ManifestAction::PushDelete) {
         return Err(format!(

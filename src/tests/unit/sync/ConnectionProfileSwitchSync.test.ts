@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useConnectionProfilesStore } from "@/core/stores/connectionProfiles";
 import { useSettingsStore } from "@/core/stores/settings";
 import { useSyncSessionStore } from "@/core/stores/syncSession";
-import { invokeMock, mockInvoke } from "@/tests/mocks/tauri";
+import { emitTauriEvent, invokeMock, mockInvoke } from "@/tests/mocks/tauri";
 
 const profile = (id: "lan" | "wan") => ({
   id,
@@ -52,7 +52,14 @@ describe("connection profile switch and sync ownership", () => {
     const sync = useSyncSessionStore();
     sync.open();
     await sync.startSync();
+    emitTauriEvent("vcp-sync-status", {
+      sessionId: 11,
+      attemptId: 1,
+      status: "open",
+      desktop: { packageVersion: "2.0.0", backendMode: "legacy" },
+    });
     expect(sync.isActive).toBe(true);
+    expect(sync.desktopInfo?.backendMode).toBe("legacy");
 
     const profiles = useConnectionProfilesStore();
     const switching = profiles.switchTo("wan");
@@ -75,5 +82,6 @@ describe("connection profile switch and sync ownership", () => {
       commands.indexOf("update_settings"),
     );
     expect(settings.settings?.activeConnectionProfileId).toBe("wan");
+    expect(sync.desktopInfo).toBeNull();
   });
 });

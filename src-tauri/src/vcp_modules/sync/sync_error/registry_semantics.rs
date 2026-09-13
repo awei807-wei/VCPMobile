@@ -9,13 +9,28 @@ pub(super) const SEMANTICS: &[(&str, Category, Retry)] = &[
     ),
     ("BATTERY_TOO_LOW", Category::Device, Retry::AfterUserAction),
     ("CANCELLED", Category::Internal, Retry::Never),
+    (
+        "CDS_BINARY_NOT_FOUND",
+        Category::Configuration,
+        Retry::AfterUserAction,
+    ),
     ("CDS_ERROR", Category::Internal, Retry::Manual),
     (
         "CDS_PROTOCOL_MISMATCH",
         Category::Compatibility,
         Retry::AfterUserAction,
     ),
-    ("CDS_UNAVAILABLE", Category::Internal, Retry::Manual),
+    (
+        "CDS_SCHEMA_MISMATCH",
+        Category::Compatibility,
+        Retry::AfterUserAction,
+    ),
+    ("CDS_STARTUP_FAILED", Category::Internal, Retry::Manual),
+    (
+        "CDS_UNAVAILABLE",
+        Category::Configuration,
+        Retry::AfterUserAction,
+    ),
     ("FINAL_ACK_TIMEOUT", Category::Connection, Retry::Manual),
     ("HEALTH_CHECK_FAILED", Category::Connection, Retry::Manual),
     (
@@ -193,4 +208,9 @@ pub(super) const SEMANTICS: &[(&str, Category, Retry)] = &[
         Retry::AfterUserAction,
     ),
     ("VERSION_CHECK_TIMEOUT", Category::Connection, Retry::Manual),
+    (
+        "WIRE_VERSION_MISMATCH",
+        Category::Compatibility,
+        Retry::AfterUserAction,
+    ),
 ];

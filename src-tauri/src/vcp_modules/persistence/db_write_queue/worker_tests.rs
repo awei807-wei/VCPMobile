@@ -4,7 +4,6 @@ use super::{
 };
 use crate::vcp_modules::persistence::db_write_queue::DbWriteTask;
 use crate::vcp_modules::sync_dto::{AgentTopicSyncDTO, GroupTopicSyncDTO};
-use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use rusqlite::{Connection, TransactionBehavior};
 use std::sync::{Arc, Mutex};
@@ -18,6 +17,8 @@ fn agent_topic(id: &str) -> AgentTopicSyncDTO {
         locked: true,
         unread: false,
         owner_id: "agent-a".to_string(),
+        config_hash: "a".repeat(64),
+        updated_at: 30,
     }
 }
 
@@ -27,6 +28,8 @@ fn group_topic(id: &str) -> GroupTopicSyncDTO {
         name: format!("Group {id}"),
         created_at: 20,
         owner_id: "group-a".to_string(),
+        config_hash: "b".repeat(64),
+        updated_at: 40,
     }
 }
 
@@ -134,6 +137,8 @@ async fn real_worker_topic_read_sync_clears_stale_receipt_before_delete() {
                 locked: true,
                 unread: false,
                 owner_id: "agent-a".to_string(),
+                config_hash: "c".repeat(64),
+                updated_at: 2,
             },
         })
         .await
@@ -244,7 +249,7 @@ async fn real_worker_topic_read_sync_clears_stale_receipt_before_delete() {
 }
 
 #[test]
-fn topic_upserts_are_queued_for_hash_bubbling() {
+fn topic_upserts_preserve_wire_config_versions_while_bubbling_content() {
     let mut connection = setup_connection();
     let agent_single = agent_topic("agent-single");
     let agent_batch = agent_topic("agent-batch");
@@ -278,22 +283,10 @@ fn topic_upserts_are_queued_for_hash_bubbling() {
     bubble_owners(&tx, owners).expect("bubble both changed owners");
 
     let hashes = [
-        (
-            "agent-single",
-            HashAggregator::compute_agent_topic_metadata_hash(&agent_single),
-        ),
-        (
-            "agent-batch",
-            HashAggregator::compute_agent_topic_metadata_hash(&agent_batch),
-        ),
-        (
-            "group-single",
-            HashAggregator::compute_group_topic_metadata_hash(&group_single),
-        ),
-        (
-            "group-batch",
-            HashAggregator::compute_group_topic_metadata_hash(&group_batch),
-        ),
+        ("agent-single", agent_single.config_hash),
+        ("agent-batch", agent_batch.config_hash),
+        ("group-single", group_single.config_hash),
+        ("group-batch", group_batch.config_hash),
     ];
     for (topic_id, expected) in hashes {
         let actual: String = tx

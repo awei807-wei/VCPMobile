@@ -1,6 +1,6 @@
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::settings_manager::SettingsState;
-use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::sync_hash::{HashAggregator, HashInitializer};
 use crate::vcp_modules::sync_service::{SyncCommand, SyncState};
 use crate::vcp_modules::sync_types::DeleteTarget;
 use crate::vcp_modules::topic_types::{Topic, TopicKey};
@@ -52,6 +52,7 @@ pub(crate) async fn create_topic_in_pool(
     let topic_key = TopicKey::new(owner_type.clone(), owner_id.clone(), id.clone());
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     insert_topic_row(&mut tx, &topic_key, &name, now).await?;
+    HashInitializer::recompute_topic_config_hash(&mut tx, &topic_key).await?;
     HashAggregator::bubble_from_topic_for_key(&mut tx, &topic_key).await?;
     commit_transaction(tx, CommitMode::Real).await?;
     Ok(topic)
@@ -307,7 +308,8 @@ pub(crate) async fn update_topic_title_in_pool(
     .await
     .map_err(|e| e.to_string())?;
     ensure_single_topic_change(changed.rows_affected(), topic_key)?;
-    HashAggregator::bubble_from_topic_for_key(&mut tx, topic_key).await?;
+    HashInitializer::recompute_topic_config_hash(&mut tx, topic_key).await?;
+    HashAggregator::bubble_owner_from_topic_key(&mut tx, topic_key).await?;
     commit_transaction(tx, CommitMode::Real).await?;
     Ok(())
 }
@@ -366,7 +368,8 @@ pub(crate) async fn toggle_topic_lock_in_pool(
     .await
     .map_err(|e| e.to_string())?;
     ensure_single_topic_change(changed.rows_affected(), topic_key)?;
-    HashAggregator::bubble_from_topic_for_key(&mut tx, topic_key).await?;
+    HashInitializer::recompute_topic_config_hash(&mut tx, topic_key).await?;
+    HashAggregator::bubble_owner_from_topic_key(&mut tx, topic_key).await?;
     commit_transaction(tx, CommitMode::Real).await?;
     Ok(())
 }

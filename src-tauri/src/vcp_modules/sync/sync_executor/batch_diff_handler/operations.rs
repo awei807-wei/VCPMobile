@@ -12,7 +12,7 @@ use crate::vcp_modules::sync_types::{MessageDeleteDecision, MessageDiffResultFra
 use crate::vcp_modules::topic_types::TopicKey;
 use std::sync::atomic::Ordering;
 
-/// Validate, execute and finalize one Wire 1.4 message-diff batch.
+/// Validate, execute and finalize one Wire 1.5 message-diff batch.
 pub(crate) async fn handle_batch(
     ctx: BatchContext<'_>,
     frame: MessageDiffResultFrame,

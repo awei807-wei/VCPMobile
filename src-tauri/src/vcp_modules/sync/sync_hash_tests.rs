@@ -120,7 +120,6 @@ fn message_dto_fingerprint_ignores_wire_local_fields() {
         content: "hello".to_string(),
         timestamp: 9,
         updated_at: 10,
-        is_thinking: Some(true),
         agent_id: Some("agent-1".to_string()),
         group_id: Some("group-a".to_string()),
         topic_id: Some("topic-a".to_string()),
@@ -137,15 +136,14 @@ fn message_dto_fingerprint_ignores_wire_local_fields() {
             status: None,
             attachment_order: Some(0),
         }]),
-        content_hash: Some("local-index-value".to_string()),
+        content_hash: HASH_A.to_string(),
     };
     let mut changed = dto.clone();
     changed.updated_at += 100;
-    changed.is_thinking = Some(false);
     changed.group_id = Some("group-b".to_string());
     changed.topic_id = Some("topic-b".to_string());
     changed.is_group_message = Some(false);
-    changed.content_hash = Some("different-index-value".to_string());
+    changed.content_hash = HASH_B.to_string();
     assert_eq!(
         HashAggregator::compute_message_fingerprint_for_dto(&dto),
         HashAggregator::compute_message_fingerprint_for_dto(&changed)
@@ -231,9 +229,13 @@ fn topic_metadata_hash_excludes_owner_id_but_owner_root_is_scoped() {
         locked: true,
         unread: false,
         owner_id: "agent-a".to_string(),
+        config_hash: HASH_A.to_string(),
+        updated_at: 456,
     };
     let mut topic_b = topic_a.clone();
     topic_b.owner_id = "agent-b".to_string();
+    topic_b.config_hash = HASH_B.to_string();
+    topic_b.updated_at = 789;
 
     assert_eq!(
         HashAggregator::compute_agent_topic_metadata_hash(&topic_a),

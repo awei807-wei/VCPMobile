@@ -36,7 +36,7 @@ pub struct AttachmentSyncDTO {
     )]
     pub created_at: Option<u64>,
     /// Transitional Rust-only field for old executor constructors. It is
-    /// never serialized; new Wire 1.4 code must leave it as `None`.
+    /// never serialized; new Wire 1.5 code must leave it as `None`.
     #[serde(skip)]
     #[allow(dead_code)]
     pub status: Option<String>,

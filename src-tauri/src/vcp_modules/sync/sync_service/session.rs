@@ -8,7 +8,7 @@ use super::session_support::{
     handle_connection_error, handle_handshake_error, perform_handshake, shutdown_session,
     start_owner_phase,
 };
-use super::types::{NetworkAwareSemaphore, SyncCommand, SyncWebSocket};
+use super::types::{DesktopSyncInfo, NetworkAwareSemaphore, SyncCommand, SyncWebSocket};
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
 use crate::vcp_modules::sync_error::attempt_restart_code;
 use crate::vcp_modules::sync_logger::SyncLogger;
@@ -50,7 +50,7 @@ pub(crate) async fn run_sync_session(
     let http = build_http_client(&app, session_id, &status).await?;
     ensure_sync_hashes(&app, session_id, &status)
         .await
-        .map_err(|()| "Wire 1.4 hash initialization failed".to_string())?;
+        .map_err(|()| "Sync hash initialization failed".to_string())?;
     let (queue, logger) = create_session_resources(&app, session_id).await?;
     emit_operator_sync_log(
         &app,
@@ -101,13 +101,13 @@ impl SessionRuntime {
     }
 
     async fn run_cycle(&mut self) {
-        let Some(ws) = self.connect_and_handshake().await else {
+        let Some((ws, desktop_info)) = self.connect_and_handshake().await else {
             return;
         };
-        self.run_attempt(ws).await;
+        self.run_attempt(ws, &desktop_info).await;
     }
 
-    async fn connect_and_handshake(&mut self) -> Option<SyncWebSocket> {
+    async fn connect_and_handshake(&mut self) -> Option<(SyncWebSocket, DesktopSyncInfo)> {
         let settings = self.settings.clone();
         publish_sync_nonterminal_status(
             &self.app,
@@ -144,7 +144,10 @@ impl SessionRuntime {
         Some(ws)
     }
 
-    async fn handshake_socket(&mut self, ws: SyncWebSocket) -> Option<SyncWebSocket> {
+    async fn handshake_socket(
+        &mut self,
+        ws: SyncWebSocket,
+    ) -> Option<(SyncWebSocket, DesktopSyncInfo)> {
         match perform_handshake(ws, &self.cancel).await {
             Ok(value) => Some(value),
             Err(error) => {
@@ -165,8 +168,16 @@ impl SessionRuntime {
         }
     }
 
-    async fn run_attempt(&mut self, mut ws: SyncWebSocket) {
-        if !start_owner_phase(&self.app, self.session_id, &self.status, &mut ws).await {
+    async fn run_attempt(&mut self, mut ws: SyncWebSocket, desktop_info: &DesktopSyncInfo) {
+        if !start_owner_phase(
+            &self.app,
+            self.session_id,
+            &self.status,
+            &mut ws,
+            desktop_info,
+        )
+        .await
+        {
             if !self
                 .schedule_retry("WS_SEND_FAILED", "Unable to start owner metadata phase")
                 .await

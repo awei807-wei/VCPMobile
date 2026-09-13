@@ -37,11 +37,12 @@ async fn fixture_pool() -> sqlx::SqlitePool {
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (group_id, agent_id)
          );
-         CREATE TABLE topics (
+        CREATE TABLE topics (
             owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
             title TEXT NOT NULL, created_at INTEGER NOT NULL, locked INTEGER NOT NULL,
             unread INTEGER NOT NULL, config_hash TEXT NOT NULL, content_hash TEXT NOT NULL,
-            deleted_at INTEGER, PRIMARY KEY(owner_type, owner_id, topic_id)
+            updated_at INTEGER NOT NULL, deleted_at INTEGER,
+            PRIMARY KEY(owner_type, owner_id, topic_id)
          );
          CREATE TABLE messages (
             owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
@@ -92,9 +93,9 @@ async fn fixture_pool() -> sqlx::SqlitePool {
         .unwrap();
     sqlx::query(
         "INSERT INTO topics VALUES
-         ('agent', 'agent-a', 'shared', 'Agent Topic', 1, 1, 1, ?, ?, NULL),
-         ('group', 'group-a', 'shared', 'Group Topic', 2, 1, 0, ?, ?, NULL),
-         ('agent', 'agent-a', 'deleted', 'Deleted', 4, 1, 0, 'invalid', 'invalid', 5)",
+         ('agent', 'agent-a', 'shared', 'Agent Topic', 1, 1, 1, ?, ?, 1, NULL),
+         ('group', 'group-a', 'shared', 'Group Topic', 2, 1, 0, ?, ?, 2, NULL),
+         ('agent', 'agent-a', 'deleted', 'Deleted', 4, 1, 0, 'invalid', 'invalid', 4, 5)",
     )
     .bind(OLD_HASH)
     .bind(OLD_HASH)
@@ -198,6 +199,8 @@ async fn wire14_initializer_rehashes_legacy_rows_in_composite_scope_once() {
             locked: true,
             unread: true,
             owner_id: "agent-a".to_string(),
+            config_hash: OLD_HASH.to_string(),
+            updated_at: 1,
         });
     let group_topic_config =
         HashAggregator::compute_group_topic_metadata_hash(&GroupTopicSyncDTO {
@@ -205,6 +208,8 @@ async fn wire14_initializer_rehashes_legacy_rows_in_composite_scope_once() {
             name: "Group Topic".to_string(),
             created_at: 2,
             owner_id: "group-a".to_string(),
+            config_hash: OLD_HASH.to_string(),
+            updated_at: 2,
         });
     let agent_topic_content = compute_merkle_root(vec![HashAggregator::compute_message_leaf_hash(
         "same-message",

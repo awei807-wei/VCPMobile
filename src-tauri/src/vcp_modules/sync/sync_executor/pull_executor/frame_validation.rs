@@ -2,7 +2,6 @@ use crate::vcp_modules::sync::sync_error::{parse_wire_sync_error, WireSyncError}
 use crate::vcp_modules::sync::sync_types::validate_safe_non_negative_u64;
 use crate::vcp_modules::sync::wire_protocol::parse_strict_json;
 use crate::vcp_modules::sync_dto::MessageSyncDTO;
-use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -16,7 +15,7 @@ pub(crate) struct TopicNDJSONFrame {
     pub(crate) warning_samples: Vec<String>,
 }
 
-/// Parse one Wire 1.4 `/messages/pull` NDJSON topic frame.
+/// Parse one Wire 1.5 `/messages/pull` NDJSON topic frame.
 pub(crate) fn parse_topic_ndjson_frame(bytes: &[u8]) -> Result<TopicNDJSONFrame, String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("Malformed NDJSON topic frame: {error}"))?;
@@ -226,7 +225,7 @@ fn parse_message(value: &Value, topic: &TopicKey) -> Result<MessageSyncDTO, Stri
     reject_tombstone_fields(object, &message_id)?;
     let message = serde_json::from_value::<MessageSyncDTO>(value.clone()).map_err(|error| {
         format!(
-            "Message {}/{} violates the Wire 1.4 canonical DTO: {error}",
+            "Message {}/{} violates the Wire 1.5 canonical DTO: {error}",
             topic.topic_id, message_id
         )
     })?;
@@ -246,7 +245,6 @@ fn parse_message(value: &Value, topic: &TopicKey) -> Result<MessageSyncDTO, Stri
         ));
     }
     validate_message_clocks(&message)?;
-    validate_message_hash(&message)?;
     Ok(message)
 }
 
@@ -290,20 +288,6 @@ fn validate_message_clocks(message: &MessageSyncDTO) -> Result<(), String> {
                 )?;
             }
         }
-    }
-    Ok(())
-}
-
-fn validate_message_hash(message: &MessageSyncDTO) -> Result<(), String> {
-    let Some(received) = message.content_hash.as_deref() else {
-        return Ok(());
-    };
-    let expected = HashAggregator::compute_message_fingerprint_for_dto(message);
-    if received != expected {
-        return Err(format!(
-            "Message {} contentHash does not match canonical content",
-            message.id
-        ));
     }
     Ok(())
 }

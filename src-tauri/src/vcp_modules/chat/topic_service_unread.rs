@@ -1,5 +1,5 @@
 use crate::vcp_modules::db_manager::DbState;
-use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::sync_hash::{HashAggregator, HashInitializer};
 use crate::vcp_modules::topic_types::TopicKey;
 use serde::Serialize;
 use sqlx::{Row, Sqlite, Transaction};
@@ -96,7 +96,8 @@ pub(crate) async fn set_topic_unread_in_pool(
     if !unread {
         clear_counted_unread_receipts(&mut tx, topic_key).await?;
     }
-    HashAggregator::bubble_from_topic_for_key(&mut tx, topic_key).await?;
+    HashInitializer::recompute_topic_config_hash(&mut tx, topic_key).await?;
+    HashAggregator::bubble_owner_from_topic_key(&mut tx, topic_key).await?;
     let state = load_topic_unread_state(&mut tx, topic_key).await?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(state)
@@ -326,6 +327,7 @@ pub(crate) async fn record_topic_unread_for_message_in_tx(
         .await
         .map_err(|e| format!("增加话题未读计数失败：{e}"))?;
         ensure_single_topic_change(changed.rows_affected(), topic_key)?;
+        HashInitializer::recompute_topic_config_hash(tx, topic_key).await?;
         HashAggregator::bubble_from_topic_for_key(tx, topic_key).await?;
     }
     let state = load_topic_unread_state(tx, topic_key).await?;

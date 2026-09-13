@@ -53,7 +53,7 @@ pub fn encode_wire_sync_error(error: &WireSyncError) -> Result<String, String> {
     let validated = validate_wire_error(error.clone())?;
     serde_json::to_string(&validated)
         .map(|json| format!("{WIRE_ERROR_MARKER}{json}"))
-        .map_err(|serialize_error| format!("failed to encode Wire 1.4 error: {serialize_error}"))
+        .map_err(|serialize_error| format!("failed to encode Wire 1.5 error: {serialize_error}"))
 }
 
 /// Encodes a local failure for internal propagation without exposing a

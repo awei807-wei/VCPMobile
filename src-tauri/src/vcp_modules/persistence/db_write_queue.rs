@@ -60,8 +60,8 @@ pub enum DbWriteTask {
         content_hashes: Vec<String>,
         skip_bubble: bool,
     },
-    /// Canonical Wire 1.4 message write. The compressed body remains an
-    /// explicit queue payload; the DTO is used for identity/hash metadata.
+    /// Canonical Wire 1.5 message write. The compressed body remains an
+    /// explicit queue payload; the DTO carries the peer-owned content hash.
     TopicMessagesCanonical {
         topic: TopicKey,
         messages: Vec<crate::vcp_modules::sync_dto::MessageSyncDTO>,

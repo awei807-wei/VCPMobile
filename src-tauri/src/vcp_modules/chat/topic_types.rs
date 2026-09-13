@@ -17,7 +17,7 @@ impl OwnerKey {
         }
     }
 
-    /// Return whether this key is valid for chat owners on Wire 1.4.
+    /// Return whether this key is valid for chat owners on Wire 1.5.
     pub fn is_valid(&self) -> bool {
         matches!(self.owner_type.as_str(), "agent" | "group") && !self.owner_id.is_empty()
     }
@@ -46,7 +46,7 @@ impl TopicKey {
         }
     }
 
-    /// Return whether every identity component is valid for Wire 1.4 chat data.
+    /// Return whether every identity component is valid for Wire 1.5 chat data.
     pub fn is_valid(&self) -> bool {
         matches!(self.owner_type.as_str(), "agent" | "group")
             && !self.owner_id.is_empty()

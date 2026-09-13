@@ -1,4 +1,4 @@
-use super::{HashAggregator, HashInitializer};
+use super::HashAggregator;
 use crate::vcp_modules::sync_types::compute_merkle_root;
 use crate::vcp_modules::topic_types::TopicKey;
 use sqlx::{Row, Sqlite, Transaction};
@@ -131,29 +131,11 @@ impl HashAggregator {
         key: &TopicKey,
     ) -> Result<(), String> {
         let root_hash = Self::compute_topic_root_hash_for_key(tx, key).await?;
-        let config_hash = match key.owner_type.as_str() {
-            "agent" => {
-                let dto = HashInitializer::load_agent_topic_dto_for_key(tx, key).await?;
-                Self::compute_agent_topic_metadata_hash(&dto)
-            }
-            "group" => {
-                let dto = HashInitializer::load_group_topic_dto_for_key(tx, key).await?;
-                Self::compute_group_topic_metadata_hash(&dto)
-            }
-            _ => {
-                return Err(format!(
-                    "Topic {} has unsupported owner type {}",
-                    key.topic_id, key.owner_type
-                ));
-            }
-        };
-
         let updated = sqlx::query(
-            "UPDATE topics SET content_hash = ?, config_hash = ?
+            "UPDATE topics SET content_hash = ?
              WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL",
         )
         .bind(root_hash)
-        .bind(config_hash)
         .bind(&key.owner_type)
         .bind(&key.owner_id)
         .bind(&key.topic_id)

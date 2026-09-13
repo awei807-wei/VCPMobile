@@ -62,8 +62,6 @@ pub struct TopicManifestLive {
     pub topic_id: String,
     #[serde(deserialize_with = "deserialize_sha256")]
     pub config_hash: String,
-    #[serde(deserialize_with = "deserialize_content_hash")]
-    pub content_hash: String,
     #[serde(
         deserialize_with = "deserialize_timestamp",
         serialize_with = "serialize_timestamp"

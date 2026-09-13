@@ -243,8 +243,8 @@ async function startDesktopServices({
       "index.js",
     ),
   );
-  if (manifest.version !== "1.4.0") {
-    throw new Error("VCPMobileSync 插件版本不是 1.4.0");
+  if (manifest.version !== "2.0.0") {
+    throw new Error("VCPMobileSync 插件版本不是 2.0.0");
   }
 
   const { stopWsServer } = require(

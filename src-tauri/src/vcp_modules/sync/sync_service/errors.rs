@@ -1,5 +1,5 @@
 use super::logs::{emit_operator_sync_log, emit_sync_log};
-use super::types::{SyncCompletionSummary, SyncState};
+use super::types::{DesktopSyncInfo, SyncCompletionSummary, SyncState};
 use crate::vcp_modules::sync_error::{
     build_local_error_payload, build_wire_error_payload, decode_wire_sync_error, SyncErrorPayload,
 };
@@ -82,7 +82,39 @@ pub(crate) async fn publish_sync_nonterminal_status<R: Runtime>(
     if sync_state.current_session_id.load(Ordering::SeqCst) != session_id {
         return;
     }
-    publish_sync_status_inner(app_handle, session_id, status, next_status, message, None).await;
+    publish_sync_status_inner(
+        app_handle,
+        session_id,
+        status,
+        next_status,
+        message,
+        None,
+        None,
+    )
+    .await;
+}
+
+pub(crate) async fn publish_sync_open_status<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    session_id: u64,
+    status: &Arc<RwLock<String>>,
+    desktop_info: &DesktopSyncInfo,
+) {
+    let sync_state = app_handle.state::<SyncState>();
+    let _owner_commit = sync_state.owner_commit.lock().await;
+    if sync_state.current_session_id.load(Ordering::SeqCst) != session_id {
+        return;
+    }
+    publish_sync_status_inner(
+        app_handle,
+        session_id,
+        status,
+        "open",
+        "同步服务已连接",
+        None,
+        Some(desktop_info),
+    )
+    .await;
 }
 
 /// Preserve a structured desktop error. The `message` is deliberately treated
@@ -127,6 +159,7 @@ pub(crate) async fn publish_sync_error<R: Runtime>(
         "error",
         &user_message,
         Some(error),
+        None,
     )
     .await;
 }
@@ -138,6 +171,7 @@ pub(crate) async fn publish_sync_status_inner<R: Runtime>(
     next_status: &str,
     message: &str,
     error: Option<SyncErrorPayload>,
+    desktop_info: Option<&DesktopSyncInfo>,
 ) {
     let sync_state = app_handle.state::<SyncState>();
     {
@@ -161,6 +195,9 @@ pub(crate) async fn publish_sync_status_inner<R: Runtime>(
     });
     if let Some(error) = error {
         payload["error"] = json!(error);
+    }
+    if let Some(desktop_info) = desktop_info {
+        payload["desktop"] = json!(desktop_info);
     }
     let _ = app_handle.emit("vcp-sync-status", payload);
 }

@@ -1,7 +1,8 @@
-# Wire 1.4 Android 真实 E2E Harness
+# Wire 1.5 Android 真实 E2E Harness
 
-`run-wire14.cjs` 是当前 Wire 1.4 Android 端到端验收入口。它从
-`--desktop-root` 加载 VCPChat 的 `VCPMobileSync 1.4.0` 与
+`run-wire14.cjs` 是当前 Wire 1.5 Android 端到端验收入口。脚本路径和
+`wire14-*` 合成数据前缀为兼容既有 QA 入口而保留，不表示支持 Wire 1.4。它从
+`--desktop-root` 加载 VCPChat 的 `VCPMobileSync 2.0.0` 与
 `ChatDataServiceFacade`，在临时 `AppData` 中创建全合成 fixture，再由 Android
 Debug 应用通过 Tauri IPC/CDP 执行真实同步。脚本只有在所有 hard-gate 场景
 真实完成并且清理成功时才返回 0；异常、超时和未支持能力均返回非零。

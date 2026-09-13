@@ -21,18 +21,11 @@ impl DbWriteQueue {
         validate_topic_key(key)?;
         validate_live_topic(tx, key)?;
         let content_hash = load_topic_content_hash(tx, key)?;
-        let config_hash = topic_config_hash(tx, key)?;
         let changed = tx.execute(
-            "UPDATE topics SET content_hash = ?, config_hash = ?
+            "UPDATE topics SET content_hash = ?
              WHERE owner_type = ? AND owner_id = ? AND topic_id = ?
                AND deleted_at IS NULL",
-            rusqlite::params![
-                content_hash,
-                config_hash,
-                &key.owner_type,
-                &key.owner_id,
-                &key.topic_id
-            ],
+            rusqlite::params![content_hash, &key.owner_type, &key.owner_id, &key.topic_id],
         )?;
         if changed == 1 {
             Ok(())
@@ -152,23 +145,6 @@ fn load_topic_content_hash(
     Ok(compute_merkle_root(leaves))
 }
 
-fn topic_config_hash(tx: &rusqlite::Transaction<'_>, key: &TopicKey) -> rusqlite::Result<String> {
-    match key.owner_type.as_str() {
-        "agent" => {
-            let dto = DbWriteQueue::rusqlite_load_agent_topic_dto_for_key(tx, key)?;
-            Ok(HashAggregator::compute_agent_topic_metadata_hash(&dto))
-        }
-        "group" => {
-            let dto = DbWriteQueue::rusqlite_load_group_topic_dto_for_key(tx, key)?;
-            Ok(HashAggregator::compute_group_topic_metadata_hash(&dto))
-        }
-        other => Err(DbWriteQueue::sync_contract_error(format!(
-            "Topic {} has unsupported owner type {other}",
-            key.topic_id
-        ))),
-    }
-}
-
 fn load_owner_topics_hash(
     tx: &rusqlite::Transaction<'_>,
     owner_id: &str,
@@ -238,7 +214,8 @@ impl DbWriteQueue {
             ));
         }
         tx.query_row(
-            "SELECT topic_id, title, created_at, locked, unread, owner_id
+            "SELECT topic_id, title, created_at, locked, unread, owner_id,
+                    config_hash, updated_at
              FROM topics
              WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
             rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
@@ -250,6 +227,8 @@ impl DbWriteQueue {
                     locked: row.get::<_, i64>(3)? != 0,
                     unread: row.get::<_, i64>(4)? != 0,
                     owner_id: row.get(5)?,
+                    config_hash: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )
@@ -274,7 +253,7 @@ impl DbWriteQueue {
             ));
         }
         tx.query_row(
-            "SELECT topic_id, title, created_at, owner_id
+            "SELECT topic_id, title, created_at, owner_id, config_hash, updated_at
              FROM topics
              WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
             rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
@@ -284,6 +263,8 @@ impl DbWriteQueue {
                     name: row.get(1)?,
                     created_at: row.get(2)?,
                     owner_id: row.get(3)?,
+                    config_hash: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             },
         )

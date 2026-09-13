@@ -23,7 +23,7 @@ const ATTACHMENT_MESSAGE = "wire14-attachment-message";
 const LIFECYCLE_MESSAGE = "wire14-lifecycle-message";
 
 const ATTACHMENT_BYTES = Buffer.from(
-  "Synthetic Wire 1.4 attachment bytes.\n",
+  "Synthetic Wire 1.5 attachment bytes.\n",
   "utf8",
 );
 const ATTACHMENT_HASH = crypto
@@ -43,7 +43,7 @@ const AVATAR_BYTES = Buffer.from(
 function topic(topicId, index, { locked = false } = {}) {
   return {
     id: topicId,
-    name: `Synthetic Wire 1.4 topic ${topicId}`,
+    name: `Synthetic Wire 1.5 topic ${topicId}`,
     createdAt: 1700000000000 + index,
     locked,
     unread: false,

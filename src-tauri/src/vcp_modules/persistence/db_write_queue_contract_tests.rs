@@ -94,6 +94,8 @@ fn agent_topic(topic_id: &str, owner_id: &str) -> AgentTopicSyncDTO {
         locked: true,
         unread: false,
         owner_id: owner_id.to_string(),
+        config_hash: HASH_A.to_string(),
+        updated_at: 2,
     }
 }
 
@@ -103,6 +105,8 @@ fn group_topic(topic_id: &str, owner_id: &str) -> GroupTopicSyncDTO {
         name: "Group topic".to_string(),
         created_at: 1,
         owner_id: owner_id.to_string(),
+        config_hash: HASH_B.to_string(),
+        updated_at: 2,
     }
 }
 
@@ -119,7 +123,6 @@ fn canonical_message(
         content: content.to_string(),
         timestamp: 10,
         updated_at: 11,
-        is_thinking: None,
         agent_id: None,
         group_id: None,
         topic_id: Some(topic_id.to_string()),
@@ -136,7 +139,7 @@ fn canonical_message(
             created_at: Some(10),
             status: None,
         }]),
-        content_hash: None,
+        content_hash: attachment_hash.to_string(),
     }
 }
 
@@ -773,6 +776,7 @@ fn message_batch_validates_vectors_identity_and_tombstones() {
         content: "live body".to_string(),
         topic_id: Some("topic-live".to_string()),
         timestamp: 10,
+        content_hash: Some(HASH_B.to_string()),
         attachments: Some(vec![Attachment {
             r#type: "text/plain".to_string(),
             name: "live.txt".to_string(),
@@ -790,7 +794,7 @@ fn message_batch_validates_vectors_identity_and_tombstones() {
         vec![live],
         vec![vec![0x01, 0x02]],
         vec![vec![0x03]],
-        vec!["live-content-hash".to_string()],
+        vec![HASH_B.to_string()],
     )
     .expect("live message should preserve compressed BLOB contract");
     let blob: Vec<u8> = tx
@@ -803,6 +807,17 @@ fn message_batch_validates_vectors_identity_and_tombstones() {
         )
         .unwrap();
     assert_eq!(blob, vec![0x01, 0x02]);
+    assert_eq!(
+        tx.query_row(
+            "SELECT content_hash FROM messages
+             WHERE owner_type = 'agent' AND owner_id = 'agent-live'
+               AND topic_id = 'topic-live' AND msg_id = 'message-live'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        HASH_B
+    );
     assert_eq!(
         tx.query_row(
             "SELECT content FROM messages_fts
@@ -900,10 +915,7 @@ fn canonical_message_writes_and_deletes_are_owner_scoped() {
         } else {
             &message_b
         };
-        assert_eq!(
-            content_hash,
-            HashAggregator::compute_message_fingerprint_for_dto(expected_dto)
-        );
+        assert_eq!(content_hash, expected_dto.content_hash);
         let relation: (String, Option<String>, Option<String>, i32) = tx
             .query_row(
                 "SELECT hash, src, status, attachment_order FROM message_attachments

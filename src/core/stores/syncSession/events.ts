@@ -2,11 +2,13 @@ import type { Ref } from "vue";
 import {
   localTerminalError,
   parseCommandError,
+  readDesktopInfo,
   readProgressSummary,
   readSummary,
 } from "./contract";
 import type {
   SessionEventKind,
+  DesktopSyncInfo,
   SyncPhase,
   SyncProgress,
   SyncStatus,
@@ -36,6 +38,7 @@ export interface SyncEventState {
   activeAttemptId: Ref<number>;
   summary: Ref<SyncSummary>;
   terminalError: Ref<SyncTerminalError | null>;
+  desktopInfo: Ref<DesktopSyncInfo | null>;
   needsReload: Ref<boolean>;
   logs: Ref<{ id: string; level: string; message: string; time: string }[]>;
   progressData: Ref<SyncProgress>;
@@ -83,11 +86,13 @@ function applyErrorStatus(
 
 function applyConnectionStatus(
   state: SyncEventState,
+  payload: Record<string, unknown>,
   nextStatus: unknown,
   getLastStatus: () => string,
   setLastStatus: (status: string) => void,
 ): void {
   if (nextStatus === "open") {
+    state.desktopInfo.value = readDesktopInfo(payload.desktop);
     state.needsReload.value = true;
     state.status.value = "connected";
     state.canDismiss.value = false;
@@ -96,6 +101,7 @@ function applyConnectionStatus(
       setLastStatus("open");
     }
   } else if (nextStatus === "connecting") {
+    state.desktopInfo.value = null;
     state.status.value = "connecting";
     state.canDismiss.value = false;
     if (getLastStatus() !== "connecting") {
@@ -103,10 +109,12 @@ function applyConnectionStatus(
       setLastStatus("connecting");
     }
   } else if (nextStatus === "retrying") {
+    state.desktopInfo.value = null;
     state.status.value = "retrying";
     state.canDismiss.value = false;
     state.pushLog("warning", "连接中断，正在自动重试");
   } else if (nextStatus === "stopped") {
+    state.desktopInfo.value = null;
     state.activeSessionId.value = null;
     state.status.value = "stopped";
     state.canDismiss.value = true;
@@ -255,6 +263,7 @@ function applyStatus(
     return;
   applyConnectionStatus(
     state,
+    payload,
     nextStatus,
     () => runtime.lastConnectionStatus,
     (status) => {

@@ -1,4 +1,4 @@
-//! Wire 1.4 mobile sync service façade.
+//! Wire 1.5 mobile sync service façade.
 //!
 //! Runtime state, protocol framing, lifecycle, phase orchestration and log
 //! commands live in focused child modules. This file intentionally contains

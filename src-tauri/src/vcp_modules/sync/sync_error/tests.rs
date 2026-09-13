@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const FIXTURE_BYTES: &[u8] = include_bytes!("../fixtures/wire_error_contract.json");
-const FIXTURE_SHA256: &str = "3a4085b0859c6dbb3b8ebbcff4db3586c890ffe624ea28f8b2d54d362b04dc2c";
+const FIXTURE_SHA256: &str = "b823f87d6a89ebefe6b173635d8e2c3ea9918f3f0415622020e1da80d6547957";
 
 fn valid_error() -> Value {
     json!({
@@ -33,7 +33,7 @@ fn golden_fixture_is_byte_exact_and_covers_valid_invalid_errors() {
     assert_eq!(fixture["schema"], "vcp-sync-wire-error-contract");
 
     for entry in fixture["validErrors"].as_array().expect("validErrors") {
-        parse_wire_sync_error(&entry["error"]).expect("valid Wire 1.4 error");
+        parse_wire_sync_error(&entry["error"]).expect("valid Wire 1.5 error");
     }
     for entry in fixture["invalidErrors"].as_array().expect("invalidErrors") {
         assert!(
@@ -188,6 +188,59 @@ fn local_and_remote_payloads_preserve_safe_metadata_and_bound_ids() {
     assert_eq!(payload.category, SyncErrorCategory::Storage);
     assert_eq!(payload.retry_action, SyncRetryAction::Automatic);
     assert_eq!(payload.failed_topic_ids, vec!["topic-a", "topic-b"]);
+}
+
+#[test]
+fn wire15_and_cds_recovery_codes_keep_actionable_registry_semantics() {
+    let cases = [
+        (
+            "WIRE_VERSION_MISMATCH",
+            SyncErrorCategory::Compatibility,
+            SyncErrorOrigin::MobileSync,
+            SyncErrorStage::Handshake,
+            SyncRetryAction::AfterUserAction,
+        ),
+        (
+            "CDS_BINARY_NOT_FOUND",
+            SyncErrorCategory::Configuration,
+            SyncErrorOrigin::DesktopCds,
+            SyncErrorStage::Startup,
+            SyncRetryAction::AfterUserAction,
+        ),
+        (
+            "CDS_SCHEMA_MISMATCH",
+            SyncErrorCategory::Compatibility,
+            SyncErrorOrigin::DesktopCds,
+            SyncErrorStage::Startup,
+            SyncRetryAction::AfterUserAction,
+        ),
+        (
+            "CDS_STARTUP_FAILED",
+            SyncErrorCategory::Internal,
+            SyncErrorOrigin::DesktopCds,
+            SyncErrorStage::Startup,
+            SyncRetryAction::Manual,
+        ),
+        (
+            "CDS_UNAVAILABLE",
+            SyncErrorCategory::Configuration,
+            SyncErrorOrigin::DesktopCds,
+            SyncErrorStage::Startup,
+            SyncRetryAction::AfterUserAction,
+        ),
+    ];
+
+    for (code, category, origin, stage, retry) in cases {
+        let payload = build_local_error_payload(code, Vec::new(), None);
+        assert_eq!(payload.category, category, "category for {code}");
+        assert_eq!(payload.origin, origin, "origin for {code}");
+        assert_eq!(payload.stage, stage, "stage for {code}");
+        assert_eq!(payload.retry_action, retry, "retry for {code}");
+        assert!(
+            payload.guidance.contains("build-runtime.js"),
+            "actionable CDS rebuild guidance for {code}"
+        );
+    }
 }
 
 #[test]

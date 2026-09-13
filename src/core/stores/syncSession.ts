@@ -9,6 +9,7 @@ import {
 import { useConnectionSwitchGuardStore } from "./connectionSwitchGuard";
 import { normalizeConnectionProfileId, useSettingsStore } from "./settings";
 import {
+  CDS_BUILD_COMMAND,
   MAX_BUFFERED_SESSION_EVENTS,
   parseCommandError,
 } from "./syncSession/contract";
@@ -26,6 +27,7 @@ import {
   emptyProgress,
   emptySummary,
   type BufferedSessionEvent,
+  type DesktopSyncInfo,
   type SessionEventKind,
   type SyncProgress,
   type SyncStatus,
@@ -58,6 +60,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
   const activeAttemptId = ref(0);
   const summary = ref(emptySummary());
   const terminalError = ref<SyncTerminalError | null>(null);
+  const desktopInfo = ref<DesktopSyncInfo | null>(null);
   const retryInFlight = ref(false);
   const activeTab = ref<"live" | "history">("live");
   const needsReload = ref(false);
@@ -123,6 +126,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
     activeAttemptId,
     summary,
     terminalError,
+    desktopInfo,
     needsReload,
     logs,
     progressData,
@@ -134,6 +138,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
     if (!preserveLogs) logs.value = [];
     summary.value = emptySummary();
     terminalError.value = null;
+    desktopInfo.value = null;
     progressData.value = emptyProgress();
     activeSessionId.value = null;
     activeAttemptId.value = 0;
@@ -258,6 +263,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
       clearSession: () => {
         activeSessionId.value = null;
         activeAttemptId.value = 0;
+        desktopInfo.value = null;
         awaitingSessionId = false;
         bufferedSessionEvents = [];
       },
@@ -286,6 +292,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
     startAttempt += 1;
     activeSessionId.value = null;
     activeAttemptId.value = 0;
+    desktopInfo.value = null;
     awaitingSessionId = false;
     bufferedSessionEvents = [];
     status.value = "retrying";
@@ -321,6 +328,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
         isOpen.value = false;
         activeSessionId.value = null;
         activeAttemptId.value = 0;
+        desktopInfo.value = null;
         awaitingSessionId = false;
         bufferedSessionEvents = [];
         retryInFlight.value = false;
@@ -339,6 +347,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
       activeSessionId.value,
       summary.value,
       terminalError.value,
+      desktopInfo.value,
     );
     await copyTextToClipboard(
       diagnostic,
@@ -347,6 +356,14 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
       pushLog,
     );
   };
+
+  const copyCdsBuildCommand = () =>
+    copyTextToClipboard(
+      CDS_BUILD_COMMAND,
+      "CDS 编译命令已复制到剪贴板",
+      "复制 CDS 编译命令失败，请长按命令手动复制",
+      pushLog,
+    );
 
   const copyLogs = async () => {
     const text = logs.value
@@ -378,6 +395,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
     activeAttemptId,
     summary,
     terminalError,
+    desktopInfo,
     retryInFlight,
     needsReload,
     logs,
@@ -389,6 +407,7 @@ export const useSyncSessionStore = defineStore("syncSession", () => {
     stopForProfileSwitch,
     retrySync,
     copyDiagnostics,
+    copyCdsBuildCommand,
     copyLogs,
     markReloaded,
     switchTab,

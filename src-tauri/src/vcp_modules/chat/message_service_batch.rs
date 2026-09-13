@@ -28,7 +28,7 @@ pub async fn load_multi_topic_messages(
     Ok(result)
 }
 
-/// Owner-aware batch loader used by Wire 1.4 callers.
+/// Owner-aware batch loader used by Wire 1.5 callers.
 pub async fn load_multi_topic_messages_for_keys(
     pool: &sqlx::SqlitePool,
     topic_keys: &[TopicKey],

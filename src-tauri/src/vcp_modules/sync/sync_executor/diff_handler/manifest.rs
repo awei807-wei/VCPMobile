@@ -154,7 +154,7 @@ fn validate_avatar_decision(item: &AvatarManifestDecision) -> Result<(), String>
     Ok(())
 }
 
-/// Decode a typed Wire 1.4 result and validate its identities and action.
+/// Decode a typed Wire 1.5 result and validate its identities and action.
 pub(crate) fn validate_manifest_result(
     result: ManifestResultFrame,
 ) -> Result<(ManifestType, Vec<ManifestDecision>), String> {

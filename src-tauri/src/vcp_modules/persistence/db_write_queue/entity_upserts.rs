@@ -3,6 +3,7 @@ use super::DbWriteQueue;
 use crate::vcp_modules::sync_dto::{AgentSyncDTO, AgentTopicSyncDTO, GroupTopicSyncDTO};
 use crate::vcp_modules::sync_error::SyncErrorStage;
 use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::sync_types::MAX_SAFE_TIMESTAMP;
 use crate::vcp_modules::topic_types::TopicKey;
 use rusqlite::OptionalExtension;
 
@@ -135,17 +136,18 @@ impl DbWriteQueue {
         )?;
         validate_live_owner(tx, "agents", &key.owner_id, "Agent topic", &key.topic_id)?;
         validate_existing_topic(tx, key, "Agent topic")?;
-        let now = chrono::Utc::now().timestamp_millis();
+        validate_topic_version(&dto.config_hash, dto.updated_at, "Agent topic")?;
         let changed = tx.execute(
             "INSERT INTO topics (
-                owner_type, owner_id, topic_id, title, created_at, locked, unread, updated_at
+                owner_type, owner_id, topic_id, title, created_at, locked, unread,
+                config_hash, updated_at
             )
-            VALUES ('agent', ?, ?, ?, ?, ?, ?, ?)
+            VALUES ('agent', ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_type, owner_id, topic_id) DO UPDATE SET
                 title = excluded.title, locked = excluded.locked,
                 unread = excluded.unread,
                 unread_count = CASE WHEN excluded.unread = 0 THEN 0 ELSE topics.unread_count END,
-                updated_at = excluded.updated_at",
+                config_hash = excluded.config_hash, updated_at = excluded.updated_at",
             rusqlite::params![
                 &key.owner_id,
                 &key.topic_id,
@@ -153,7 +155,8 @@ impl DbWriteQueue {
                 dto.created_at,
                 if dto.locked { 1 } else { 0 },
                 if dto.unread { 1 } else { 0 },
-                now,
+                &dto.config_hash,
+                dto.updated_at,
             ],
         )?;
         require_changed(
@@ -198,15 +201,24 @@ impl DbWriteQueue {
         )?;
         validate_live_owner(tx, "groups", &key.owner_id, "Group topic", &key.topic_id)?;
         validate_existing_topic(tx, key, "Group topic")?;
-        let now = chrono::Utc::now().timestamp_millis();
+        validate_topic_version(&dto.config_hash, dto.updated_at, "Group topic")?;
         let changed = tx.execute(
             "INSERT INTO topics (
-                owner_type, owner_id, topic_id, title, created_at, locked, unread, updated_at
+                owner_type, owner_id, topic_id, title, created_at, locked, unread,
+                config_hash, updated_at
             )
-            VALUES ('group', ?, ?, ?, ?, 1, 0, ?)
+            VALUES ('group', ?, ?, ?, ?, 1, 0, ?, ?)
             ON CONFLICT(owner_type, owner_id, topic_id) DO UPDATE SET
-                title = excluded.title, updated_at = excluded.updated_at",
-            rusqlite::params![&key.owner_id, &key.topic_id, &dto.name, dto.created_at, now,],
+                title = excluded.title, config_hash = excluded.config_hash,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                &key.owner_id,
+                &key.topic_id,
+                &dto.name,
+                dto.created_at,
+                &dto.config_hash,
+                dto.updated_at,
+            ],
         )?;
         require_changed(
             changed,
@@ -216,6 +228,22 @@ impl DbWriteQueue {
             ),
         )
     }
+}
+
+fn validate_topic_version(config_hash: &str, updated_at: i64, label: &str) -> rusqlite::Result<()> {
+    if !crate::vcp_modules::infra::utils::is_valid_cas_hash(config_hash)
+        || config_hash.to_ascii_lowercase() != config_hash
+    {
+        return Err(DbWriteQueue::sync_contract_error(format!(
+            "{label} configHash must be lowercase SHA-256"
+        )));
+    }
+    if !(0..=MAX_SAFE_TIMESTAMP).contains(&updated_at) {
+        return Err(DbWriteQueue::sync_contract_error(format!(
+            "{label} updatedAt must be a non-negative safe integer"
+        )));
+    }
+    Ok(())
 }
 
 fn clear_topic_unread_receipts(

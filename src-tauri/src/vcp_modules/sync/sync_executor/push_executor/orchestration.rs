@@ -41,7 +41,7 @@ pub(super) async fn push_messages_batch<R: Runtime>(
         return Err("Message push response did not cover every requested topic".to_string());
     }
     log::info!(
-        "[PushExecutor] Wire 1.4 message push completed: {}/{} topics",
+        "[PushExecutor] Wire 1.5 message push completed: {}/{} topics",
         state.results.iter().filter(|result| result.success).count(),
         topics.len()
     );

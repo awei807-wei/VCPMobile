@@ -1,4 +1,4 @@
-//! Wire 1.4 结构化同步错误契约。
+//! Wire 1.5 结构化同步错误契约。
 
 mod codec;
 mod payload;

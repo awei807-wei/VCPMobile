@@ -1,4 +1,5 @@
 use super::finalize_modified_topics;
+use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::TopicKey;
 use std::collections::HashSet;
 
@@ -67,7 +68,7 @@ async fn finalizer_refreshes_activity_without_advancing_config_time() {
     assert_eq!(state.0, 77);
     assert_eq!(state.1, 42);
     assert_eq!(state.2, 1);
-    assert_ne!(state.3, "agent-config-before");
+    assert_eq!(state.3, "agent-config-before");
     assert_ne!(state.4, "agent-topic-before");
     let owner_hash: String =
         sqlx::query_scalar("SELECT content_hash FROM agents WHERE agent_id = 'agent-a'")
@@ -75,6 +76,19 @@ async fn finalizer_refreshes_activity_without_advancing_config_time() {
             .await
             .expect("read owner hash");
     assert_ne!(owner_hash, "agent-before");
+
+    let mut tx = pool.begin().await.expect("begin hash verification");
+    let expected_topic_hash = HashAggregator::compute_topic_root_hash_for_key(
+        &mut tx,
+        &topic("agent", "agent-a", "shared"),
+    )
+    .await
+    .expect("compute expected topic hash");
+    let expected_owner_hash = HashAggregator::compute_agent_root_hash(&mut tx, "agent-a")
+        .await
+        .expect("compute expected owner hash");
+    assert_eq!(state.4, expected_topic_hash);
+    assert_eq!(owner_hash, expected_owner_hash);
 }
 
 #[tokio::test]

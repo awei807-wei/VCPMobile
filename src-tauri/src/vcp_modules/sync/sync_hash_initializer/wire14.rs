@@ -21,8 +21,9 @@ pub(crate) struct Wire14HashInitStats {
 }
 
 impl HashInitializer {
-    /// Upgrade retained Wire 1.2 hashes to the current Wire 1.4 canonical
-    /// contract before a network session can expose local manifest state.
+    /// Apply the historical `wire-1.4-message-v1` canonical migration to
+    /// retained Wire 1.2 rows before exposing local manifest state. Wire 1.5
+    /// keeps this fingerprint, so the stable migration marker remains valid.
     pub(crate) async fn ensure_wire14_hashes(
         pool: &sqlx::SqlitePool,
     ) -> Result<Wire14HashInitStats, String> {
@@ -261,8 +262,15 @@ async fn recompute_topics(tx: &mut Transaction<'_, Sqlite>, all: bool) -> Result
         let content_hash: String = row
             .try_get("content_hash")
             .map_err(|error| error.to_string())?;
-        if all || !is_sha256(&config_hash, false) || !is_sha256(&content_hash, true) {
+        let rebuild_config = all || !is_sha256(&config_hash, false);
+        let rebuild_content = all || !is_sha256(&content_hash, true);
+        if rebuild_config {
+            HashInitializer::recompute_topic_config_hash(tx, &key).await?;
+        }
+        if rebuild_content {
             HashAggregator::bubble_topic_hash_for_key(tx, &key).await?;
+        }
+        if rebuild_config || rebuild_content {
             count += 1;
         }
     }

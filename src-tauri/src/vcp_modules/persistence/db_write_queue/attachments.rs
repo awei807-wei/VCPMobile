@@ -87,7 +87,7 @@ pub(super) fn write_attachments_with_roots(
     clear_live_attachment_unlink_debts(tx, &relations, roots)
 }
 
-/// Persist a canonical Wire 1.4 attachment relation. Local path/status stay
+/// Persist a canonical Wire 1.5 attachment relation. Local path/status stay
 /// NULL so a peer cannot manufacture local filesystem state.
 pub(super) fn write_attachments_for_dto(
     tx: &rusqlite::Transaction<'_>,

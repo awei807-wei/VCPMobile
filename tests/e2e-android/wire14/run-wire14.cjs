@@ -409,11 +409,11 @@ function buildResult(
     cleanupIssues.length === 0,
   );
   const result = {
-    schema: "vcp.android.wire14.e2e.v2",
+    schema: "vcp.android.wire15.e2e.v1",
     ok: false,
     protocol: {
-      wire: "1.4",
-      plugin: runtime?.desktop?.manifest?.version || "1.4.0",
+      wire: "1.5",
+      plugin: runtime?.desktop?.manifest?.version || "2.0.0",
       mode: "centralIndex",
       androidHost: ANDROID_EMULATOR_HOST,
     },
@@ -525,7 +525,7 @@ if (require.main === module) {
     .catch(() => {
       process.stdout.write(
         `${JSON.stringify({
-          schema: "vcp.android.wire14.e2e.v2",
+          schema: "vcp.android.wire15.e2e.v1",
           ok: false,
           failure: "invalid_arguments_or_runtime_error",
         })}\n`,

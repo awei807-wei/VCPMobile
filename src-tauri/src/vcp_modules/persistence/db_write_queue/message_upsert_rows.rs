@@ -1,5 +1,4 @@
 use crate::vcp_modules::sync_dto::MessageSyncDTO;
-use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::topic_types::TopicKey;
 use rusqlite::ToSql;
 
@@ -44,7 +43,7 @@ fn insert_message_chunk(
     let mut params: Vec<Box<dyn ToSql>> = Vec::with_capacity(indices.len() * 15);
     for index in indices {
         let message = &messages[*index];
-        let content_hash = HashAggregator::compute_message_fingerprint_for_dto(message);
+        let content_hash = message.content_hash.clone();
         let timestamp = checked_i64(message.timestamp, "message timestamp")?;
         let updated_at = checked_i64(message.updated_at, "message updatedAt")?;
         params.extend([
@@ -89,7 +88,7 @@ fn write_render_rows(
             )?;
             continue;
         }
-        let content_hash = HashAggregator::compute_message_fingerprint_for_dto(message);
+        let content_hash = message.content_hash.clone();
         tx.execute(
             "INSERT INTO render_cache (
                 owner_type, owner_id, topic_id, msg_id, render_content, updated_at,

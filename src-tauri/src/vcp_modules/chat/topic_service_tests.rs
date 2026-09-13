@@ -384,6 +384,14 @@ async fn 未读状态变化同步刷新哈希() {
     assert_ne!(before.3, after_increment.3);
     assert_ne!(before.4, after_increment.4);
 
+    seed_message(&pool, &key, "message-2").await;
+    increment_topic_unread_count_in_pool(&pool, &key, "message-2", true, 99)
+        .await
+        .unwrap();
+    let after_second_message = topic_row(&pool, &key).await;
+    assert_eq!(after_second_message.1, 2);
+    assert_eq!(after_second_message.2, after_increment.2);
+
     let state = set_topic_unread_in_pool(&pool, &key, false, 3)
         .await
         .unwrap();

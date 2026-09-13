@@ -383,12 +383,10 @@ pub(crate) async fn refresh_topic_message_count(
     let msg_count = i32::try_from(count).map_err(|_| "消息数量超出整数范围".to_string())?;
     let updated = sqlx::query(
         "UPDATE topics
-         SET msg_count = ?, updated_at = MAX(updated_at, ?),
-             last_message_updated_at = MAX(last_message_updated_at, ?)
+         SET msg_count = ?, last_message_updated_at = MAX(last_message_updated_at, ?)
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL",
     )
     .bind(msg_count)
-    .bind(now)
     .bind(now)
     .bind(&key.owner_type)
     .bind(&key.owner_id)

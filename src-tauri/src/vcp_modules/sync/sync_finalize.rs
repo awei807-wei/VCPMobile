@@ -84,7 +84,7 @@ fn ensure_topics_complete(
         return Ok(());
     }
     let mut missing = modified_topics
-        .difference(&actual_topics)
+        .difference(actual_topics)
         .cloned()
         .collect::<Vec<_>>();
     missing.sort();

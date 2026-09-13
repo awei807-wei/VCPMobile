@@ -4,6 +4,8 @@ use super::{
 };
 use crate::vcp_modules::persistence::db_write_queue::DbWriteTask;
 use crate::vcp_modules::sync_dto::{AgentTopicSyncDTO, GroupTopicSyncDTO};
+use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::sync_types::compute_merkle_root;
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
 use rusqlite::{Connection, TransactionBehavior};
 use std::sync::{Arc, Mutex};
@@ -246,6 +248,96 @@ async fn real_worker_topic_read_sync_clears_stale_receipt_before_delete() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
     let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+}
+
+#[test]
+fn message_delete_recomputes_unread_config_and_owner_root() {
+    let mut connection = setup_connection();
+    let key = TopicKey::new("agent", "agent-a", "unread-delete");
+    let tx = connection.transaction().expect("begin delete transaction");
+    let unread_config = HashAggregator::compute_agent_topic_metadata_hash(&AgentTopicSyncDTO {
+        id: key.topic_id.clone(),
+        name: "Unread topic".to_string(),
+        created_at: 1,
+        locked: true,
+        unread: true,
+        owner_id: key.owner_id.clone(),
+        config_hash: String::new(),
+        updated_at: 7,
+    });
+    tx.execute(
+        "INSERT INTO topics (
+            owner_type, owner_id, topic_id, title, created_at, locked, unread,
+            unread_count, msg_count, updated_at, config_hash, content_hash
+         ) VALUES (?1, ?2, ?3, 'Unread topic', 1, 1, 1, 1, 1, 7, ?4, 'old-content')",
+        rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id, unread_config],
+    )
+    .expect("seed unread topic");
+    tx.execute(
+        "INSERT INTO messages (
+            owner_type, owner_id, topic_id, msg_id, content_hash, timestamp, deleted_at
+         ) VALUES (?1, ?2, ?3, 'message-a', 'message-hash', 10, NULL)",
+        rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
+    )
+    .expect("seed unread message");
+    tx.execute(
+        "INSERT INTO message_unread_receipts (
+            owner_type, owner_id, topic_id, msg_id, created_at, counted_unread
+         ) VALUES (?1, ?2, ?3, 'message-a', 10, 1)",
+        rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
+    )
+    .expect("seed unread receipt");
+
+    let (owners, topics) = apply_tasks(
+        &tx,
+        vec![DbWriteTask::DeleteMessage {
+            message: MessageKey::new(key.clone(), "message-a"),
+            deleted_at: 20,
+        }],
+        None,
+    )
+    .expect("apply unread message delete");
+    bubble_topics(&tx, topics).expect("refresh topic content hash");
+    bubble_owners(&tx, owners).expect("refresh owner root");
+
+    let state: (i64, i64, i64, String, String, String) = tx
+        .query_row(
+            "SELECT t.unread, t.unread_count, t.updated_at, t.config_hash,
+                    t.content_hash, a.content_hash
+             FROM topics t JOIN agents a ON a.agent_id = t.owner_id
+             WHERE t.owner_type = ?1 AND t.owner_id = ?2 AND t.topic_id = ?3",
+            rusqlite::params![&key.owner_type, &key.owner_id, &key.topic_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .expect("read corrected unread hashes");
+    assert_eq!((state.0, state.1), (0, 0));
+    assert!(state.2 > 7);
+    let expected_config = HashAggregator::compute_agent_topic_metadata_hash(&AgentTopicSyncDTO {
+        id: key.topic_id.clone(),
+        name: "Unread topic".to_string(),
+        created_at: 1,
+        locked: true,
+        unread: false,
+        owner_id: key.owner_id.clone(),
+        config_hash: state.3.clone(),
+        updated_at: state.2,
+    });
+    assert_eq!(state.3, expected_config);
+    let expected_owner = compute_merkle_root(vec![HashAggregator::compute_topic_leaf_hash(
+        &key.topic_id,
+        &state.3,
+        &state.4,
+    )]);
+    assert_eq!(state.5, expected_owner);
 }
 
 #[test]

@@ -170,12 +170,10 @@ async fn refresh_message_topic(
     .map_err(|error| error.to_string())?;
     sqlx::query(
         "UPDATE topics
-         SET updated_at = MAX(updated_at, ?),
-             last_message_updated_at = MAX(last_message_updated_at, ?),
+         SET last_message_updated_at = MAX(last_message_updated_at, ?),
              msg_count = ?
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
     )
-    .bind(message.timestamp as i64)
     .bind(message.updated_at.unwrap_or(message.timestamp) as i64)
     .bind(msg_count)
     .bind(&key.owner_type)
@@ -372,11 +370,9 @@ async fn patch_single_message_with_loaded_attachments_with_gate(
     .await?;
     sqlx::query(
         "UPDATE topics
-         SET updated_at = MAX(updated_at, ?),
-             last_message_updated_at = MAX(last_message_updated_at, ?)
+         SET last_message_updated_at = MAX(last_message_updated_at, ?)
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
     )
-    .bind(chrono::Utc::now().timestamp_millis())
     .bind(message.updated_at.unwrap_or(message.timestamp) as i64)
     .bind(&key.owner_type)
     .bind(&key.owner_id)

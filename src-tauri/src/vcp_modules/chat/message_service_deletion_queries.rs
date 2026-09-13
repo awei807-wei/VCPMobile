@@ -173,36 +173,11 @@ pub(super) async fn decrement_topic_unread_count(
     key: &TopicKey,
     counted_unread: i64,
 ) -> Result<(), String> {
-    if counted_unread <= 0 {
-        return Ok(());
-    }
-    let has_unread_count: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1 FROM pragma_table_info('topics') WHERE name = 'unread_count'
-        )",
+    crate::vcp_modules::chat::topic_unread_receipts::decrement_topic_unread_count(
+        tx,
+        key,
+        counted_unread,
+        crate::vcp_modules::infra::utils::now_millis(),
     )
-    .fetch_one(&mut **tx)
     .await
-    .map_err(|error| error.to_string())?;
-    if !has_unread_count {
-        return Ok(());
-    }
-    let now = crate::vcp_modules::infra::utils::now_millis();
-    sqlx::query(
-        "UPDATE topics
-         SET unread_count = MAX(unread_count - ?, 0),
-             unread = CASE WHEN MAX(unread_count - ?, 0) = 0 THEN 0 ELSE unread END,
-             updated_at = MAX(COALESCE(updated_at, 0), ?)
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL",
-    )
-    .bind(counted_unread)
-    .bind(counted_unread)
-    .bind(now)
-    .bind(&key.owner_type)
-    .bind(&key.owner_id)
-    .bind(&key.topic_id)
-    .execute(&mut **tx)
-    .await
-    .map(|_| ())
-    .map_err(|error| error.to_string())
 }

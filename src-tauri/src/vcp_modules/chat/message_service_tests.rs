@@ -1,5 +1,6 @@
+use super::message_service_mutations::patch_single_message_with_loaded_attachments;
 use super::{
-    delete_message_attachment_for_key, delete_messages_for_topic,
+    append_single_message, delete_message_attachment_for_key, delete_messages_for_topic,
     edit_message_and_truncate_history, edit_message_and_truncate_history_with_loaded_attachments,
     load_multi_topic_messages, load_multi_topic_messages_for_keys,
     truncate_history_after_timestamp_for_topic,
@@ -11,6 +12,9 @@ use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::infra::file_manager::get_attachments_root_dir;
 use crate::vcp_modules::infra::utils::calculate_sha256;
+use crate::vcp_modules::sync_dto::AgentTopicSyncDTO;
+use crate::vcp_modules::sync_hash::HashAggregator;
+use crate::vcp_modules::sync_types::compute_merkle_root;
 use crate::vcp_modules::topic_types::TopicKey;
 use std::ffi::OsString;
 use std::fs;
@@ -443,6 +447,110 @@ async fn read_topic_and_owner_hashes(pool: &sqlx::SqlitePool, key: &TopicKey) ->
 }
 
 #[tokio::test]
+async fn 新增消息只推进话题活动时钟() {
+    let pool = test_pool().await;
+    let key = TopicKey::new("agent", "owner-a", "append-clock-topic");
+    insert_message(&pool, &key, "existing body", false).await;
+    sqlx::query(
+        "UPDATE topics SET updated_at = 500, last_message_updated_at = 100, msg_count = 1
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .execute(&pool)
+    .await
+    .expect("seed independent topic clocks");
+
+    let _attachment_environment =
+        crate::vcp_modules::file_manager::lock_attachment_test_environment().await;
+    let _xdg_documents = XdgDocumentsGuard::new();
+    let app = tauri::test::mock_app();
+    app.manage(DbState {
+        pool: pool.clone(),
+        path: PathBuf::from("test.sqlite"),
+    });
+    append_single_message(
+        app.handle().clone(),
+        &pool,
+        &key.owner_id,
+        &key.owner_type,
+        key.topic_id.clone(),
+        ChatMessage {
+            id: "new-message".to_string(),
+            role: "user".to_string(),
+            content: "new body".to_string(),
+            timestamp: 600,
+            updated_at: Some(700),
+            topic_id: Some(key.topic_id.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("append message");
+
+    let clocks: (i64, i64, i32) = sqlx::query_as(
+        "SELECT updated_at, last_message_updated_at, msg_count FROM topics
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read topic clocks after append");
+    assert_eq!(clocks, (500, 700, 2));
+}
+
+#[tokio::test]
+async fn 编辑消息只推进话题活动时钟() {
+    let pool = test_pool().await;
+    let key = TopicKey::new("agent", "owner-a", "patch-clock-topic");
+    insert_message(&pool, &key, "existing body", false).await;
+    sqlx::query(
+        "UPDATE topics SET updated_at = 500, last_message_updated_at = 100
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .execute(&pool)
+    .await
+    .expect("seed independent topic clocks");
+
+    patch_single_message_with_loaded_attachments(
+        &pool,
+        &key.owner_id,
+        &key.owner_type,
+        key.topic_id.clone(),
+        ChatMessage {
+            id: "same-message".to_string(),
+            role: "user".to_string(),
+            content: "edited body".to_string(),
+            timestamp: 100,
+            updated_at: Some(800),
+            topic_id: Some(key.topic_id.clone()),
+            ..Default::default()
+        },
+        false,
+    )
+    .await
+    .expect("patch message");
+
+    let clocks: (i64, i64) = sqlx::query_as(
+        "SELECT updated_at, last_message_updated_at FROM topics
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read topic clocks after patch");
+    assert_eq!(clocks, (500, 800));
+}
+
+#[tokio::test]
 async fn batch_loader_keeps_same_topic_and_message_id_isolated() {
     let pool = test_pool().await;
     let agent = TopicKey::new("agent", "owner-a", "shared-topic");
@@ -556,9 +664,11 @@ async fn 删除未读消息回退计数并拒绝迟到未读记账() {
         .await
         .expect("delete live unread message");
     assert_eq!(result.msg_count, 0);
-    let state: (i32, i32) = sqlx::query_as(
-        "SELECT unread, unread_count FROM topics
-         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    let state: (i32, i32, i64, String, String, String) = sqlx::query_as(
+        "SELECT t.unread, t.unread_count, t.updated_at, t.config_hash,
+                t.content_hash, a.content_hash
+         FROM topics t JOIN agents a ON a.agent_id = t.owner_id
+         WHERE t.owner_type = ? AND t.owner_id = ? AND t.topic_id = ?",
     )
     .bind(&key.owner_type)
     .bind(&key.owner_id)
@@ -566,7 +676,25 @@ async fn 删除未读消息回退计数并拒绝迟到未读记账() {
     .fetch_one(&pool)
     .await
     .expect("read corrected topic unread state");
-    assert_eq!(state, (0, 0));
+    assert_eq!((state.0, state.1), (0, 0));
+    assert!(state.2 > 0, "unread config flip must advance its clock");
+    let expected_config = HashAggregator::compute_agent_topic_metadata_hash(&AgentTopicSyncDTO {
+        id: key.topic_id.clone(),
+        name: String::new(),
+        created_at: 0,
+        locked: false,
+        unread: false,
+        owner_id: key.owner_id.clone(),
+        config_hash: state.3.clone(),
+        updated_at: state.2,
+    });
+    assert_eq!(state.3, expected_config);
+    let expected_owner = compute_merkle_root(vec![HashAggregator::compute_topic_leaf_hash(
+        &key.topic_id,
+        &state.3,
+        &state.4,
+    )]);
+    assert_eq!(state.5, expected_owner);
     let receipt_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM message_unread_receipts
          WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
@@ -908,6 +1036,16 @@ async fn 编辑重发在单一事务内更新锚点并截断复合身份尾部()
     let pool = test_pool().await;
     let key = TopicKey::new("agent", "owner-a", "edit-topic");
     seed_edit_history(&pool, &key).await;
+    sqlx::query(
+        "UPDATE topics SET updated_at = 500, last_message_updated_at = 100
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .execute(&pool)
+    .await
+    .expect("seed edit topic clocks");
 
     let result = edit_message_and_truncate_history_with_loaded_attachments(
         &pool,
@@ -968,6 +1106,18 @@ async fn 编辑重发在单一事务内更新锚点并截断复合身份尾部()
         read_topic_and_owner_hashes(&pool, &key).await,
         ("before".into(), "before".into())
     );
+    let clocks: (i64, i64) = sqlx::query_as(
+        "SELECT updated_at, last_message_updated_at FROM topics
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ?",
+    )
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .bind(&key.topic_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read edit topic clocks");
+    assert_eq!(clocks.0, 500);
+    assert!(clocks.1 > 100);
 }
 
 #[tokio::test]

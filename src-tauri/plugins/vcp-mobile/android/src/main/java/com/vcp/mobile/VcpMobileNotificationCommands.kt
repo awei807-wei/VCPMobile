@@ -61,6 +61,21 @@ import androidx.media3.transformer.Composition
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+internal data class ActiveNotificationGroupEntry(
+    val id: Int,
+    val groupKey: String?,
+)
+
+internal fun agentMessageNotificationIdsToCancel(
+    activeNotifications: Iterable<ActiveNotificationGroupEntry>,
+    groupKey: String,
+    summaryId: Int,
+): Set<Int> = activeNotifications
+    .filter { notification ->
+        notification.id == summaryId || notification.groupKey == groupKey
+    }
+    .mapTo(linkedSetOf()) { notification -> notification.id }
+
 open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCommands(activity) {
     protected var downloadNotificationBuilder: androidx.core.app.NotificationCompat.Builder? = null
     protected val DOWNLOAD_NOTIF_ID = 0x53545209
@@ -156,8 +171,23 @@ open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCom
             createAgentMessageNotificationChannel()
             val notificationManager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             val notificationId = nextAgentMessageNotificationId()
-            if (notificationDecision.startsNewBurst) {
-                notificationManager.cancel(AGENT_MESSAGE_SUMMARY_ID)
+            val canceledNotificationIds = if (notificationDecision.startsNewBurst) {
+                agentMessageNotificationIdsToCancel(
+                    activeNotifications = notificationManager.activeNotifications.map { activeNotification ->
+                        ActiveNotificationGroupEntry(
+                            id = activeNotification.id,
+                            groupKey = activeNotification.notification.group,
+                        )
+                    },
+                    groupKey = AGENT_MESSAGE_GROUP_KEY,
+                    summaryId = AGENT_MESSAGE_SUMMARY_ID,
+                ).also { notificationIds ->
+                    notificationIds.forEach { staleNotificationId ->
+                        notificationManager.cancel(staleNotificationId)
+                    }
+                }
+            } else {
+                emptySet()
             }
             notificationManager.notify(
                 notificationId,
@@ -167,6 +197,7 @@ open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCom
                 1,
                 notificationManager.activeNotifications.count { activeNotification ->
                     activeNotification.id != AGENT_MESSAGE_SUMMARY_ID &&
+                        activeNotification.id !in canceledNotificationIds &&
                         activeNotification.notification.group == AGENT_MESSAGE_GROUP_KEY
                 }
             )
@@ -176,7 +207,7 @@ open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCom
             )
             Log.i(
                 TAG,
-                "系统通知已分组发布：id=$notificationId，channel=$AGENT_MESSAGE_CHANNEL_ID，groupedCount=$groupedCount，startsNewBurst=${notificationDecision.startsNewBurst}，正文长度=${body.length}"
+                "系统通知已分组发布：id=$notificationId，channel=$AGENT_MESSAGE_CHANNEL_ID，groupedCount=$groupedCount，startsNewBurst=${notificationDecision.startsNewBurst}，canceledCount=${canceledNotificationIds.size}，正文长度=${body.length}"
             )
             invoke.resolve()
         } catch (e: Exception) {

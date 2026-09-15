@@ -21,7 +21,6 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import android.webkit.MimeTypeMap
 import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.os.PowerManager
 import android.net.Uri
 import android.provider.Settings
@@ -62,24 +61,37 @@ import androidx.media3.transformer.Composition
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+internal data class ActiveNotificationGroupEntry(
+    val id: Int,
+    val groupKey: String?,
+)
+
+internal fun agentMessageNotificationIdsToCancel(
+    activeNotifications: Iterable<ActiveNotificationGroupEntry>,
+    groupKey: String,
+    summaryId: Int,
+): Set<Int> = activeNotifications
+    .filter { notification ->
+        notification.id == summaryId || notification.groupKey == groupKey
+    }
+    .mapTo(linkedSetOf()) { notification -> notification.id }
+
 open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCommands(activity) {
     protected var downloadNotificationBuilder: androidx.core.app.NotificationCompat.Builder? = null
     protected val DOWNLOAD_NOTIF_ID = 0x53545209
     protected val DOWNLOAD_CHANNEL_ID = "apk_download"
-    protected val agentNotificationDedupLock = Any()
     protected val agentNotificationIdCounter = AtomicInteger((System.nanoTime() and AGENT_MESSAGE_NOTIF_SEQUENCE_MASK.toLong()).toInt())
-    protected var lastAgentNotificationKey: String? = null
-    protected var lastAgentNotificationAt: Long = 0
+    private val agentNotificationBurstGate = AgentNotificationBurstGate()
+    private val agentMessageNotificationFactory = AgentMessageNotificationFactory(
+        activity,
+        AGENT_MESSAGE_CHANNEL_ID,
+        AGENT_MESSAGE_GROUP_KEY
+    )
 
-    protected fun shouldSkipDuplicateAgentNotification(notificationKey: String, now: Long): Boolean =
-        synchronized(agentNotificationDedupLock) {
-            val isDuplicate = notificationKey == lastAgentNotificationKey && now - lastAgentNotificationAt < 5000
-            if (!isDuplicate) {
-                lastAgentNotificationKey = notificationKey
-                lastAgentNotificationAt = now
-            }
-            isDuplicate
-        }
+    private companion object {
+        const val AGENT_MESSAGE_GROUP_KEY = "com.vcp.mobile.AGENT_MESSAGES"
+        const val AGENT_MESSAGE_SUMMARY_ID = -0x41474D
+    }
 
     protected fun nextAgentMessageNotificationId(): Int {
         val sequence = agentNotificationIdCounter.incrementAndGet() and AGENT_MESSAGE_NOTIF_SEQUENCE_MASK
@@ -150,7 +162,8 @@ open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCom
             val body = args.body.ifBlank { "收到一条新消息" }.take(3000)
             val now = System.currentTimeMillis()
             val notificationKey = "$title\n$body"
-            if (shouldSkipDuplicateAgentNotification(notificationKey, now)) {
+            val notificationDecision = agentNotificationBurstGate.evaluate(notificationKey, now)
+            if (notificationDecision.skipDuplicate) {
                 Log.i(TAG, "显示系统通知已跳过 5 秒内重复的 AgentMessage")
                 invoke.resolve()
                 return
@@ -158,11 +171,44 @@ open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCom
             createAgentMessageNotificationChannel()
             val notificationManager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             val notificationId = nextAgentMessageNotificationId()
+            val canceledNotificationIds = if (notificationDecision.startsNewBurst) {
+                agentMessageNotificationIdsToCancel(
+                    activeNotifications = notificationManager.activeNotifications.map { activeNotification ->
+                        ActiveNotificationGroupEntry(
+                            id = activeNotification.id,
+                            groupKey = activeNotification.notification.group,
+                        )
+                    },
+                    groupKey = AGENT_MESSAGE_GROUP_KEY,
+                    summaryId = AGENT_MESSAGE_SUMMARY_ID,
+                ).also { notificationIds ->
+                    notificationIds.forEach { staleNotificationId ->
+                        notificationManager.cancel(staleNotificationId)
+                    }
+                }
+            } else {
+                emptySet()
+            }
             notificationManager.notify(
                 notificationId,
-                buildAgentMessageNotification(title, body, now),
+                agentMessageNotificationFactory.buildMessage(title, body, now),
             )
-            Log.i(TAG, "系统通知已发布：id=$notificationId，channel=$AGENT_MESSAGE_CHANNEL_ID，正文长度=${body.length}")
+            val groupedCount = max(
+                1,
+                notificationManager.activeNotifications.count { activeNotification ->
+                    activeNotification.id != AGENT_MESSAGE_SUMMARY_ID &&
+                        activeNotification.id !in canceledNotificationIds &&
+                        activeNotification.notification.group == AGENT_MESSAGE_GROUP_KEY
+                }
+            )
+            notificationManager.notify(
+                AGENT_MESSAGE_SUMMARY_ID,
+                agentMessageNotificationFactory.buildSummary(title, body, groupedCount, now),
+            )
+            Log.i(
+                TAG,
+                "系统通知已分组发布：id=$notificationId，channel=$AGENT_MESSAGE_CHANNEL_ID，groupedCount=$groupedCount，startsNewBurst=${notificationDecision.startsNewBurst}，canceledCount=${canceledNotificationIds.size}，正文长度=${body.length}"
+            )
             invoke.resolve()
         } catch (e: Exception) {
             Log.e(TAG, "显示系统通知失败", e)
@@ -187,47 +233,6 @@ open class VcpMobileNotificationCommands(activity: Activity) : VcpMobileMediaCom
             return false
         }
         return true
-    }
-
-    private fun buildAgentMessageNotification(
-        title: String,
-        body: String,
-        now: Long,
-    ): android.app.Notification {
-        val launchIntent = activity.packageManager
-            .getLaunchIntentForPackage(activity.packageName)
-            ?.apply {
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            }
-        val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-        } else {
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        val pendingIntent = launchIntent?.let {
-            android.app.PendingIntent.getActivity(activity, 0, it, pendingIntentFlags)
-        }
-        val builder = androidx.core.app.NotificationCompat.Builder(
-            activity,
-            AGENT_MESSAGE_CHANNEL_ID,
-        )
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-            .setDefaults(
-                androidx.core.app.NotificationCompat.DEFAULT_SOUND or
-                    androidx.core.app.NotificationCompat.DEFAULT_VIBRATE,
-            )
-            .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
-            .setCategory(androidx.core.app.NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(androidx.core.app.NotificationCompat.VISIBILITY_PRIVATE)
-            .setAutoCancel(true)
-            .setWhen(now)
-            .setShowWhen(true)
-        if (pendingIntent != null) builder.setContentIntent(pendingIntent)
-        return builder.build()
     }
 
     @Command

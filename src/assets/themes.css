@@ -5,6 +5,11 @@
   --primary-text: #e0e0e0;
   --border-color: #3a3a3e;
 
+  /* 通知中心主题变量：具体主题可覆盖，缺失时保持与默认主题一致 */
+  --notification-bg: #2f2f33;
+  --notification-header-bg: #303034;
+  --notification-border: #48484c;
+
   /* 移动端安全区 - 增加物理回退值 (24px 是安卓常见的刘海高度) */
   --vcp-safe-top: env(safe-area-inset-top, 24px);
   --vcp-safe-bottom: env(safe-area-inset-bottom, 20px);
@@ -29,7 +34,9 @@
   --layer-gate: 110;
 }
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
   width: 100%;
   margin: 0;
@@ -57,7 +64,7 @@ body {
 
 /* 抽屉层级修正 */
 .vcp-drawer {
-  box-shadow: 0 0 40px rgba(0,0,0,0.5);
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
 }
 
 /* 图标大小强控 */
@@ -114,7 +121,11 @@ body {
 
 /* --- 消息气泡标准化管理 --- */
 .message-bubble {
-  transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border: 1px solid color-mix(in srgb, var(--border-color) 15%, transparent);
 }
 
@@ -135,11 +146,12 @@ body {
 /* 切换主题时的平滑过渡保护，让页面所有常规元素（顶部栏、分割线、表格、按钮等）平滑同步过渡，避免局部瞬间跳变闪烁 */
 .theme-switching,
 .theme-switching * {
-  transition: background-color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-              color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-              border-color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-              box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-              opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  transition:
+    background-color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 /* 性能黑洞局部避退：利用特异性覆盖，对高密度微观节点（高亮代码块、KaTeX数学公式、Mermaid/SVG图表）强制关闭 transition 动画，保障移动端切换时的极限流畅度 */

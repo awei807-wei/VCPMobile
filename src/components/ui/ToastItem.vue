@@ -16,7 +16,6 @@ import {
 
 const props = defineProps<{
   toast: VcpNotification;
-  compact?: boolean;
 }>();
 
 const store = useNotificationStore();
@@ -41,23 +40,23 @@ const getIcon = (type: string) => {
 const getIconColor = (type: string) => {
   switch (type) {
     case "success":
-      return "text-green-500";
+      return "text-[var(--success-color)]";
     case "warning":
-      return "text-amber-500";
+      return "text-[var(--highlight-text)]";
     case "error":
-      return "text-red-500";
+      return "text-[var(--danger-color)]";
     case "tool":
-      return "text-purple-500";
+      return "text-[var(--notification-border)]";
     case "agent":
-      return "text-blue-500";
+      return "text-[var(--highlight-text)]";
     default:
-      return "text-blue-400";
+      return "text-[var(--highlight-text)]";
   }
 };
 
 const dismissToast = (id: string) => {
   store.activeToasts = store.activeToasts.filter(
-    (t: VcpNotification) => t.id !== id,
+    (toast: VcpNotification) => toast.id !== id,
   );
 };
 
@@ -79,10 +78,9 @@ const swipeStyle = computed(() => {
     return {
       transform: `translateX(${-lengthX.value}px)`,
       opacity,
-      transition: "none", // 正在滑动时禁用过渡，保证实时触控跟随
+      transition: "none",
     };
   }
-  // 松手/不在滑动时，平滑回弹归位，呈现 iOS 级别高档物理阻尼动效
   return {
     transform: "translateX(0px)",
     opacity: 1,
@@ -99,7 +97,7 @@ const handleClick = () => {
 <template>
   <div
     ref="el"
-    class="vcp-toast-item pointer-events-auto flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md border border-black/5 dark:border-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.12)] w-full max-w-[calc(100vw-32px)] sm:w-[320px] overflow-hidden transition-all active:scale-[0.98] cursor-pointer touch-none select-none no-swipe"
+    class="vcp-toast-item pointer-events-auto flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl backdrop-blur-md w-full max-w-[calc(100vw-32px)] sm:w-[320px] overflow-hidden transition-all active:scale-[0.98] cursor-pointer touch-none select-none no-swipe"
     :style="swipeStyle"
     @click="handleClick"
   >
@@ -123,7 +121,6 @@ const handleClick = () => {
               ? 'font-mono text-[9px] opacity-60 leading-normal'
               : 'text-[9.5px] opacity-50 leading-snug',
             'vcp-toast-message text-primary-text break-words mt-0.5 select-text',
-            { 'is-compact': props.compact },
           ]"
         >
           {{ toast.message }}
@@ -142,11 +139,22 @@ const handleClick = () => {
 </template>
 
 <style scoped>
-.vcp-toast-message.is-compact {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.vcp-toast-item {
+  color: var(--primary-text);
+  background-color: color-mix(
+    in srgb,
+    var(--notification-bg, var(--secondary-bg)) 94%,
+    transparent
+  );
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--notification-border, var(--border-color)) 58%,
+      transparent
+    );
+  box-shadow:
+    0 8px 30px rgb(0 0 0 / 14%),
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

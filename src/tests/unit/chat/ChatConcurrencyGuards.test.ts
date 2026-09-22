@@ -140,6 +140,74 @@ describe("聊天流并发终态保护", () => {
     expect(deps.state.streamGenerations.size).toBe(0);
   });
 
+  it("取消 Aurora 作为终态清理活动流并恢复发送状态", async () => {
+    const deps = createDeps();
+    const process = createStreamEventProcessor(deps);
+    const finished = vi.fn();
+    const messageKey = "agent:agent-1:topic-1:message-1";
+
+    await process(event("thinking", 1));
+    vi.mocked(deps.addSessionStream).mockClear();
+    vi.mocked(deps.removeSessionStream).mockClear();
+
+    await process(
+      {
+        ...event("aurora", 1),
+        finishReason: "cancelled_by_user",
+        error: "请求已中止",
+        aurora: { content: "部分回答" },
+      },
+      { onStreamFinished: finished },
+    );
+
+    const message = deps.state.activeStreamMessages.get(messageKey);
+    expect(deps.addSessionStream).not.toHaveBeenCalled();
+    expect(deps.removeSessionStream).toHaveBeenCalledWith(
+      {
+        ownerId: "agent-1",
+        ownerType: "agent",
+        topicId: "topic-1",
+      },
+      "message-1",
+    );
+    expect(deps.state.streamingMessageId.value).toBeNull();
+    expect(deps.state.streamingMessageKey.value).toBeNull();
+    expect(deps.state.streamGenerations.has(messageKey)).toBe(false);
+    expect(deps.state.generationWatermarks?.get(messageKey)?.generation).toBe(
+      1,
+    );
+    expect(message?.finishReason).toBe("cancelled_by_user");
+    expect(message?.content).toContain("部分回答");
+    expect(message?.content).toContain("请求已中止");
+    expect(finished).toHaveBeenCalledTimes(1);
+
+    await process(event("data", 1, "迟到正文"));
+    expect(deps.addSessionStream).not.toHaveBeenCalled();
+    expect(message?.content).not.toContain("迟到正文");
+  });
+
+  it("正常 stop Aurora 仍保持活动，等待正式 end 终结", async () => {
+    const deps = createDeps();
+    const process = createStreamEventProcessor(deps);
+    const messageKey = "agent:agent-1:topic-1:message-1";
+
+    await process(event("thinking", 1));
+    vi.mocked(deps.addSessionStream).mockClear();
+    vi.mocked(deps.removeSessionStream).mockClear();
+
+    await process({
+      ...event("aurora", 1),
+      finishReason: "stop",
+    });
+
+    expect(deps.addSessionStream).toHaveBeenCalledTimes(1);
+    expect(deps.removeSessionStream).not.toHaveBeenCalled();
+    expect(deps.state.streamingMessageId.value).toBe("message-1");
+    expect(deps.state.streamingMessageKey.value).toBe(messageKey);
+    expect(deps.state.streamGenerations.get(messageKey)).toBe(1);
+    expect(deps.state.generationWatermarks?.has(messageKey)).toBe(false);
+  });
+
   it("257 个终态与时间推进后仍拒绝已关闭 generation 重开", async () => {
     vi.useFakeTimers();
     try {

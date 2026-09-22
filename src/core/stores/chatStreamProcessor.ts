@@ -90,9 +90,18 @@ async function finalizeMessage(
 }
 
 function terminalContent(content: string, event: any): string {
-  if (event.type !== "error" || !event.error) return content;
+  if (!event.error) return content;
   const errorText = `\n\n> VCP流式错误: ${String(event.error)}`;
   return content.endsWith(errorText) ? content : content + errorText;
+}
+
+function isTerminalAurora(event: any): boolean {
+  if (event?.type !== "aurora") return false;
+  const hasError =
+    event.error !== undefined &&
+    event.error !== null &&
+    String(event.error).trim().length > 0;
+  return event.finishReason === "cancelled_by_user" || hasError;
 }
 
 function createSkeleton(
@@ -225,13 +234,15 @@ function handleAuroraEvent(
   parsed: ParsedStreamEvent,
   message: ChatMessage,
   event: any,
-): void {
+): boolean {
   if (event.aurora) {
     recordAuroraDebug(deps, parsed, message, event.aurora);
     applyAuroraUpdate(deps, parsed, event.aurora);
   }
   message.isThinking = false;
-  deps.addSessionStream(parsed.identity, parsed.messageId);
+  const terminal = isTerminalAurora(event);
+  if (!terminal) deps.addSessionStream(parsed.identity, parsed.messageId);
+  return terminal;
 }
 
 async function handleTerminalEvent(
@@ -372,7 +383,9 @@ async function processStreamEvent(
       handleDataEvent(deps, parsed, message, event);
       break;
     case "aurora":
-      handleAuroraEvent(deps, parsed, message, event);
+      if (handleAuroraEvent(deps, parsed, message, event)) {
+        await handleTerminalEvent(deps, parsed, message, callbacks);
+      }
       break;
     case "end":
     case "error":

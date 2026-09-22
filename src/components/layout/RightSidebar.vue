@@ -193,7 +193,7 @@ watch(
     :class="{ 'is-open': props.isOpen }"
   >
     <div
-      class="px-5 py-4 border-b border-black/5 dark:border-white/5 flex justify-between items-center shrink-0"
+      class="vcp-notification-header px-5 py-4 flex justify-between items-center shrink-0"
     >
       <div class="flex items-center gap-2">
         <h3
@@ -203,7 +203,7 @@ watch(
         </h3>
         <span
           v-if="store.unreadCount > 0"
-          class="px-1.5 py-0.5 bg-blue-500 text-[9px] font-black rounded-full text-white animate-pulse"
+          class="vcp-notification-badge px-1.5 py-0.5 text-[9px] font-black rounded-full animate-pulse"
         >
           {{ store.unreadCount }}
         </span>
@@ -239,7 +239,7 @@ watch(
 
     <!-- 底部：工具按钮 2x2 网格区 -->
     <div
-      class="p-4 border-t border-black/5 dark:border-white/5 glass-panel shrink-0 pb-[calc(var(--vcp-safe-bottom,16px)+8px)]"
+      class="vcp-notification-footer p-4 shrink-0 pb-[calc(var(--vcp-safe-bottom,16px)+8px)]"
     >
       <div class="grid grid-cols-2 gap-2">
         <button
@@ -319,19 +319,79 @@ watch(
   bottom: 0;
   width: 82vw;
   max-width: 340px;
-  background-color: color-mix(in srgb, var(--secondary-bg) 97%, transparent);
-  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  color: var(--primary-text);
+  background-color: color-mix(
+    in srgb,
+    var(--notification-bg, var(--secondary-bg)) 97%,
+    transparent
+  );
+  box-shadow:
+    -16px 0 36px rgb(0 0 0 / 16%),
+    inset 1px 0 0
+      color-mix(
+        in srgb,
+        var(--notification-border, var(--border-color)) 18%,
+        transparent
+      );
+  transition:
+    transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 0.35s ease,
+    border-color 0.35s ease;
   z-index: var(--layer-drawer);
 }
 
 .vcp-drawer-right {
   right: 0;
   transform: translateX(100%);
-  border-left: 1px solid transparent;
+  border-left: 1px solid
+    color-mix(
+      in srgb,
+      var(--notification-border, var(--border-color)) 48%,
+      transparent
+    );
 }
 
 .vcp-drawer-right.is-open {
   transform: translateX(0);
+}
+
+.vcp-notification-header,
+.vcp-notification-footer {
+  background-color: color-mix(
+    in srgb,
+    var(--notification-header-bg, var(--secondary-bg)) 94%,
+    transparent
+  );
+}
+
+.vcp-notification-header {
+  border-bottom: 1px solid
+    color-mix(
+      in srgb,
+      var(--notification-border, var(--border-color)) 35%,
+      transparent
+    );
+}
+
+.vcp-notification-footer {
+  border-top: 1px solid
+    color-mix(
+      in srgb,
+      var(--notification-border, var(--border-color)) 35%,
+      transparent
+    );
+  box-shadow: 0 -10px 24px rgb(0 0 0 / 6%);
+}
+
+.vcp-notification-badge {
+  color: var(--text-on-accent, #fff);
+  background-color: var(--notification-border, var(--highlight-text));
+  box-shadow: 0 0 12px
+    color-mix(
+      in srgb,
+      var(--notification-border, var(--highlight-text)) 42%,
+      transparent
+    );
 }
 
 @media (min-width: 768px) {
@@ -345,18 +405,5 @@ watch(
   .vcp-drawer-right {
     transition: none;
   }
-}
-
-@keyframes vcp-shimmer {
-  0% {
-    background-position: 250% 0;
-  }
-
-  100% {
-    background-position: -250% 0;
-  }
-}
-
-@media (hover: none) and (pointer: coarse) {
 }
 </style>

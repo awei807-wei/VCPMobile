@@ -18,8 +18,9 @@ const makeToast = (index: number): VcpNotification => ({
   id: `toast-${index}`,
   type: "agent",
   title: `消息 ${index}`,
-  message: `第 ${index} 条积压消息`,
+  message: `第 ${index} 条消息`,
   timestamp: index,
+  duration: 0,
 });
 
 const renderedToastIds = () =>
@@ -42,7 +43,7 @@ afterEach(() => {
 });
 
 describe("ToastManager", () => {
-  it("少量通知直接展示且不渲染收起控制", async () => {
+  it("最多两条活动通知直接展示且不提供展开入口", async () => {
     const store = useNotificationStore();
     store.activeToasts = [makeToast(1), makeToast(2)];
     await nextTick();
@@ -53,79 +54,37 @@ describe("ToastManager", () => {
     ).toBe(false);
   });
 
-  it("积压通知默认只展示最近两条并标明已收起数量", async () => {
+  it("第三条后端通知只进入通知栏，关闭现有通知后也不会补弹", async () => {
     const store = useNotificationStore();
-    store.activeToasts = Array.from({ length: 5 }, (_, index) =>
-      makeToast(index + 1),
-    );
+    [1, 2, 3].forEach((index) => store.addNotification(makeToast(index)));
     await nextTick();
 
-    expect(renderedToastIds()).toEqual(["toast-4", "toast-5"]);
-    expect(
-      wrapper?.get('[data-testid="toast-collapse-toggle"]').text(),
-    ).toContain("已收起 3 条通知");
-    expect(
-      wrapper
-        ?.get('[data-testid="toast-collapse-toggle"]')
-        .attributes("aria-expanded"),
-    ).toBe("false");
-    expect(
-      wrapper
-        ?.findAllComponents(ToastItem)
-        .every((item) => item.props("compact") === true),
-    ).toBe(true);
-    expect(wrapper?.findAll(".vcp-toast-message.is-compact")).toHaveLength(2);
-  });
-
-  it("支持展开全部通知并再次收起", async () => {
-    const store = useNotificationStore();
-    store.activeToasts = Array.from({ length: 4 }, (_, index) =>
-      makeToast(index + 1),
-    );
-    await nextTick();
-
-    const toggle = wrapper?.get('[data-testid="toast-collapse-toggle"]');
-    await toggle?.trigger("click");
-
-    expect(renderedToastIds()).toEqual([
-      "toast-1",
-      "toast-2",
+    expect(renderedToastIds()).toEqual(["toast-1", "toast-2"]);
+    expect(store.historyList.map((item) => item.id)).toEqual([
       "toast-3",
-      "toast-4",
+      "toast-2",
+      "toast-1",
     ]);
-    expect(toggle?.attributes("aria-expanded")).toBe("true");
-    expect(
-      wrapper
-        ?.findAllComponents(ToastItem)
-        .every((item) => item.props("compact") === false),
-    ).toBe(true);
-    expect(wrapper?.findAll(".vcp-toast-message.is-compact")).toHaveLength(0);
+    expect(store.unreadCount).toBe(3);
 
-    await toggle?.trigger("click");
-    expect(renderedToastIds()).toEqual(["toast-3", "toast-4"]);
-    expect(toggle?.attributes("aria-expanded")).toBe("false");
-  });
-
-  it("通知数量降到阈值后重置展开状态", async () => {
-    const store = useNotificationStore();
-    store.activeToasts = Array.from({ length: 4 }, (_, index) =>
-      makeToast(index + 1),
+    store.activeToasts = store.activeToasts.filter(
+      (toast) => toast.id !== "toast-1",
     );
     await nextTick();
-    await wrapper
-      ?.get('[data-testid="toast-collapse-toggle"]')
-      .trigger("click");
 
-    store.activeToasts = [makeToast(5), makeToast(6)];
-    await nextTick();
-    store.activeToasts = [makeToast(5), makeToast(6), makeToast(7)];
+    expect(renderedToastIds()).toEqual(["toast-2"]);
+    expect(store.activeToasts.some((toast) => toast.id === "toast-3")).toBe(
+      false,
+    );
+  });
+
+  it("通知栏打开时新消息只收纳到历史", async () => {
+    const store = useNotificationStore();
+    store.isDrawerOpen = true;
+    store.addNotification(makeToast(1));
     await nextTick();
 
-    expect(renderedToastIds()).toEqual(["toast-6", "toast-7"]);
-    expect(
-      wrapper
-        ?.get('[data-testid="toast-collapse-toggle"]')
-        .attributes("aria-expanded"),
-    ).toBe("false");
+    expect(renderedToastIds()).toEqual([]);
+    expect(store.historyList.map((item) => item.id)).toEqual(["toast-1"]);
   });
 });

@@ -7,7 +7,16 @@ export interface MessageShell {
 }
 
 export type MarkdownNode = {
-  type: "paragraph" | "heading" | "code_block" | "blockquote" | "list" | "table" | "thematic_break" | "raw_html" | "mermaid";
+  type:
+    | "paragraph"
+    | "heading"
+    | "code_block"
+    | "blockquote"
+    | "list"
+    | "table"
+    | "thematic_break"
+    | "raw_html"
+    | "mermaid";
   children?: InlineNode[];
   level?: number;
   lang?: string;
@@ -25,7 +34,23 @@ export type MarkdownNode = {
 };
 
 export type InlineNode = {
-  type: "text" | "strong" | "emphasis" | "strikethrough" | "code" | "link" | "image" | "line_break" | "soft_break" | "inline_math" | "quoted_text" | "highlight_tag" | "alert_tag" | "raw_html_inline";
+  type:
+    | "text"
+    | "strong"
+    | "emphasis"
+    | "strikethrough"
+    | "code"
+    | "link"
+    | "image"
+    | "line_break"
+    | "soft_break"
+    | "inline_math"
+    | "vcp_custom"
+    | "quoted_text"
+    | "highlight_tag"
+    | "alert_tag"
+    | "raw_html_inline";
+  kind?: string;
   value?: string;
   children?: InlineNode[];
   href?: string;
@@ -45,17 +70,17 @@ export interface ToolCallSummaryItem {
 
 export interface ContentBlock {
   type:
-  | "markdown"
-  | "tool-use"
-  | "tool-result"
-  | "diary"
-  | "thought"
-  | "button-click"
-  | "html-preview"
-  | "role-divider"
-  | "style"
-  | "math"
-  | "tool-call-summary";
+    | "markdown"
+    | "tool-use"
+    | "tool-result"
+    | "diary"
+    | "thought"
+    | "button-click"
+    | "html-preview"
+    | "role-divider"
+    | "style"
+    | "math"
+    | "tool-call-summary";
   content?: string;
   nodes?: MarkdownNode[]; // For type: "markdown", "diary", "thought"
   tool_name?: string;
@@ -82,7 +107,7 @@ export interface ContentBlock {
   display_mode?: boolean;
   highlighted_content?: string;
   items?: ToolCallSummaryItem[]; // For type: "tool-call-summary"
-  raw_content?: string;          // For type: "tool-call-summary"
+  raw_content?: string; // For type: "tool-call-summary"
   hash?: string | number;
 }
 
@@ -130,7 +155,7 @@ export interface ChatMessage {
   topic_id?: string; // 兼容两种写法
 
   // 以下为纯前端运行时 UI 状态 (Ephemeral)，绝不进行持久化
-  tailContent?: string;      // Aurora: 尾随区 Markdown (高频变动)
+  tailContent?: string; // Aurora: 尾随区 Markdown (高频变动)
   tailBlock?: ContentBlock;
   tailFrame?: TailFrame;
   tailSnapshot?: MarkdownNode[];
@@ -191,7 +216,16 @@ export interface TopicFingerprint {
  * 与 ContentBlock 类似但精简，用于流式期间的增量渲染
  */
 export interface StreamBlock {
-  type: "markdown" | "thought" | "tool-use" | "tool-result" | "diary" | "html-preview" | "role-divider" | "style" | "button-click";
+  type:
+    | "markdown"
+    | "thought"
+    | "tool-use"
+    | "tool-result"
+    | "diary"
+    | "html-preview"
+    | "role-divider"
+    | "style"
+    | "button-click";
   content?: string;
   nodes?: MarkdownNode[];
   theme?: string;

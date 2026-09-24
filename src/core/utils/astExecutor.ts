@@ -20,43 +20,68 @@ function recordAstTrace(data: any): void {
     }
     (window as any).__VCP_AST_TRACES__.push({
       timestamp: performance.now(),
-      ...data
+      ...data,
     });
 
-    if (typeof window !== "undefined" && !(window as any).__VCP_ANALYZE_AST_TRACES__) {
+    if (
+      typeof window !== "undefined" &&
+      !(window as any).__VCP_ANALYZE_AST_TRACES__
+    ) {
       (window as any).__VCP_ANALYZE_AST_TRACES__ = () => {
         const traces = (window as any).__VCP_AST_TRACES__ || [];
         if (traces.length === 0) {
-          console.log("%c[AST Trace Analyzer] 暂无任何 AST 录制数据。请先开始对话！", "color: #ff9800; font-weight: bold;");
+          console.log(
+            "%c[AST Trace Analyzer] 暂无任何 AST 录制数据。请先开始对话！",
+            "color: #ff9800; font-weight: bold;",
+          );
           return;
         }
 
         const mutations = traces.filter((t: any) => t.type === "mutation");
         const frames = traces.filter((t: any) => t.type === "frame_done");
-        const cleanups = traces.filter((t: any) => t.type === "cleanup_registry");
+        const cleanups = traces.filter(
+          (t: any) => t.type === "cleanup_registry",
+        );
 
-        const failedMutations = mutations.filter((m: any) => m.status === "failed");
+        const failedMutations = mutations.filter(
+          (m: any) => m.status === "failed",
+        );
 
-        console.log(`%c[AST Trace Analyzer] 📊 录制统计面板`, "color: #2196f3; font-weight: bold; font-size: 1.2em;");
-        console.log(`- 录制时间段: 从首条 ${traces[0].timestamp.toFixed(2)}ms 到末条 ${traces[traces.length - 1].timestamp.toFixed(2)}ms`);
+        console.log(
+          `%c[AST Trace Analyzer] 📊 录制统计面板`,
+          "color: #2196f3; font-weight: bold; font-size: 1.2em;",
+        );
+        console.log(
+          `- 录制时间段: 从首条 ${traces[0].timestamp.toFixed(2)}ms 到末条 ${traces[traces.length - 1].timestamp.toFixed(2)}ms`,
+        );
         console.log(`- 帧渲染次数 (applyFrame): ${frames.length} 次`);
         console.log(`- 突变总指令数 (executeMutation): ${mutations.length} 条`);
         console.log(`- 缓存销毁次数 (cleanupRegistry): ${cleanups.length} 次`);
 
         if (failedMutations.length === 0) {
-          console.log("%c- 运行健康度: 100% (所有突变成功执行！)", "color: #4caf50; font-weight: bold;");
+          console.log(
+            "%c- 运行健康度: 100% (所有突变成功执行！)",
+            "color: #4caf50; font-weight: bold;",
+          );
         } else {
-          console.log(`%c- 运行健康度: 异常 (存在 ${failedMutations.length} 条执行失败的突变！)`, "color: #f44336; font-weight: bold;");
+          console.log(
+            `%c- 运行健康度: 异常 (存在 ${failedMutations.length} 条执行失败的突变！)`,
+            "color: #f44336; font-weight: bold;",
+          );
           console.group("❌ 失败突变详细列表 (按时间排序):");
           failedMutations.forEach((m: any, idx: number) => {
             console.log(
               `[%c${idx + 1}%c] MsgId: %c${m.messageId}%c | Op: %c${m.op}%c | TargetNodeId: %c${m.mutationId}%c\n  └─ 失败原因: %c${m.detail}\n  └─ 负载参数:`,
-              "color: #ff5722;", "",
-              "color: #9c27b0; font-family: monospace;", "",
-              "color: #009688; font-weight: bold;", "",
-              "color: #e91e63; font-family: monospace;", "",
+              "color: #ff5722;",
+              "",
+              "color: #9c27b0; font-family: monospace;",
+              "",
+              "color: #009688; font-weight: bold;",
+              "",
+              "color: #e91e63; font-family: monospace;",
+              "",
               "color: #f44336;",
-              m.mutationPayload
+              m.mutationPayload,
             );
           });
           console.groupEnd();
@@ -66,12 +91,16 @@ function recordAstTrace(data: any): void {
         frames.forEach((f: any, idx: number) => {
           console.log(
             `Frame #${idx + 1} | MsgId: %c${f.messageId}%c | 突变数: ${f.mutationsCount} | 缓存节点数: ${f.registryKeys.length}\n  └─ HTML长度: ${f.afterHtml.length}`,
-            "color: #9c27b0; font-family: monospace;", ""
+            "color: #9c27b0; font-family: monospace;",
+            "",
           );
         });
         console.groupEnd();
 
-        console.log("%c提示: 可以直接在控制台输入 `window.__VCP_AST_TRACES__` 查看完整底端数据结构。", "color: #9e9e9e; font-style: italic;");
+        console.log(
+          "%c提示: 可以直接在控制台输入 `window.__VCP_AST_TRACES__` 查看完整底端数据结构。",
+          "color: #9e9e9e; font-style: italic;",
+        );
       };
     }
   }
@@ -118,14 +147,18 @@ export function cleanupRegistry(messageId: string): void {
   recordAstTrace({
     type: "cleanup_registry",
     messageId,
-    registrySizeReleased: size
+    registrySizeReleased: size,
   });
 }
 
 /**
  * 递归删除前缀符合的缓存映射（在执行 Replace 和 Remove 时调用）
  */
-function cleanupSubtreeRefs(prefix: string, registry: Map<string, Node>, includeSelf = false): void {
+function cleanupSubtreeRefs(
+  prefix: string,
+  registry: Map<string, Node>,
+  includeSelf = false,
+): void {
   for (const key of registry.keys()) {
     if ((includeSelf && key === prefix) || key.startsWith(prefix + ".")) {
       registry.delete(key);
@@ -152,8 +185,8 @@ function repairHtmlFragment(html: string): string {
   let singleQuotes = 0;
   for (let i = 0; i < repaired.length; i++) {
     const char = repaired[i];
-    if (char === '"' && (i === 0 || repaired[i - 1] !== '\\')) doubleQuotes++;
-    if (char === "'" && (i === 0 || repaired[i - 1] !== '\\')) singleQuotes++;
+    if (char === '"' && (i === 0 || repaired[i - 1] !== "\\")) doubleQuotes++;
+    if (char === "'" && (i === 0 || repaired[i - 1] !== "\\")) singleQuotes++;
   }
 
   if (doubleQuotes % 2 !== 0) {
@@ -172,7 +205,7 @@ function repairHtmlFragment(html: string): string {
 function createDomFromNode(
   node: MarkdownNode,
   id: string,
-  registry: Map<string, Node>
+  registry: Map<string, Node>,
 ): Node {
   astDebugLog(`[AST createDomFromNode] id=${id}, node=${JSON.stringify(node)}`);
   let el: HTMLElement;
@@ -201,9 +234,13 @@ function createDomFromNode(
       if (node.highlighted_html) {
         let html = node.highlighted_html;
         // 剥离多余的 <pre><code> 嵌套包裹以满足前端样式
-        const nestedPreMatch = html.match(/<pre[^>]*>\s*<code>([\s\S]*?)<\/code>\s*<\/pre>/i);
+        const nestedPreMatch = html.match(
+          /<pre[^>]*>\s*<code>([\s\S]*?)<\/code>\s*<\/pre>/i,
+        );
         if (nestedPreMatch && nestedPreMatch[1].trim().startsWith("<pre")) {
-          const innerMatch = nestedPreMatch[1].match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+          const innerMatch = nestedPreMatch[1].match(
+            /<pre[^>]*>([\s\S]*?)<\/pre>/i,
+          );
           if (innerMatch) {
             html = innerMatch[1];
           }
@@ -331,7 +368,7 @@ function createDomFromNode(
 function createInlineDom(
   node: InlineNode,
   id: string,
-  registry: Map<string, Node>
+  registry: Map<string, Node>,
 ): Node {
   let el: Node;
   switch (node.type) {
@@ -370,7 +407,10 @@ function createInlineDom(
 
     case "link": {
       const a = document.createElement("a");
-      a.href = node.needs_asset_conversion && node.href ? convertFileSrc(node.href) : (node.href || "");
+      a.href =
+        node.needs_asset_conversion && node.href
+          ? convertFileSrc(node.href)
+          : node.href || "";
       a.title = node.title || "";
       a.target = "_blank";
       a.rel = "noopener noreferrer";
@@ -384,7 +424,10 @@ function createInlineDom(
 
     case "image": {
       const img = document.createElement("img");
-      img.src = node.needs_asset_conversion && node.src ? convertFileSrc(node.src) : (node.src || "");
+      img.src =
+        node.needs_asset_conversion && node.src
+          ? convertFileSrc(node.src)
+          : node.src || "";
       img.alt = node.alt || "";
       img.title = node.title || "";
       img.loading = "lazy";
@@ -401,9 +444,54 @@ function createInlineDom(
     case "inline_math": {
       const isDisplay = node.display_mode || false;
       const span = document.createElement("span");
-      span.className = isDisplay ? "vcp-math-block no-swipe" : "vcp-math-inline no-swipe";
+      span.className = isDisplay
+        ? "vcp-math-block no-swipe"
+        : "vcp-math-inline no-swipe";
       span.setAttribute("data-latex", node.content || "");
       span.textContent = node.content || "";
+      el = span;
+      break;
+    }
+
+    case "vcp_custom": {
+      const span = document.createElement("span");
+      const appendChildrenOrValue = () => {
+        if (node.children?.length) {
+          node.children.forEach((child, i) => {
+            const childId = `${id}.i${i}`;
+            span.appendChild(createInlineDom(child, childId, registry));
+          });
+        } else {
+          span.textContent = node.value || "";
+        }
+      };
+
+      switch (node.kind) {
+        case "quote":
+          span.className = "highlighted-quote";
+          appendChildrenOrValue();
+          break;
+        case "highlight":
+          span.className = "highlighted-tag";
+          if (node.value !== undefined) {
+            span.textContent = node.value;
+          } else {
+            appendChildrenOrValue();
+          }
+          break;
+        case "alert":
+          span.className = "highlighted-alert-tag";
+          if (node.value !== undefined) {
+            span.textContent = node.value;
+          } else {
+            appendChildrenOrValue();
+          }
+          break;
+        default:
+          appendChildrenOrValue();
+          break;
+      }
+
       el = span;
       break;
     }
@@ -469,7 +557,7 @@ function createInlineDom(
 export function rebuildSnapshot(
   nodes: MarkdownNode[] | undefined,
   messageId: string,
-  sandbox: HTMLElement
+  sandbox: HTMLElement,
 ): void {
   sandbox.innerHTML = "";
   cleanupRegistry(messageId);
@@ -484,7 +572,7 @@ export function rebuildSnapshot(
     messageId,
     nodesCount: nodes?.length || 0,
     registryKeys: Array.from(registry.keys()),
-    html: sandbox.innerHTML
+    html: sandbox.innerHTML,
   });
 }
 
@@ -494,10 +582,12 @@ export function rebuildSnapshot(
 function executeMutation(
   mutation: AstMutation,
   messageId: string,
-  sandbox: HTMLElement
+  sandbox: HTMLElement,
 ): ExecuteMutationResult {
   const registry = getRegistry(messageId);
-  astDebugLog(`[AST Mutation Exec] op=${mutation.op}, id=${mutation.id}, parent=${(mutation as any).parent || ''}, chunk=${(mutation as any).chunk || ''}, val=${(mutation as any).value || ''}`);
+  astDebugLog(
+    `[AST Mutation Exec] op=${mutation.op}, id=${mutation.id}, parent=${(mutation as any).parent || ""}, chunk=${(mutation as any).chunk || ""}, val=${(mutation as any).value || ""}`,
+  );
 
   let status = "success";
   let detail = "";
@@ -509,7 +599,9 @@ function executeMutation(
         (node as CharacterData).appendData(mutation.chunk);
       } else {
         status = "failed";
-        detail = node ? `Node type is not text (${node.nodeType})` : "Node not found in registry";
+        detail = node
+          ? `Node type is not text (${node.nodeType})`
+          : "Node not found in registry";
       }
       break;
     }
@@ -526,9 +618,8 @@ function executeMutation(
     }
 
     case "add": {
-      const parentNode = mutation.parent === "root"
-        ? sandbox
-        : registry.get(mutation.parent);
+      const parentNode =
+        mutation.parent === "root" ? sandbox : registry.get(mutation.parent);
       if (parentNode) {
         const newDom = createDomFromNode(mutation.node, mutation.id, registry);
         if (newDom instanceof HTMLElement) {
@@ -566,7 +657,8 @@ function executeMutation(
           replacement.innerHTML = node.innerHTML;
           replacement.className = node.className;
           for (const attr of Array.from(node.attributes)) {
-            if (attr.name !== "class") replacement.setAttribute(attr.name, attr.value);
+            if (attr.name !== "class")
+              replacement.setAttribute(attr.name, attr.value);
           }
           if (node.parentNode) {
             registry.set(mutation.id, replacement);
@@ -580,7 +672,9 @@ function executeMutation(
         }
       } else {
         status = "failed";
-        detail = node ? "Node is not an HTMLElement" : "Node not found in registry";
+        detail = node
+          ? "Node is not an HTMLElement"
+          : "Node not found in registry";
       }
       break;
     }
@@ -603,9 +697,13 @@ function executeMutation(
 
             let html = mutation.node.highlighted_html;
             // 剥离多余包裹的 pre/code...
-            const nestedPreMatch = html.match(/<pre[^>]*>\s*<code>([\s\S]*?)<\/code>\s*<\/pre>/i);
+            const nestedPreMatch = html.match(
+              /<pre[^>]*>\s*<code>([\s\S]*?)<\/code>\s*<\/pre>/i,
+            );
             if (nestedPreMatch && nestedPreMatch[1].trim().startsWith("<pre")) {
-              const innerMatch = nestedPreMatch[1].match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+              const innerMatch = nestedPreMatch[1].match(
+                /<pre[^>]*>([\s\S]*?)<\/pre>/i,
+              );
               if (innerMatch) {
                 html = innerMatch[1];
               }
@@ -634,7 +732,11 @@ function executeMutation(
             oldNode instanceof HTMLElement
           ) {
             const tempRegistry = new Map<string, Node>();
-            const newDom = createDomFromNode(mutation.node, mutation.id, tempRegistry);
+            const newDom = createDomFromNode(
+              mutation.node,
+              mutation.id,
+              tempRegistry,
+            );
 
             morphdom(oldNode, newDom, {
               childrenOnly: false,
@@ -642,12 +744,16 @@ function executeMutation(
                 if (fromEl.isEqualNode(toEl)) return false;
 
                 // 保留媒体播放与图片加载状态
-                if (fromEl.tagName === 'IMG' && (fromEl as HTMLImageElement).complete) return false;
-                if (fromEl.tagName === 'VIDEO' || fromEl.tagName === 'AUDIO') {
+                if (
+                  fromEl.tagName === "IMG" &&
+                  (fromEl as HTMLImageElement).complete
+                )
+                  return false;
+                if (fromEl.tagName === "VIDEO" || fromEl.tagName === "AUDIO") {
                   if (!(fromEl as HTMLMediaElement).paused) return false;
                 }
                 return true;
-              }
+              },
             });
 
             cleanupSubtreeRefs(mutation.id, registry, true);
@@ -655,13 +761,19 @@ function executeMutation(
               // 物理修正：根 ID（mutation.id）在页面上真实存活的 DOM 节点依然是 oldNode，此处不能覆盖为废弃的 newDom
               registry.set(k, k === mutation.id ? oldNode : v);
             }
-            astDebugLog(`[AST replace morphdom optimized] id=${mutation.id}, type=${nodeType}`);
+            astDebugLog(
+              `[AST replace morphdom optimized] id=${mutation.id}, type=${nodeType}`,
+            );
             break;
           }
 
           // 4. 默认兜底策略：传统的物理 DOM 树替换
           cleanupSubtreeRefs(mutation.id, registry, true);
-          const newDom = createDomFromNode(mutation.node, mutation.id, registry);
+          const newDom = createDomFromNode(
+            mutation.node,
+            mutation.id,
+            registry,
+          );
           if (newDom instanceof HTMLElement) {
             newDom.classList.add("vcp-stream-element-fade-in");
           }
@@ -670,12 +782,16 @@ function executeMutation(
         } else {
           status = "failed";
           detail = "Old node has no parentNode";
-          console.warn(`[AST replace fail - oldNode has no parent] id=${mutation.id}`);
+          console.warn(
+            `[AST replace fail - oldNode has no parent] id=${mutation.id}`,
+          );
         }
       } else {
         status = "failed";
         detail = "Old node not found in registry";
-        console.warn(`[AST replace fail - oldNode not found in registry] id=${mutation.id}`);
+        console.warn(
+          `[AST replace fail - oldNode not found in registry] id=${mutation.id}`,
+        );
       }
       break;
     }
@@ -687,7 +803,8 @@ function executeMutation(
           const parent = oldNode.parentNode;
           const nodeType = mutation.node.type;
 
-          // 1. 策略 A：叶子型行内节点原地 textContent / 属性更新 (Code, Text, InlineMath, HighlightTag, AlertTag)
+          // 1. 策略 A：叶子型行内节点原地 textContent / 属性更新
+          // (Code, Text, InlineMath, 旧版 HighlightTag/AlertTag，以及叶子型 VcpCustom)
           if (nodeType === "text" && oldNode.nodeType === Node.TEXT_NODE) {
             oldNode.textContent = mutation.node.value || "";
             break;
@@ -699,7 +816,8 @@ function executeMutation(
           if (
             nodeType === "inline_math" &&
             oldNode instanceof HTMLElement &&
-            (oldNode.classList.contains("vcp-math-inline") || oldNode.classList.contains("vcp-math-block"))
+            (oldNode.classList.contains("vcp-math-inline") ||
+              oldNode.classList.contains("vcp-math-block"))
           ) {
             oldNode.setAttribute("data-latex", mutation.node.content || "");
             oldNode.textContent = mutation.node.content || "";
@@ -713,20 +831,40 @@ function executeMutation(
             break;
           }
 
+          let customLeafClass: string | null = null;
+          if (nodeType === "vcp_custom" && mutation.node.value !== undefined) {
+            if (mutation.node.kind === "highlight") {
+              customLeafClass = "highlighted-tag";
+            } else if (mutation.node.kind === "alert") {
+              customLeafClass = "highlighted-alert-tag";
+            }
+          }
+          if (
+            customLeafClass &&
+            oldNode instanceof HTMLElement &&
+            oldNode.classList.contains(customLeafClass)
+          ) {
+            cleanupSubtreeRefs(mutation.id, registry, false);
+            oldNode.textContent = mutation.node.value || "";
+            break;
+          }
+
           // 2. 策略 B：图片属性原地更新，不销毁 DOM
           if (nodeType === "image" && oldNode instanceof HTMLImageElement) {
             oldNode.src =
               mutation.node.needs_asset_conversion && mutation.node.src
                 ? convertFileSrc(mutation.node.src)
-                : (mutation.node.src || "");
+                : mutation.node.src || "";
             oldNode.alt = mutation.node.alt || "";
             oldNode.title = mutation.node.title || "";
             break;
           }
 
-          // 3. 策略 C：容器/复杂行内节点局部 Morphdom 拦截 (Link, QuotedText, Strong, Emphasis, Strikethrough, RawHtmlInline)
+          // 3. 策略 C：容器/复杂行内节点局部 Morphdom 拦截
+          // (Link, VcpCustom, QuotedText, Strong, Emphasis, Strikethrough, RawHtmlInline)
           const isContainerNode = [
             "link",
+            "vcp_custom",
             "quoted_text",
             "strong",
             "emphasis",
@@ -735,7 +873,11 @@ function executeMutation(
           ].includes(nodeType);
           if (isContainerNode && oldNode instanceof HTMLElement) {
             const tempRegistry = new Map<string, Node>();
-            const newDom = createInlineDom(mutation.node, mutation.id, tempRegistry);
+            const newDom = createInlineDom(
+              mutation.node,
+              mutation.id,
+              tempRegistry,
+            );
 
             morphdom(oldNode, newDom, {
               childrenOnly: false,
@@ -777,12 +919,16 @@ function executeMutation(
         } else {
           status = "failed";
           detail = "Node has no parentNode";
-          console.warn(`[AST remove fail - node has no parent] id=${mutation.id}`);
+          console.warn(
+            `[AST remove fail - node has no parent] id=${mutation.id}`,
+          );
         }
       } else {
         status = "failed";
         detail = "Node not found in registry";
-        console.warn(`[AST remove fail - node not found in registry] id=${mutation.id}`);
+        console.warn(
+          `[AST remove fail - node not found in registry] id=${mutation.id}`,
+        );
       }
       break;
     }
@@ -797,11 +943,11 @@ function executeMutation(
       parent: (mutation as any).parent,
       chunk: (mutation as any).chunk,
       value: (mutation as any).value,
-      nodeType: (mutation as any).node?.type || null
+      nodeType: (mutation as any).node?.type || null,
     },
     status,
     detail,
-    registrySize: registry.size
+    registrySize: registry.size,
   });
 
   return status === "success" ? { ok: true } : { ok: false, reason: detail };
@@ -813,7 +959,7 @@ function executeMutation(
 export function applyFrame(
   mutations: AstMutation[],
   messageId: string,
-  sandbox: HTMLElement
+  sandbox: HTMLElement,
 ): ApplyFrameResult {
   const debugEnabled = isAstDebugEnabled();
   const beforeHtml = debugEnabled ? sandbox.innerHTML : "";
@@ -828,8 +974,8 @@ export function applyFrame(
         failed: {
           index,
           mutation,
-          reason: mutationResult.reason || "Mutation failed"
-        }
+          reason: mutationResult.reason || "Mutation failed",
+        },
       };
       break;
     }
@@ -839,7 +985,9 @@ export function applyFrame(
   if (debugEnabled) {
     const registry = getRegistry(messageId);
     const afterHtml = sandbox.innerHTML;
-    astDebugLog(`[AST Executor Frame Done] messageId=${messageId}, ok=${result.ok}, html=${afterHtml}`);
+    astDebugLog(
+      `[AST Executor Frame Done] messageId=${messageId}, ok=${result.ok}, html=${afterHtml}`,
+    );
 
     recordAstTrace({
       type: "frame_done",
@@ -850,7 +998,7 @@ export function applyFrame(
       failed: result.failed,
       beforeHtml,
       afterHtml,
-      registryKeys: Array.from(registry.keys())
+      registryKeys: Array.from(registry.keys()),
     });
   }
 

@@ -1729,6 +1729,57 @@ mod tests {
     }
 
     #[test]
+    fn test_ascii_quote_serialization_contract() {
+        let nodes = parse_markdown_to_ast("前面 \"hello\" 后面");
+        assert_eq!(nodes.len(), 1);
+
+        let quote = match &nodes[0] {
+            MarkdownNode::Paragraph { children, .. } => {
+                assert_eq!(children.len(), 3);
+                assert_eq!(children[0], InlineNode::text("前面 ".to_string()));
+                assert_eq!(children[2], InlineNode::text(" 后面".to_string()));
+                &children[1]
+            }
+            _ => panic!("Expected Paragraph"),
+        };
+
+        match quote {
+            InlineNode::VcpCustom {
+                kind,
+                value,
+                children: Some(children),
+                ..
+            } => {
+                assert_eq!(kind, "quote");
+                assert!(value.is_none());
+                assert_eq!(children.len(), 3);
+                assert_eq!(children[0], InlineNode::text("\"".to_string()));
+                assert_eq!(children[1], InlineNode::text("hello".to_string()));
+                assert_eq!(children[2], InlineNode::text("\"".to_string()));
+            }
+            _ => panic!("Expected VcpCustom quote node"),
+        }
+
+        let serialized = serde_json::to_value(quote).expect("quote node should serialize");
+        assert_eq!(serialized["type"].as_str(), Some("vcp_custom"));
+        assert_eq!(serialized["kind"].as_str(), Some("quote"));
+        assert!(serialized.get("value").is_none());
+        assert_eq!(serialized["children"].as_array().map(Vec::len), Some(3));
+
+        let standalone = parse_markdown_to_ast("\"hello\"");
+        match &standalone[0] {
+            MarkdownNode::Paragraph { children, .. } => {
+                assert_eq!(children.len(), 1);
+                assert!(matches!(
+                    &children[0],
+                    InlineNode::VcpCustom { kind, .. } if kind == "quote"
+                ));
+            }
+            _ => panic!("Expected Paragraph"),
+        }
+    }
+
+    #[test]
     fn test_complex_bold_quote_parsing() {
         // 1. 测试单加粗块内包裹两对引号
         let text_single_bold = "看哪些**“应该加粗的部分没有加粗”，或者“不该加粗的部分泄漏了”**";

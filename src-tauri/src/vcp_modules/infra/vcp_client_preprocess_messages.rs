@@ -52,22 +52,48 @@ async fn preprocess_content_part<R: Runtime>(app: &AppHandle<R>, part: &Value) -
     let Some(path) = object.get("path").and_then(Value::as_str) else {
         return Vec::new();
     };
-    convert_local_file(app, path).await
+    let declared_mime = object.get("mime").and_then(Value::as_str);
+    let declared_name = object.get("name").and_then(Value::as_str);
+    convert_local_file(app, path, declared_mime, declared_name).await
 }
 
-async fn convert_local_file<R: Runtime>(app: &AppHandle<R>, path: &str) -> Vec<Value> {
-    let clean_path = path.replace("file://", "");
-    let path_buf = PathBuf::from(&clean_path);
-    let (mime, part_type) = classify_file(&path_buf);
+async fn convert_local_file<R: Runtime>(
+    app: &AppHandle<R>,
+    path: &str,
+    declared_mime: Option<&str>,
+    declared_name: Option<&str>,
+) -> Vec<Value> {
+    let clean_path = path.strip_prefix("file://").unwrap_or(path);
+    let path_buf = PathBuf::from(clean_path);
+    let safe_name = safe_attachment_name(declared_name, clean_path);
+    let (media_kind, part_type) = classify_file(&path_buf, declared_mime);
     let converted = if path_buf.exists() {
-        convert_existing_file(app, &path_buf, mime, part_type).await
+        convert_existing_file(app, &path_buf, media_kind, part_type).await
     } else {
         None
     };
-    converted.unwrap_or_else(|| vec![fallback_file_part(&clean_path, mime)])
+    converted.unwrap_or_else(|| vec![fallback_file_part(&safe_name, media_kind)])
 }
 
-fn classify_file(path: &Path) -> (&'static str, &'static str) {
+fn classify_file(path: &Path, declared_mime: Option<&str>) -> (&'static str, &'static str) {
+    if let Some(declared_mime) = declared_mime {
+        let normalized_mime = declared_mime
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if normalized_mime == "image" || normalized_mime.starts_with("image/") {
+            return ("image", "image_url");
+        }
+        if normalized_mime == "audio" || normalized_mime.starts_with("audio/") {
+            return ("audio", "input_audio");
+        }
+        if normalized_mime == "video" || normalized_mime.starts_with("video/") {
+            return ("video", "image_url");
+        }
+    }
+
     match path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -84,13 +110,37 @@ fn classify_file(path: &Path) -> (&'static str, &'static str) {
     }
 }
 
+fn sanitized_file_name(candidate: &str) -> Option<String> {
+    let base_name = candidate
+        .rsplit(|character| character == '/' || character == '\\')
+        .next()
+        .unwrap_or(candidate);
+    let cleaned = base_name
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() || matches!(cleaned, "." | "..") {
+        None
+    } else {
+        Some(cleaned.to_string())
+    }
+}
+
+fn safe_attachment_name(declared_name: Option<&str>, path: &str) -> String {
+    declared_name
+        .and_then(sanitized_file_name)
+        .or_else(|| sanitized_file_name(path))
+        .unwrap_or_else(|| "附件".to_string())
+}
+
 async fn convert_existing_file<R: Runtime>(
     app: &AppHandle<R>,
     path: &Path,
-    mime: &str,
+    media_kind: &str,
     part_type: &str,
 ) -> Option<Vec<Value>> {
-    match mime {
+    match media_kind {
         "image" => convert_image(app, path, part_type).await,
         "video" => convert_video(app, path).await,
         "audio" => convert_audio(app, path).await,
@@ -205,13 +255,98 @@ async fn convert_audio<R: Runtime>(app: &AppHandle<R>, path: &Path) -> Option<Ve
     }
 }
 
-fn fallback_file_part(path: &str, mime: &str) -> Value {
-    let text = if mime == "image" {
+fn fallback_file_part(file_name: &str, media_kind: &str) -> Value {
+    let text = if media_kind == "image" {
         format!(
-            "[附件文件: {path}]\n<system_meta>[系统提示]：由于硬件环境限制或原图过大，该图片的视觉信息提取失败，已转为纯文本占位符，请提醒用户注意。</system_meta>"
+            "[附件文件: {file_name}]\n<system_meta>[系统提示]：由于硬件环境限制或原图过大，该图片的视觉信息提取失败，已转为纯文本占位符，请提醒用户注意。</system_meta>"
         )
     } else {
-        format!("[附件文件: {path}]")
+        format!("[附件文件: {file_name}]")
     };
     json!({"type": "text", "text": text})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_file, fallback_file_part, safe_attachment_name};
+    use std::path::Path;
+
+    #[test]
+    fn classify_file_prefers_declared_image_mime_without_extension() {
+        assert_eq!(
+            classify_file(Path::new("/tmp/no-extension"), Some("image/png")),
+            ("image", "image_url")
+        );
+        assert_eq!(
+            classify_file(Path::new("/tmp/no-extension"), Some("image")),
+            ("image", "image_url")
+        );
+    }
+
+    #[test]
+    fn classify_file_accepts_mime_parameters() {
+        assert_eq!(
+            classify_file(
+                Path::new("/tmp/no-extension"),
+                Some(" IMAGE/PNG ; charset=binary ")
+            ),
+            ("image", "image_url")
+        );
+    }
+
+    #[test]
+    fn classify_file_falls_back_to_known_extensions() {
+        assert_eq!(
+            classify_file(
+                Path::new("/tmp/photo.png"),
+                Some("application/octet-stream")
+            ),
+            ("image", "image_url")
+        );
+        assert_eq!(
+            classify_file(Path::new("/tmp/sound.mp3"), None),
+            ("audio", "input_audio")
+        );
+        assert_eq!(
+            classify_file(Path::new("/tmp/movie.mp4"), None),
+            ("video", "image_url")
+        );
+    }
+
+    #[test]
+    fn classify_file_prefers_mime_over_conflicting_extension() {
+        assert_eq!(
+            classify_file(Path::new("/tmp/not-really-audio.mp3"), Some("image/jpeg")),
+            ("image", "image_url")
+        );
+    }
+
+    #[test]
+    fn safe_attachment_name_handles_posix_and_windows_paths() {
+        assert_eq!(
+            safe_attachment_name(None, "/private/app/cache/photo.png"),
+            "photo.png"
+        );
+        assert_eq!(
+            safe_attachment_name(Some(r"C:\Users\Alice\Pictures\holiday.jpg"), "/ignored"),
+            "holiday.jpg"
+        );
+    }
+
+    #[test]
+    fn image_fallback_uses_only_safe_name_and_keeps_failure_notice() {
+        let posix_name = safe_attachment_name(None, "/private/app/cache/photo.png");
+        let posix_part = fallback_file_part(&posix_name, "image");
+        let posix_text = posix_part["text"].as_str().expect("fallback text");
+        assert!(posix_text.contains("photo.png"));
+        assert!(!posix_text.contains("/private/app/cache"));
+        assert!(posix_text.contains("该图片的视觉信息提取失败"));
+
+        let windows_name = safe_attachment_name(None, r"C:\Users\Alice\Pictures\holiday.jpg");
+        let windows_part = fallback_file_part(&windows_name, "image");
+        let windows_text = windows_part["text"].as_str().expect("fallback text");
+        assert!(windows_text.contains("holiday.jpg"));
+        assert!(!windows_text.contains(r"C:\Users\Alice"));
+        assert!(windows_text.contains("该图片的视觉信息提取失败"));
+    }
 }

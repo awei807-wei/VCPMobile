@@ -1,4 +1,4 @@
-use crate::vcp_modules::chat_manager::ChatMessage;
+use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
 use serde_json::{json, Value};
 use sqlx::{Pool, Sqlite};
 
@@ -96,6 +96,37 @@ fn prepend_system_prompt(messages: &mut Vec<Value>, base_system_prompt: String) 
     }
 }
 
+fn attachment_path(attachment: &Attachment) -> &str {
+    if !attachment.internal_path.is_empty() {
+        &attachment.internal_path
+    } else {
+        &attachment.src
+    }
+}
+
+fn sanitized_file_name(candidate: &str) -> Option<String> {
+    let base_name = candidate
+        .rsplit(|character| character == '/' || character == '\\')
+        .next()
+        .unwrap_or(candidate);
+    let cleaned = base_name
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() || matches!(cleaned, "." | "..") {
+        None
+    } else {
+        Some(cleaned.to_string())
+    }
+}
+
+fn attachment_display_name(attachment: &Attachment, path: &str) -> String {
+    sanitized_file_name(&attachment.name)
+        .or_else(|| sanitized_file_name(path))
+        .unwrap_or_else(|| "附件".to_string())
+}
+
 /// =================================================================
 /// 🌌 微观历史记录编织器 (assemble_history_for_vcp)
 /// =================================================================
@@ -118,9 +149,9 @@ fn prepend_system_prompt(messages: &mut Vec<Value>, base_system_prompt: String) 
 /// -------------------------------------------------------------
 /// 1. 【文档类提取】：若附件（如 PDF、DOCX、TXT 等）已被 Rust 底层流水线提取为文本 `extracted_text`，
 ///    将以极其工整的形式通过内联闭环标签嵌入到文本尾部：
-///    `\n\n[附加文件: {path}]\n{text}\n[/附加文件结束: {name}]`
-/// 2. 【多模态富资产】：如果是图片、音频或视频资产，自动将其编译为带 MIME 与本地安全路径的 `local_file`
-///    标准 JSON 对象（供底层 VCP Client 执行多模态 Payload 投递），并辅以内联标记供纯文本后备降级渲染。
+///    `\n\n[附加文件: {name}]\n{text}\n[/附加文件结束: {name}]`
+/// 2. 【多模态富资产】：图片、音频或视频资产仅编译为带 MIME、本地路径与安全文件名的 `local_file`
+///    标准 JSON 对象。网络请求预处理成功时只发送真实多模态节点；只有转换失败时才由下游生成纯文本降级提示。
 pub fn assemble_history_for_vcp(
     history: &[ChatMessage],
     is_group: bool,
@@ -168,50 +199,36 @@ pub fn assemble_history_for_vcp(
 
         if let Some(attachments) = &msg.attachments {
             for att in attachments {
+                let path = attachment_path(att);
+                let display_name = attachment_display_name(att, path);
+
                 // 1. 处理提取的文本内容 (文档类)
                 if let Some(text) = &att.extracted_text {
                     if !text.is_empty() {
                         combined_text.push_str(&format!(
                             "\n\n[附加文件: {}]\n{}\n[/附加文件结束: {}]",
-                            att.internal_path, text, att.name
+                            display_name, text, display_name
                         ));
                     }
                 }
 
-                // 2. 处理多模态文件 (图片/音频/视频)
+                // 2. 处理多模态文件 (图片/音频/视频)。成功路径只发送 local_file，
+                // 不把本地路径或附件占位符混入模型正文。
                 let mime = &att.r#type;
-                let is_image = mime.starts_with("image/");
-                let is_audio = mime.starts_with("audio/");
-                let is_video = mime.starts_with("video/");
+                let normalized_mime = mime.to_ascii_lowercase();
+                let is_image = normalized_mime == "image" || normalized_mime.starts_with("image/");
+                let is_audio = normalized_mime == "audio" || normalized_mime.starts_with("audio/");
+                let is_video = normalized_mime == "video" || normalized_mime.starts_with("video/");
 
                 if is_image || is_audio || is_video {
-                    let path = if !att.internal_path.is_empty() {
-                        att.internal_path.clone()
-                    } else {
-                        att.src.clone()
-                    };
-
-                    if is_image {
-                        combined_text
-                            .push_str(&format!("\n\n[附加图片: {}] (文件名: {})", path, att.name));
-                    } else {
-                        combined_text
-                            .push_str(&format!("\n\n[附加文件: {}] (文件名: {})", path, att.name));
-                    }
-
                     content_parts.push(json!({
                         "type": "local_file",
                         "path": path,
-                        "mime": mime
+                        "mime": mime,
+                        "name": display_name
                     }));
                 } else if att.extracted_text.is_none() {
-                    let path = if !att.internal_path.is_empty() {
-                        att.internal_path.clone()
-                    } else {
-                        att.src.clone()
-                    };
-                    combined_text
-                        .push_str(&format!("\n\n[附加文件: {}] (文件名: {})", path, att.name));
+                    combined_text.push_str(&format!("\n\n[附加文件: {}]", display_name));
                 }
             }
         }
@@ -282,4 +299,139 @@ pub fn assemble_history_for_vcp(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{assemble_history_for_vcp, Attachment, ChatMessage};
+
+    fn attachment(mime: &str, path: &str, name: &str) -> Attachment {
+        Attachment {
+            r#type: mime.to_string(),
+            internal_path: path.to_string(),
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn user_message(content: &str, attachments: Vec<Attachment>) -> ChatMessage {
+        ChatMessage {
+            id: "message-1".to_string(),
+            role: "user".to_string(),
+            content: content.to_string(),
+            timestamp: 1_700_000_000_000,
+            attachments: Some(attachments),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn text_and_image_emit_text_plus_local_file_without_visible_placeholder() {
+        let image_path = "/private/app/cache/photo.png";
+        let history = vec![user_message(
+            "请看这张图",
+            vec![attachment("image/png", image_path, "photo.png")],
+        )];
+
+        let messages = assemble_history_for_vcp(&history, false, false);
+        let parts = messages[0]["content"].as_array().expect("content parts");
+        let text = parts[0]["text"].as_str().expect("text part");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(text, "请看这张图");
+        assert!(!text.contains("[附加图片"));
+        assert!(!text.contains(image_path));
+        assert_eq!(parts[1]["type"], "local_file");
+        assert_eq!(parts[1]["path"], image_path);
+        assert_eq!(parts[1]["mime"], "image/png");
+        assert_eq!(parts[1]["name"], "photo.png");
+    }
+
+    #[test]
+    fn image_only_message_does_not_create_empty_text_part() {
+        let history = vec![user_message(
+            "",
+            vec![attachment("image", "/private/app/photo", "photo.png")],
+        )];
+
+        let messages = assemble_history_for_vcp(&history, false, false);
+        let parts = messages[0]["content"].as_array().expect("content parts");
+
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "local_file");
+        assert_eq!(parts[0]["mime"], "image");
+    }
+
+    #[test]
+    fn multiple_images_keep_attachment_order_and_accept_both_image_mime_forms() {
+        let history = vec![user_message(
+            "",
+            vec![
+                attachment("image", "/private/app/first", "first.png"),
+                attachment("image/png", "/private/app/second.png", "second.png"),
+            ],
+        )];
+
+        let messages = assemble_history_for_vcp(&history, false, false);
+        let parts = messages[0]["content"].as_array().expect("content parts");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["name"], "first.png");
+        assert_eq!(parts[0]["mime"], "image");
+        assert_eq!(parts[1]["name"], "second.png");
+        assert_eq!(parts[1]["mime"], "image/png");
+    }
+
+    #[test]
+    fn group_image_message_keeps_sender_prefix_without_image_placeholder() {
+        let image_path = "/private/group/photo.png";
+        let mut message = user_message("", vec![attachment("image/png", image_path, "photo.png")]);
+        message.name = Some("Alice".to_string());
+
+        let messages = assemble_history_for_vcp(&[message], true, false);
+        let parts = messages[0]["content"].as_array().expect("content parts");
+        let text = parts[0]["text"].as_str().expect("sender prefix");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(text, "[Alice的发言]:\n");
+        assert!(!text.contains("[附加图片"));
+        assert!(!text.contains(image_path));
+        assert_eq!(parts[1]["type"], "local_file");
+    }
+
+    #[test]
+    fn extracted_document_text_uses_safe_file_name_in_markers() {
+        let mut document = attachment(
+            "application/pdf",
+            "/private/app/documents/report.pdf",
+            r"C:\Users\Alice\Documents\report.pdf",
+        );
+        document.extracted_text = Some("document body".to_string());
+        let history = vec![user_message("请总结", vec![document])];
+
+        let messages = assemble_history_for_vcp(&history, false, false);
+        let text = messages[0]["content"].as_str().expect("text content");
+
+        assert!(text.contains("[附加文件: report.pdf]\ndocument body\n[/附加文件结束: report.pdf]"));
+        assert!(!text.contains("/private/app/documents"));
+        assert!(!text.contains(r"C:\Users\Alice"));
+    }
+
+    #[test]
+    fn ordinary_file_placeholder_uses_only_safe_file_name() {
+        let history = vec![user_message(
+            "附件如下",
+            vec![attachment(
+                "application/octet-stream",
+                "/private/app/files/archive.zip",
+                "",
+            )],
+        )];
+
+        let messages = assemble_history_for_vcp(&history, false, false);
+        let text = messages[0]["content"].as_str().expect("text content");
+
+        assert!(text.contains("[附加文件: archive.zip]"));
+        assert!(!text.contains("/private/app/files"));
+    }
 }

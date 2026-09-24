@@ -213,10 +213,6 @@ fn apply_user_suffix_rules(messages: &mut [Value], rules: &[TarvenRule]) {
     else {
         return;
     };
-    let mut content = messages[index]["content"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
     let prepend = prepend
         .iter()
         .map(|rule| render_rule_content(rule))
@@ -225,9 +221,45 @@ fn apply_user_suffix_rules(messages: &mut [Value], rules: &[TarvenRule]) {
         .iter()
         .map(|rule| render_rule_content(rule))
         .collect::<Vec<_>>();
-    prepend_content(&mut content, &prepend);
-    append_content(&mut content, &append);
-    messages[index]["content"] = Value::String(content);
+    apply_user_rules_to_content(&mut messages[index]["content"], &prepend, &append);
+}
+
+fn apply_user_rules_to_content(content: &mut Value, prepend: &[String], append: &[String]) {
+    match content {
+        Value::String(text) => {
+            prepend_content(text, prepend);
+            append_content(text, append);
+        }
+        Value::Array(parts) => {
+            if let Some(text_part) = parts
+                .iter_mut()
+                .find(|part| part["type"].as_str() == Some("text"))
+            {
+                let mut text = text_part["text"].as_str().unwrap_or("").to_string();
+                prepend_content(&mut text, prepend);
+                append_content(&mut text, append);
+                text_part["text"] = Value::String(text);
+                return;
+            }
+
+            if !prepend.is_empty() {
+                let mut text = String::new();
+                prepend_content(&mut text, prepend);
+                parts.insert(0, serde_json::json!({"type": "text", "text": text}));
+            }
+            if !append.is_empty() {
+                let mut text = String::new();
+                append_content(&mut text, append);
+                parts.push(serde_json::json!({"type": "text", "text": text}));
+            }
+        }
+        _ => {
+            let mut text = String::new();
+            prepend_content(&mut text, prepend);
+            append_content(&mut text, append);
+            *content = Value::String(text);
+        }
+    }
 }
 
 fn apply_context_rules(messages: &mut Vec<Value>, rules: &[TarvenRule]) {
@@ -311,4 +343,127 @@ fn default_preview_messages() -> Vec<Value> {
         }),
         serde_json::json!({ "role": "user", "content": "帮我写一首关于秋天的诗。" }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_user_suffix_rules, TarvenRule};
+    use serde_json::json;
+
+    fn user_suffix_rule(content: &str, position: &str) -> TarvenRule {
+        TarvenRule {
+            id: format!("user-{position}"),
+            name: format!("user {position}"),
+            rule_type: "user_suffix".to_string(),
+            is_enabled: true,
+            content: content.to_string(),
+            scope: "global".to_string(),
+            wrap: false,
+            role: None,
+            depth: None,
+            position: Some(position.to_string()),
+            sort_order: 0,
+        }
+    }
+
+    #[test]
+    fn user_suffix_updates_text_part_without_touching_local_file() {
+        let local_file = json!({
+            "type": "local_file",
+            "path": "/private/app/photo.png",
+            "mime": "image/png",
+            "name": "photo.png"
+        });
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "original"},
+                local_file.clone()
+            ]
+        })];
+        let rules = vec![
+            user_suffix_rule("prepend", "prepend"),
+            user_suffix_rule("append", "append"),
+        ];
+
+        apply_user_suffix_rules(&mut messages, &rules);
+
+        let parts = messages[0]["content"].as_array().expect("content parts");
+        assert_eq!(parts[0]["text"], "prepend\n\noriginal\n\nappend");
+        assert_eq!(parts[1], local_file);
+    }
+
+    #[test]
+    fn user_suffix_appends_text_after_image_only_content() {
+        let local_file = json!({"type": "local_file", "path": "/tmp/photo.png"});
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [local_file.clone()]
+        })];
+
+        apply_user_suffix_rules(&mut messages, &[user_suffix_rule("append", "append")]);
+
+        let parts = messages[0]["content"].as_array().expect("content parts");
+        assert_eq!(
+            parts,
+            &[local_file, json!({"type": "text", "text": "append"})]
+        );
+    }
+
+    #[test]
+    fn user_suffix_prepends_text_before_image_only_content() {
+        let local_file = json!({"type": "local_file", "path": "/tmp/photo.png"});
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [local_file.clone()]
+        })];
+
+        apply_user_suffix_rules(&mut messages, &[user_suffix_rule("prepend", "prepend")]);
+
+        let parts = messages[0]["content"].as_array().expect("content parts");
+        assert_eq!(
+            parts,
+            &[json!({"type": "text", "text": "prepend"}), local_file]
+        );
+    }
+
+    #[test]
+    fn user_suffix_keeps_multiple_images_ordered_between_new_text_parts() {
+        let first = json!({"type": "local_file", "path": "/tmp/first.png"});
+        let second = json!({"type": "local_file", "path": "/tmp/second.png"});
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [first.clone(), second.clone()]
+        })];
+        let rules = vec![
+            user_suffix_rule("prepend", "prepend"),
+            user_suffix_rule("append", "append"),
+        ];
+
+        apply_user_suffix_rules(&mut messages, &rules);
+
+        let parts = messages[0]["content"].as_array().expect("content parts");
+        assert_eq!(
+            parts,
+            &[
+                json!({"type": "text", "text": "prepend"}),
+                first,
+                second,
+                json!({"type": "text", "text": "append"})
+            ]
+        );
+    }
+
+    #[test]
+    fn user_suffix_preserves_string_content_behavior() {
+        let mut messages = vec![json!({"role": "user", "content": "original"})];
+        let rules = vec![
+            user_suffix_rule("prepend", "prepend"),
+            user_suffix_rule("append", "append"),
+        ];
+
+        apply_user_suffix_rules(&mut messages, &rules);
+
+        assert_eq!(messages[0]["content"], "prepend\n\noriginal\n\nappend");
+    }
 }

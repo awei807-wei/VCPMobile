@@ -26,7 +26,7 @@ pub(crate) async fn build_http_client(
 ) -> Result<reqwest::Client, String> {
     let result = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .build();
     match result {
         Ok(client) => Ok(client),

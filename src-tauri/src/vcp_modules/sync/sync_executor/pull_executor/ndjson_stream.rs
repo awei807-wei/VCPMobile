@@ -14,6 +14,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use tauri::{AppHandle, Runtime};
 use tokio_util::bytes::{Bytes, BytesMut};
 
+/// 流式拉取的终止原因；`received_topics` 让调用方判断是否可以安全重试。
+pub(crate) struct StreamFailure {
+    pub message: String,
+    pub received_topics: usize,
+    pub transport: bool,
+}
+
 pub(crate) async fn consume_stream<R: Runtime>(
     app: &AppHandle<R>,
     response: reqwest::Response,
@@ -22,7 +29,7 @@ pub(crate) async fn consume_stream<R: Runtime>(
     write_queue: &DbWriteQueue,
     prerender_enabled: bool,
     progress: Option<PullProgressContext>,
-) -> Result<Vec<BatchPullResult>, String> {
+) -> Result<Vec<BatchPullResult>, StreamFailure> {
     let mut state = StreamState {
         app,
         expected_messages,
@@ -36,9 +43,27 @@ pub(crate) async fn consume_stream<R: Runtime>(
         results: Vec::with_capacity(expected_messages.len()),
     };
     let mut stream = response.bytes_stream();
-    consume_chunks(&mut stream, &mut state).await?;
-    consume_trailing_line(&mut state).await?;
-    ensure_expected_topics(expected_messages, &state.seen_topics)?;
+    if let Err((message, transport)) = consume_chunks(&mut stream, &mut state).await {
+        return Err(StreamFailure {
+            message,
+            received_topics: state.seen_topics.len(),
+            transport,
+        });
+    }
+    if let Err(message) = consume_trailing_line(&mut state).await {
+        return Err(StreamFailure {
+            message,
+            received_topics: state.seen_topics.len(),
+            transport: false,
+        });
+    }
+    if let Err(message) = ensure_expected_topics(expected_messages, &state.seen_topics) {
+        return Err(StreamFailure {
+            message,
+            received_topics: state.seen_topics.len(),
+            transport: false,
+        });
+    }
     Ok(state.results)
 }
 
@@ -91,21 +116,40 @@ struct StreamState<'a, R: Runtime> {
     results: Vec<BatchPullResult>,
 }
 
-async fn consume_chunks<S, R>(stream: &mut S, state: &mut StreamState<'_, R>) -> Result<(), String>
+async fn consume_chunks<S, R>(
+    stream: &mut S,
+    state: &mut StreamState<'_, R>,
+) -> Result<(), (String, bool)>
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
     R: Runtime,
 {
     while let Some(chunk_result) = tokio::time::timeout(super::NDJSON_IDLE_TIMEOUT, stream.next())
         .await
-        .map_err(|_| "NDJSON stream idle timeout after 30 seconds".to_string())?
+        .map_err(|_| {
+            (
+                format!(
+                    "NDJSON stream idle timeout after {} seconds ({} of {} topics received)",
+                    super::NDJSON_IDLE_TIMEOUT.as_secs(),
+                    state.seen_topics.len(),
+                    state.expected_messages.len(),
+                ),
+                true,
+            )
+        })?
     {
-        let chunk = chunk_result.map_err(|error| format!("NDJSON stream read error: {error}"))?;
-        state.budget.observe_chunk(chunk.len())?;
+        let chunk =
+            chunk_result.map_err(|error| (format!("NDJSON stream read error: {error}"), true))?;
+        state
+            .budget
+            .observe_chunk(chunk.len())
+            .map_err(|error| (error, false))?;
         state.buffer.extend_from_slice(&chunk);
-        consume_complete_lines(state).await?;
+        consume_complete_lines(state)
+            .await
+            .map_err(|error| (error, false))?;
         if state.buffer.len() > super::MAX_NDJSON_LINE_BYTES {
-            return Err("NDJSON frame exceeds 32 MiB budget".to_string());
+            return Err(("NDJSON frame exceeds 32 MiB budget".to_string(), false));
         }
     }
     Ok(())

@@ -61,18 +61,74 @@ impl PullExecutor {
                 })
             })
             .collect::<Vec<_>>();
-        let response = request_stream(client, http_url, sync_token, request_body).await?;
-        consume_stream(
-            app,
-            response,
-            &expected,
-            expected_local_states,
-            write_queue,
-            prerender_enabled,
-            progress,
-        )
-        .await
+        // 桌面端在极少数情况下会长时间不产出首帧（VCP-CDS 正忙或连接假死）。
+        // 只要还没有收到任何 topic，重放整批是安全的；换一个全新的连接重试一次，
+        // 避免一条停滞的连接让整个 Phase 3 直接失败。
+        let mut attempt = 0_u8;
+        let mut retry_client: Option<reqwest::Client> = None;
+        loop {
+            let active_client = retry_client.as_ref().unwrap_or(client);
+            let response = match request_stream(
+                active_client,
+                http_url,
+                sync_token,
+                request_body.clone(),
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(error) if attempt == 0 => {
+                    crate::vcp_modules::sync_service::emit_sync_log(
+                        app,
+                        "warn",
+                        &format!(
+                            "Message pull request failed ({error}); retrying once on a fresh connection"
+                        ),
+                    );
+                    attempt = 1;
+                    retry_client = Some(build_retry_client()?);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match consume_stream(
+                app,
+                response,
+                &expected,
+                expected_local_states,
+                write_queue,
+                prerender_enabled,
+                progress.clone(),
+            )
+            .await
+            {
+                Ok(results) => return Ok(results),
+                Err(failure)
+                    if attempt == 0 && failure.transport && failure.received_topics == 0 =>
+                {
+                    crate::vcp_modules::sync_service::emit_sync_log(
+                        app,
+                        "warn",
+                        &format!(
+                            "Message pull produced no topic data ({}); retrying once on a fresh connection",
+                            failure.message
+                        ),
+                    );
+                    attempt = 1;
+                    retry_client = Some(build_retry_client()?);
+                }
+                Err(failure) => return Err(failure.message),
+            }
+        }
     }
+}
+
+fn build_retry_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|error| format!("Message pull retry client initialization failed: {error}"))
 }
 
 fn validate_pull_requests(

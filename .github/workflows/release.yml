@@ -223,6 +223,33 @@ jobs:
           # 3. 保存路径供后续步骤使用
           echo "SOURCE_APK=$SOURCE_APK" >> "$GITHUB_ENV"
 
+      - name: Verify APK version matches release tag
+        shell: bash
+        run: |
+          APK="${{ env.SOURCE_APK }}"
+          AAPT="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aapt"
+          if [[ ! -x "$AAPT" ]]; then
+            echo "Pinned aapt not found: $AAPT" >&2
+            exit 1
+          fi
+
+          # aapt 的 badging 输出含 NUL 字节；先剔除，避免 grep 按二进制处理。
+          BADGING=$("$AAPT" dump badging "$APK" 2>/dev/null | tr -d '\000')
+          PACKAGE_LINE=$(printf '%s\n' "$BADGING" | grep -a '^package:' | head -1)
+          ACTUAL_NAME=$(printf '%s\n' "$PACKAGE_LINE" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          ACTUAL_CODE=$(printf '%s\n' "$PACKAGE_LINE" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
+
+          EXPECTED_NAME="${{ steps.meta.outputs.version }}"
+          EXPECTED_CODE="${{ steps.meta.outputs.android_version_code }}"
+
+          echo "APK versionName: $ACTUAL_NAME (expected $EXPECTED_NAME)"
+          echo "APK versionCode: $ACTUAL_CODE (expected $EXPECTED_CODE)"
+
+          if [[ "$ACTUAL_NAME" != "$EXPECTED_NAME" || "$ACTUAL_CODE" != "$EXPECTED_CODE" ]]; then
+            echo "ERROR: APK version does not match release tag ${{ steps.meta.outputs.tag }}" >&2
+            exit 1
+          fi
+
       - name: Verify arm64 ABI and 16KB alignment
         shell: bash
         run: |
@@ -244,6 +271,13 @@ jobs:
           target_apk="release-artifacts/VCPMobile_v${{ steps.meta.outputs.version }}_arm64-v8a.apk"
           cp "$source_apk" "$target_apk"
 
+          # 提供 sha256 校验文件，方便下载后核对是否拿到正确的安装包。
+          (
+            cd release-artifacts
+            apk_name="$(basename "$target_apk")"
+            sha256sum "$apk_name" > "${apk_name}.sha256"
+          )
+
           # 打包前端热更新资源
           if [[ -d "dist" ]]; then
             frontend_zip="release-artifacts/frontend-dist-v${{ steps.meta.outputs.version }}.zip"
@@ -260,4 +294,5 @@ jobs:
           append_body: true
           files: |
             ${{ steps.artifacts.outputs.artifact_dir }}/*.apk
+            ${{ steps.artifacts.outputs.artifact_dir }}/*.sha256
             ${{ steps.artifacts.outputs.artifact_dir }}/frontend-dist-*.zip

@@ -28,6 +28,15 @@ pub(super) async fn handle_command(
         SyncCommand::StartMessages { attempt_id } => start_messages(ctx, attempt_id).await,
         SyncCommand::Finalize { attempt_id } => finalize(ctx, attempt_id).await,
         SyncCommand::NotifyDelete { target, deleted_at } => {
+            // 历史版本创建的实体可能带中文 ID；桌面插件会在
+            // SYNC_ENTITY_DELETE 校验中直接拒绝，反复上报只会让同步一直报错。
+            if !target.is_desktop_compatible() {
+                log::warn!(
+                    "[sync] skip local-only delete for {}: id is not accepted by the desktop",
+                    target.owner_id()
+                );
+                return AttemptAction::Continue;
+            }
             super::send_frame(ctx, &DeleteNotificationFrame::new(target, deleted_at)).await
         }
         SyncCommand::SendMessageDiff { attempt_id, topics } => {

@@ -1,6 +1,7 @@
 use super::AgentConfigState;
 use crate::vcp_modules::agent_types::AgentConfig;
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::infra::utils::desktop_compatible_id_base;
 use crate::vcp_modules::sync_dto::{AgentSyncDTO, AgentTopicSyncDTO};
 use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::sync_service::{SyncCommand, SyncState};
@@ -160,10 +161,7 @@ pub async fn create_agent<R: Runtime>(
     initial_config: Option<serde_json::Value>,
 ) -> Result<AgentConfig, String> {
     let timestamp = crate::vcp_modules::infra::utils::now_millis();
-    let base_id = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-        .collect::<String>();
+    let base_id = desktop_compatible_id_base(&name);
     let agent_id = format!("{base_id}_{timestamp}");
     let config = build_new_agent_config(&agent_id, &name, timestamp, initial_config)?;
     let owner_lock = state.acquire_lock(&agent_id).await;

@@ -52,6 +52,33 @@ pub fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
+/// 按 VCPChat 的实体 ID 规则，将显示名称映射为可移植的 ASCII 路径段。
+///
+/// 桌面端使用 JavaScript UTF-16 正则逐 code unit 将非 `[a-zA-Z0-9_-]`
+/// 字符替换为下划线；这里保留相同语义，避免 Android 创建出桌面端无法接收的 Owner ID。
+pub(crate) fn desktop_compatible_id_base(name: &str) -> String {
+    name.encode_utf16()
+        .map(|unit| match u8::try_from(unit) {
+            Ok(byte) if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-') => {
+                char::from(byte)
+            }
+            _ => '_',
+        })
+        .collect()
+}
+
+/// 判断实体 ID 是否满足 VCPChat 桌面端的身份契约。
+///
+/// 桌面同步插件以 `sanitizeId(id) === id` 校验每个 Owner/Topic ID，即只接受
+/// ASCII 字母、数字、下划线与连字符。历史版本可能写出中文 ID，这类实体既不能
+/// 被桌面端 PUSH，也不能被 PUSH_DELETE，只能视为“仅本机”数据。
+pub(crate) fn is_desktop_compatible_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 /// 计算多个字节切片（不连续数据段）的标准 SHA-256 十六进制摘要字串（统一小写输出）
 pub fn calculate_sha256_slices(slices: &[&[u8]]) -> String {
     use sha2::{Digest, Sha256};
@@ -152,5 +179,21 @@ mod tests {
             normalize_vcp_url("  http://localhost:3000/  "),
             "http://localhost:3000/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn desktop_compatible_id_base_matches_vchat_ascii_replacement() {
+        assert_eq!(desktop_compatible_id_base("Agent-01_ok"), "Agent-01_ok");
+        assert_eq!(desktop_compatible_id_base("测试1"), "__1");
+        assert_eq!(desktop_compatible_id_base("A B/😀"), "A_B___");
+    }
+
+    #[test]
+    fn desktop_compatible_id_rejects_non_ascii_and_empty_ids() {
+        assert!(is_desktop_compatible_id("___1792349485485"));
+        assert!(is_desktop_compatible_id("topic_1792349485485"));
+        assert!(!is_desktop_compatible_id("测试_1792349485485"));
+        assert!(!is_desktop_compatible_id(""));
+        assert!(!is_desktop_compatible_id("agent/one"));
     }
 }

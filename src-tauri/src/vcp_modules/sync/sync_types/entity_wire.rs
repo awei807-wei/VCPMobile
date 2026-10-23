@@ -4,6 +4,7 @@ use super::common::{
 };
 use super::entity::EntitySelector;
 use super::transport::{is_valid_avatar_owner, AvatarOwnerType, OwnerType};
+use crate::vcp_modules::infra::utils::is_desktop_compatible_id;
 use crate::vcp_modules::sync_dto::{
     AgentSyncDTO, AgentTopicSyncDTO, GroupSyncDTO, GroupTopicSyncDTO,
 };
@@ -274,6 +275,35 @@ pub enum DeleteTarget {
         owner_id: String,
     },
     Message(MessageKey),
+}
+
+impl DeleteTarget {
+    /// 桌面端身份校验使用的 Owner ID。
+    pub fn owner_id(&self) -> &str {
+        match self {
+            Self::Owner { owner_id, .. } => owner_id,
+            Self::Topic(key) => &key.owner_id,
+            Self::Avatar { owner_id, .. } => owner_id,
+            Self::Message(key) => &key.topic.owner_id,
+        }
+    }
+
+    /// 桌面插件只接受 `[a-zA-Z0-9_-]` 组成的身份，历史中文 ID 连删除帧都会被拒绝。
+    pub fn is_desktop_compatible(&self) -> bool {
+        match self {
+            Self::Owner { owner_id, .. } | Self::Avatar { owner_id, .. } => {
+                is_desktop_compatible_id(owner_id)
+            }
+            Self::Topic(key) => {
+                is_desktop_compatible_id(&key.owner_id) && is_desktop_compatible_id(&key.topic_id)
+            }
+            Self::Message(key) => {
+                is_desktop_compatible_id(&key.topic.owner_id)
+                    && is_desktop_compatible_id(&key.topic.topic_id)
+                    && is_desktop_compatible_id(&key.msg_id)
+            }
+        }
+    }
 }
 
 fn validate_pull_results(results: &[EntityPullResult]) -> Result<(), String> {

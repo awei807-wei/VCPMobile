@@ -62,6 +62,49 @@ async fn owner_manifest_combines_agent_and_group_states_with_tombstones() {
 }
 
 #[tokio::test]
+async fn owner_manifest_skips_ids_the_desktop_cannot_accept() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open database");
+    sqlx::query(
+        "CREATE TABLE agents (
+            agent_id TEXT, config_hash TEXT, content_hash TEXT,
+            updated_at INTEGER, deleted_at INTEGER
+         );
+         CREATE TABLE groups (
+            group_id TEXT, config_hash TEXT, content_hash TEXT,
+            updated_at INTEGER, deleted_at INTEGER
+         );
+         INSERT INTO agents VALUES
+            ('agent-a', ?, ?, 10, NULL),
+            ('测试_1792349485485', ?, ?, 12, 11);
+         INSERT INTO groups VALUES
+            ('group-a', ?, ?, 13, NULL);",
+    )
+    .bind(hash('a'))
+    .bind(hash('b'))
+    .bind(hash('c'))
+    .bind(hash('d'))
+    .bind(hash('e'))
+    .bind(hash('f'))
+    .execute(&pool)
+    .await
+    .expect("create owner fixture");
+
+    let ManifestRequest::Owner { items } = Phase1Metadata::build_owner_manifest(&pool)
+        .await
+        .expect("build owner manifest")
+    else {
+        panic!("owner builder returned another manifest type");
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(&items[0], OwnerManifestState::Live(value) if value.owner_id == "agent-a"));
+    assert!(matches!(&items[1], OwnerManifestState::Live(value) if value.owner_id == "group-a"));
+}
+
+#[tokio::test]
 async fn targeted_topic_manifest_keeps_same_topic_id_in_distinct_owner_namespaces() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)

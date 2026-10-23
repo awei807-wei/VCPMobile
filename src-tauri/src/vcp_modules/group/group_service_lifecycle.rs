@@ -1,6 +1,7 @@
 use super::GroupManagerState;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::group_types::GroupConfig;
+use crate::vcp_modules::infra::utils::desktop_compatible_id_base;
 use crate::vcp_modules::sync_dto::{GroupSyncDTO, GroupTopicSyncDTO};
 use crate::vcp_modules::sync_hash::HashAggregator;
 use crate::vcp_modules::sync_service::{SyncCommand, SyncState};
@@ -16,11 +17,8 @@ pub async fn create_group<R: Runtime>(
     name: String,
 ) -> Result<GroupConfig, String> {
     let timestamp = crate::vcp_modules::infra::utils::now_millis();
-    let base_id = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-        .collect::<String>();
-    let group_id = format!("____{base_id}_{timestamp}");
+    let base_id = desktop_compatible_id_base(&name);
+    let group_id = format!("{base_id}_{timestamp}");
     let config = default_group_config(&group_id, &name, timestamp);
     let owner_lock = state.acquire_lock(&group_id).await;
     let _owner_guard = owner_lock.lock().await;

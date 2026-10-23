@@ -1,3 +1,4 @@
+use crate::vcp_modules::infra::utils::is_desktop_compatible_id;
 use crate::vcp_modules::sync_types::{
     ManifestRequest, OwnerManifestDeleted, OwnerManifestLive, OwnerManifestState, OwnerType,
     TopicManifestDeleted, TopicManifestLive, TopicManifestState, MAX_MANIFEST_ITEMS,
@@ -218,11 +219,23 @@ impl Phase1Metadata {
         .fetch_all(pool)
         .await
         .map_err(|error| format!("Owner manifest query failed: {error}"))?;
-        validate_count(rows.len(), "owner manifest")?;
-        let items = rows
-            .iter()
-            .map(owner_manifest_state)
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            let owner_id: String = row
+                .try_get("owner_id")
+                .map_err(|error| format!("Owner manifest id decode failed: {error}"))?;
+            // 历史版本可能把中文名称写进 Owner ID。桌面插件只接受
+            // `[a-zA-Z0-9_-]`，这类实体既不能 PUSH 也不能 PUSH_DELETE，
+            // 继续上报只会让每轮同步都以 SYNC_REQUEST_INVALID 失败。
+            if !is_desktop_compatible_id(&owner_id) {
+                log::warn!(
+                    "[sync] skip local-only owner {owner_id}: id is not accepted by the desktop"
+                );
+                continue;
+            }
+            items.push(owner_manifest_state(row)?);
+        }
+        validate_count(items.len(), "owner manifest")?;
         let manifest = ManifestRequest::Owner { items };
         manifest.validate()?;
         Ok(manifest)
@@ -311,11 +324,24 @@ impl Phase1Metadata {
         .fetch_all(pool)
         .await
         .map_err(|error| format!("Avatar manifest query failed: {error}"))?;
-        validate_count(rows.len(), "avatar manifest")?;
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
+            let owner_type: String = row
+                .try_get("owner_type")
+                .map_err(|error| format!("Avatar manifest owner type decode failed: {error}"))?;
+            let owner_id: String = row
+                .try_get("owner_id")
+                .map_err(|error| format!("Avatar manifest owner id decode failed: {error}"))?;
+            // 与 Owner manifest 同源：非桌面兼容 ID 的头像同样无法被接收或删除。
+            if owner_type != "user" && !is_desktop_compatible_id(&owner_id) {
+                log::warn!(
+                    "[sync] skip local-only avatar {owner_type}/{owner_id}: id is not accepted by the desktop"
+                );
+                continue;
+            }
             items.push(avatar_manifest_state(pool, row).await?);
         }
+        validate_count(items.len(), "avatar manifest")?;
         let manifest = ManifestRequest::Avatar { items };
         manifest.validate()?;
         Ok(manifest)

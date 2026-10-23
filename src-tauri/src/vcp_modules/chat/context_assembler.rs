@@ -105,10 +105,7 @@ fn attachment_path(attachment: &Attachment) -> &str {
 }
 
 fn sanitized_file_name(candidate: &str) -> Option<String> {
-    let base_name = candidate
-        .rsplit(|character| character == '/' || character == '\\')
-        .next()
-        .unwrap_or(candidate);
+    let base_name = candidate.rsplit(['/', '\\']).next().unwrap_or(candidate);
     let cleaned = base_name
         .chars()
         .filter(|character| !character.is_control())

@@ -54,6 +54,7 @@ pub(crate) async fn delete_agent_data(
     }
     mark_agent_topics_deleted(&mut tx, agent_id, now).await?;
     mark_agent_messages_deleted(&mut tx, agent_id, now).await?;
+    mark_agent_avatar_deleted(&mut tx, agent_id, now).await?;
     clear_agent_unread_receipts(&mut tx, agent_id).await?;
     clear_agent_attachment_relations(&mut tx, agent_id).await?;
     clear_agent_generations(&mut tx, agent_id).await?;
@@ -113,6 +114,24 @@ async fn mark_agent_messages_deleted(
         "UPDATE messages SET deleted_at = ?
          WHERE owner_type = 'agent' AND owner_id = ?
            AND deleted_at IS NULL",
+    )
+    .bind(now)
+    .bind(agent_id)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+async fn mark_agent_avatar_deleted(
+    tx: &mut Transaction<'_, Sqlite>,
+    agent_id: &str,
+    now: i64,
+) -> Result<(), String> {
+    // 头像跟随所有者一起打墓碑，避免 Phase 1 出现孤儿的活体头像。
+    sqlx::query(
+        "UPDATE avatars SET deleted_at = MAX(COALESCE(deleted_at, 0), ?)
+         WHERE owner_type = 'agent' AND owner_id = ?",
     )
     .bind(now)
     .bind(agent_id)

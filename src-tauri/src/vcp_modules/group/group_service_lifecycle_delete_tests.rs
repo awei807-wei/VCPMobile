@@ -24,6 +24,14 @@ async fn assert_group_delete_rows(pool: &SqlitePool) -> Option<i64> {
     .expect("读取 Group 消息墓碑失败");
     assert!(topic_deleted_at.is_some());
     assert!(message_deleted_at.is_some());
+    let avatar_deleted_at: Option<i64> = sqlx::query_scalar(
+        "SELECT deleted_at FROM avatars
+         WHERE owner_type = 'group' AND owner_id = 'group-a'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("读取 Group 头像墓碑失败");
+    assert!(avatar_deleted_at.is_some(), "头像必须随群组一起打墓碑");
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM active_generations

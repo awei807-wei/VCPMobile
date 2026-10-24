@@ -42,6 +42,10 @@ async fn test_pool(with_attachments: bool) -> SqlitePool {
             owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, topic_id TEXT NOT NULL,
             msg_id TEXT NOT NULL, created_at INTEGER NOT NULL,
             PRIMARY KEY (owner_type, owner_id, topic_id, msg_id)
+        );
+        CREATE TABLE avatars (
+            owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, deleted_at INTEGER,
+            PRIMARY KEY (owner_type, owner_id)
         );",
     )
     .execute(&pool)
@@ -73,7 +77,9 @@ async fn test_pool(with_attachments: bool) -> SqlitePool {
          ) VALUES ('agent', 'agent-a', 'topic-a', 'msg-a', 'user', '消息', 1, 1, 1);
          INSERT INTO active_generations (
             owner_type, owner_id, topic_id, msg_id, created_at
-         ) VALUES ('agent', 'agent-a', 'topic-a', 'msg-a', 1);",
+         ) VALUES ('agent', 'agent-a', 'topic-a', 'msg-a', 1);
+         INSERT INTO avatars (owner_type, owner_id, deleted_at)
+         VALUES ('agent', 'agent-a', NULL);",
     )
     .execute(&pool)
     .await
@@ -126,6 +132,14 @@ async fn assert_agent_delete_rows(pool: &SqlitePool) -> Option<i64> {
     .expect("读取 Agent 消息墓碑失败");
     assert!(topic_deleted_at.is_some());
     assert!(message_deleted_at.is_some());
+    let avatar_deleted_at: Option<i64> = sqlx::query_scalar(
+        "SELECT deleted_at FROM avatars
+         WHERE owner_type = 'agent' AND owner_id = 'agent-a'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("读取 Agent 头像墓碑失败");
+    assert!(avatar_deleted_at.is_some(), "头像必须随 Agent 一起打墓碑");
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM active_generations

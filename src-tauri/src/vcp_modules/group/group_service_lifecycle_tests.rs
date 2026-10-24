@@ -89,7 +89,9 @@ async fn test_pool(with_attachments: bool) -> SqlitePool {
          ) VALUES ('group', 'group-a', 'topic-a', 'msg-a', 'user', '消息', 1, 1, 1);
          INSERT INTO active_generations (
             owner_type, owner_id, topic_id, msg_id, created_at
-         ) VALUES ('group', 'group-a', 'topic-a', 'msg-a', 1);",
+         ) VALUES ('group', 'group-a', 'topic-a', 'msg-a', 1);
+         INSERT INTO avatars (owner_type, owner_id, deleted_at)
+         VALUES ('group', 'group-a', NULL);",
     )
     .execute(&pool)
     .await

@@ -71,8 +71,17 @@ async fn seed_test_pool(pool: sqlx::SqlitePool) -> sqlx::SqlitePool {
             group_id TEXT, agent_id TEXT, member_tag TEXT, updated_at INTEGER,
             PRIMARY KEY(group_id, agent_id)
          );
+         CREATE TABLE avatars (
+            owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, deleted_at INTEGER,
+            PRIMARY KEY(owner_type, owner_id)
+         );
          INSERT INTO agents VALUES ('agent-a', '', 'agent-before', NULL);
-         INSERT INTO groups VALUES ('group-a', '', 'group-before', NULL);",
+         INSERT INTO groups VALUES ('group-a', '', 'group-before', NULL);
+         INSERT INTO avatars (owner_type, owner_id, deleted_at) VALUES
+            ('agent', 'agent-a', NULL),
+            ('agent', 'agent-other', NULL),
+            ('group', 'group-a', NULL),
+            ('user', 'user_avatar', NULL);",
     )
     .execute(&pool)
     .await
@@ -510,6 +519,23 @@ async fn owner_delete_cascades_only_its_namespace() {
     .await
     .expect("read unrelated message");
     assert_eq!(unrelated_deleted, None);
+
+    let owner_avatar_deleted: Option<i64> = sqlx::query_scalar(
+        "SELECT deleted_at FROM avatars
+         WHERE owner_type = 'agent' AND owner_id = 'agent-a'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read owner avatar");
+    assert_eq!(owner_avatar_deleted, Some(60));
+    let unrelated_avatar_deleted: Option<i64> = sqlx::query_scalar(
+        "SELECT deleted_at FROM avatars
+         WHERE owner_type = 'agent' AND owner_id = 'agent-other'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read unrelated avatar");
+    assert_eq!(unrelated_avatar_deleted, None);
 }
 
 #[tokio::test]

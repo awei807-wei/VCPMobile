@@ -190,6 +190,18 @@ async fn cascade_owner_tombstone(
     .execute(&mut **tx)
     .await
     .map_err(|error| format!("级联消息墓碑失败: {error}"))?;
+    // 头像必须跟随所有者一起打墓碑，否则下一次 Phase 1 会看到
+    // “父级已删除、头像仍是活体”的孤儿状态并中断同步。
+    sqlx::query::<Sqlite>(
+        "UPDATE avatars SET deleted_at = MAX(COALESCE(deleted_at, 0), ?)
+         WHERE owner_type = ? AND owner_id = ?",
+    )
+    .bind(deleted_at)
+    .bind(&key.owner_type)
+    .bind(&key.owner_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|error| format!("级联头像墓碑失败: {error}"))?;
     delete_owner_side_tables(tx, key).await
 }
 

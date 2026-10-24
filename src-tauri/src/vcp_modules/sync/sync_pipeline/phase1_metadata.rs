@@ -14,7 +14,7 @@ use topic_fields::decode_topic_live_fields;
 
 #[path = "phase1_avatar.rs"]
 mod avatar;
-use avatar::avatar_manifest_state;
+use avatar::{avatar_manifest_state, repair_orphan_avatars};
 
 const SQLITE_BIND_CHUNK: usize = 400;
 const MAX_SAFE_TIMESTAMP: i64 = 9_007_199_254_740_991;
@@ -301,24 +301,16 @@ impl Phase1Metadata {
     }
 
     pub async fn build_avatar_manifest(pool: &SqlitePool) -> Result<ManifestRequest, String> {
+        // 先把“父级已删除、头像仍活体”的历史孤儿补成墓碑，避免它们
+        // 在清单构建阶段被误判为致命一致性错误而中断整轮同步。
+        let repaired =
+            repair_orphan_avatars(pool, crate::vcp_modules::infra::utils::now_millis()).await?;
+        if repaired > 0 {
+            log::warn!("[sync] repaired {repaired} orphan avatar record(s) with tombstones");
+        }
         let rows = sqlx::query(
-            "SELECT av.owner_id, av.owner_type, av.avatar_hash, av.updated_at, av.deleted_at,
-                    CASE
-                        WHEN av.deleted_at IS NOT NULL THEN 1
-                        WHEN av.owner_type = 'user' THEN 1
-                        WHEN av.owner_type = 'agent' AND agent.agent_id IS NOT NULL THEN 1
-                        WHEN av.owner_type = 'group' AND owner_group.group_id IS NOT NULL THEN 1
-                        ELSE 0
-                    END AS parent_is_live
+            "SELECT av.owner_id, av.owner_type, av.avatar_hash, av.updated_at, av.deleted_at
              FROM avatars av
-             LEFT JOIN agents agent
-               ON av.owner_type = 'agent'
-              AND agent.agent_id = av.owner_id
-              AND agent.deleted_at IS NULL
-             LEFT JOIN groups owner_group
-               ON av.owner_type = 'group'
-              AND owner_group.group_id = av.owner_id
-              AND owner_group.deleted_at IS NULL
              ORDER BY av.owner_type, av.owner_id",
         )
         .fetch_all(pool)
@@ -339,7 +331,9 @@ impl Phase1Metadata {
                 );
                 continue;
             }
-            items.push(avatar_manifest_state(pool, row).await?);
+            if let Some(state) = avatar_manifest_state(pool, row).await? {
+                items.push(state);
+            }
         }
         validate_count(items.len(), "avatar manifest")?;
         let manifest = ManifestRequest::Avatar { items };

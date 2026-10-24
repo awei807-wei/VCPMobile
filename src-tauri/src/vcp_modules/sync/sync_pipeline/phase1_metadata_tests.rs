@@ -153,7 +153,7 @@ async fn targeted_topic_manifest_keeps_same_topic_id_in_distinct_owner_namespace
 }
 
 #[tokio::test]
-async fn avatar_manifest_rejects_live_avatar_without_live_parent() {
+async fn avatar_manifest_repairs_live_avatar_without_live_parent() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -169,7 +169,7 @@ async fn avatar_manifest_rejects_live_avatar_without_live_parent() {
          INSERT INTO agents VALUES ('agent-live', NULL);
          INSERT INTO avatars VALUES
             ('agent-live', 'agent', ?, 10, NULL),
-            ('agent-missing', 'agent', ?, 11, NULL),
+            ('agent-orphan', 'agent', ?, 11, NULL),
             ('user_avatar', 'user', ?, 12, NULL),
             ('agent-missing', 'agent', ?, 13, 9);",
     )
@@ -181,7 +181,34 @@ async fn avatar_manifest_rejects_live_avatar_without_live_parent() {
     .await
     .expect("create avatar fixture");
 
-    assert!(Phase1Metadata::build_avatar_manifest(&pool).await.is_err());
+    let ManifestRequest::Avatar { items } = Phase1Metadata::build_avatar_manifest(&pool)
+        .await
+        .expect("avatar manifest should repair orphans instead of failing")
+    else {
+        panic!("avatar builder returned another manifest type");
+    };
+    assert_eq!(items.len(), 4);
+    assert!(
+        matches!(&items[0], AvatarManifestState::Live(value) if value.owner_id == "agent-live")
+    );
+    assert!(
+        matches!(&items[1], AvatarManifestState::Deleted(value) if value.owner_id == "agent-missing" && value.deleted_at == 9)
+    );
+    assert!(
+        matches!(&items[2], AvatarManifestState::Deleted(value) if value.owner_id == "agent-orphan")
+    );
+    assert!(
+        matches!(&items[3], AvatarManifestState::Live(value) if value.owner_id == "user_avatar")
+    );
+
+    let repaired: Option<i64> = sqlx::query_scalar(
+        "SELECT deleted_at FROM avatars
+         WHERE owner_type = 'agent' AND owner_id = 'agent-orphan'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read repaired avatar tombstone");
+    assert!(repaired.is_some(), "orphan avatar must be tombstoned");
 }
 
 #[tokio::test]

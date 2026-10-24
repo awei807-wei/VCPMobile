@@ -207,6 +207,7 @@ pub(crate) async fn delete_group_data(
     }
     mark_group_topics_deleted(&mut tx, group_id, now).await?;
     mark_group_messages_deleted(&mut tx, group_id, now).await?;
+    mark_group_avatar_deleted(&mut tx, group_id, now).await?;
     clear_group_unread_receipts(&mut tx, group_id).await?;
     clear_group_attachment_relations(&mut tx, group_id).await?;
     clear_group_generations(&mut tx, group_id).await?;
@@ -267,6 +268,24 @@ async fn mark_group_messages_deleted(
         "UPDATE messages SET deleted_at = ?
          WHERE owner_type = 'group' AND owner_id = ?
            AND deleted_at IS NULL",
+    )
+    .bind(now)
+    .bind(group_id)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+async fn mark_group_avatar_deleted(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    group_id: &str,
+    now: i64,
+) -> Result<(), String> {
+    // 头像跟随所有者一起打墓碑，避免 Phase 1 出现孤儿的活体头像。
+    sqlx::query(
+        "UPDATE avatars SET deleted_at = MAX(COALESCE(deleted_at, 0), ?)
+         WHERE owner_type = 'group' AND owner_id = ?",
     )
     .bind(now)
     .bind(group_id)

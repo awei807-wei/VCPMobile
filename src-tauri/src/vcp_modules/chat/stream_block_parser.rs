@@ -36,6 +36,12 @@ pub enum StreamBlock {
     Tool {
         tool_name: String,
         content: String,
+        /// 是否 JEV（自然语言）工具请求，展示为 JEVToolUse 卡片。
+        #[serde(default)]
+        is_jev: bool,
+        /// JEV 卡片上的展示名（引号内工具名优先，其次 {能力}）。
+        #[serde(default)]
+        jev_display_name: String,
         hash: String,
     },
     #[serde(rename = "tool-result")]
@@ -131,10 +137,21 @@ impl StreamBlock {
         }
     }
 
-    pub fn tool(tool_name: String, content: String, hash: String) -> Self {
+    pub fn tool(
+        tool_name: String,
+        content: String,
+        hash: String,
+        jev: Option<crate::vcp_modules::chat::jev_tool_use::JevToolUse>,
+    ) -> Self {
+        let (is_jev, jev_display_name) = match jev {
+            Some(jev) => (true, jev.display_name),
+            None => (false, String::new()),
+        };
         Self::Tool {
             tool_name,
             content,
+            is_jev,
+            jev_display_name,
             hash,
         }
     }
@@ -463,7 +480,9 @@ fn build_stream_block(
                     "{}:{}",
                     tool_name, inner_content
                 ));
-                StreamBlock::tool(tool_name, inner_content.to_string(), hash)
+                let jev =
+                    crate::vcp_modules::chat::jev_tool_use::detect_jev_use(inner_content);
+                StreamBlock::tool(tool_name, inner_content.to_string(), hash, jev)
             }
         }
         BlockType::Thought => {

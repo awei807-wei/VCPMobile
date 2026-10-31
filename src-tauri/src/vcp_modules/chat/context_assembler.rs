@@ -1,3 +1,4 @@
+use crate::vcp_modules::chat::tool_result_visibility::strip_hidden_tool_results;
 use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
 use serde_json::{json, Value};
 use sqlx::{Pool, Sqlite};
@@ -190,7 +191,9 @@ pub fn assemble_history_for_vcp(
         }
 
         // 3. 核心消息正文
-        combined_text.push_str(&msg.content);
+        // 被用户手动隐藏的工具结果（插件回调）不参与上下文装配，
+        // 效果等价于物理删除，但原始消息仍然完整保留、可随时恢复注入。
+        combined_text.push_str(&strip_hidden_tool_results(&msg.content));
 
         let mut content_parts = Vec::new();
 
@@ -430,5 +433,24 @@ mod tests {
 
         assert!(text.contains("[附加文件: archive.zip]"));
         assert!(!text.contains("/private/app/files"));
+    }
+
+    #[test]
+    fn hidden_tool_results_are_not_injected_into_context() {
+        let visible = "[[VCP调用结果信息汇总:\n- 工具名称: WebSearch\n- 执行状态: SUCCESS\n- 返回内容: 可见结果\nVCP调用结果结束]]";
+        let hidden = crate::vcp_modules::chat::tool_result_visibility::set_tool_result_hidden(
+            "[[VCP调用结果信息汇总:\n- 工具名称: WebSearch\n- 执行状态: SUCCESS\n- 返回内容: 隐藏结果\nVCP调用结果结束]]",
+            true,
+        );
+        let content = format!("提问\n\n{visible}\n\n{hidden}\n\n后续");
+        let history = vec![user_message(&content, vec![])];
+
+        let messages = assemble_history_for_vcp(&history, false, false);
+        let text = messages[0]["content"].as_str().expect("text content");
+
+        assert!(text.contains("可见结果"));
+        assert!(!text.contains("隐藏结果"));
+        assert!(!text.contains("[HIDDEN]"));
+        assert!(text.contains("后续"));
     }
 }

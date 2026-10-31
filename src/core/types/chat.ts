@@ -85,9 +85,17 @@ export interface ContentBlock {
   nodes?: MarkdownNode[]; // For type: "markdown", "diary", "thought"
   tool_name?: string;
   is_complete?: boolean;
+  /** tool-use 是否为 JEV（自然语言）工具请求，渲染为 JEVToolUse 卡片 */
+  is_jev?: boolean;
+  /** JEV 卡片展示名（引号内工具名优先，其次 {能力}） */
+  jev_display_name?: string;
   status?: string;
   details?: Array<{ key: string; value: string }>;
   footer?: string;
+  /** 工具结果是否已被手动隐藏（不注入 AI 上下文），仅 type: "tool-result" 使用 */
+  hidden?: boolean;
+  /** 工具结果原始正文的 FNV-1a 哈希，用于在原文中精确定位该块 */
+  raw_hash?: string;
   maid?: string;
   date?: string;
   // DailyNote create/update 元数据（type: "diary"）
@@ -231,6 +239,8 @@ export interface StreamBlock {
   theme?: string;
   is_complete?: boolean;
   tool_name?: string;
+  is_jev?: boolean;
+  jev_display_name?: string;
   status?: string;
   details?: Array<{ key: string; value: string }>;
   footer?: string;

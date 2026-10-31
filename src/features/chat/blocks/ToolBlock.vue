@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue';
-import { ChevronDown, ChevronUp, Settings, Loader2, Maximize2, Copy, X } from 'lucide-vue-next';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
+import { ChevronDown, ChevronUp, Settings, Loader2, Maximize2, Copy, X, Eye, EyeOff } from 'lucide-vue-next';
 import type { ContentBlock } from '../../../core/types/chat';
 import { marked } from 'marked';
 import { useNotificationStore } from '../../../core/stores/notification';
@@ -44,11 +44,65 @@ const props = withDefaults(
     content?: string;
     block: ContentBlock;
     defaultExpanded?: boolean;
+    toolResultOrdinal?: number;
+    streaming?: boolean;
   }>(),
   {
     defaultExpanded: false,
+    toolResultOrdinal: -1,
+    streaming: false,
   }
 );
+
+const emit = defineEmits<{
+  (e: 'toggle-hidden'): void;
+}>();
+
+/** 工具结果是否已被手动隐藏（不注入后续 AI 上下文）。 */
+const isHidden = computed(
+  () => props.type === 'tool-result' && !!props.block.hidden
+);
+
+/** 是否为 JEV（自然语言）工具请求，使用独立的 JEVToolUse 卡片外观。 */
+const isJev = computed(() => props.type === 'tool-use' && !!props.block.is_jev);
+
+/** 卡片角标文字：JEV 请求不叫 VCP-ToolUse，单独标识协议身份。 */
+const toolLabel = computed(() => {
+  if (props.type === 'tool-result') return 'VCP-ToolResult';
+  return isJev.value ? 'JEVToolUse' : 'VCP-ToolUse';
+});
+
+/** 卡片展示名：JEV 优先用解析出的展示名，缺失时整行不渲染。 */
+const toolDisplayName = computed(() => {
+  if (isJev.value) return props.block.jev_display_name || '';
+  return props.block.tool_name || 'Unknown Tool';
+});
+
+/**
+ * 执行状态归类：Rust 只给出「✅ 成功」这类文本，这里归一成状态类，
+ * 供统一工具卡片的语义色（成功/失败/超时/拒绝）使用。
+ */
+const statusKind = computed(() => {
+  const status = (props.block.status || '').toLowerCase();
+  if (!status) return '';
+  if (/失败|错误|异常|error|fail/.test(status)) return 'status-failure';
+  if (/超时|timeout/.test(status)) return 'status-timeout';
+  if (/拒绝|被拒|reject|denied|refuse/.test(status)) return 'status-rejected';
+  if (/成功|success|完成|done|ok/.test(status)) return 'status-success';
+  return '';
+});
+
+const hiddenBtnTitle = computed(() => {
+  if (props.streaming) return '消息生成中，暂时无法修改工具结果状态';
+  return isHidden.value
+    ? '当前已从上下文中隐藏（点击恢复注入）'
+    : '当前已注入上下文（点击在上下文中隐藏）';
+});
+
+const toggleHidden = () => {
+  if (props.type !== 'tool-result') return;
+  emit('toggle-hidden');
+};
 
 const isExpanded = ref(props.defaultExpanded);
 
@@ -150,7 +204,9 @@ const isImageValue = (key: string, value: string): boolean => {
 <template>
   <div ref="toolBlockRef" class="vcp-tool-block my-2 rounded-xl transition-all duration-300 overflow-hidden" :class="[
     type === 'tool-use' ? 'is-tool-use' : 'is-tool-result tool-bubble',
-    isExpanded ? 'shadow-md' : 'shadow-sm'
+    isExpanded ? 'shadow-md' : 'shadow-sm',
+    isHidden ? 'is-hidden' : '',
+    isJev ? 'is-jev' : ''
   ]">
     <!-- Header -->
     <div class="tool-header-content flex items-center justify-between p-3 cursor-pointer select-none"
@@ -160,21 +216,35 @@ const isImageValue = (key: string, value: string): boolean => {
           <Settings v-if="type === 'tool-use'" :size="14" />
           <span v-else class="text-lg leading-none">📊</span>
         </div>
-        <div>
+        <div class="min-w-0">
           <span class="tool-label text-[10px] font-bold block leading-none mb-1 flex items-center gap-1">
-            {{ type === 'tool-use' ? 'VCP-ToolUse' : 'VCP-ToolResult' }}
+            {{ toolLabel }}
             <Loader2 v-if="type === 'tool-use' && !block.is_complete" :size="10" class="custom-spin" />
           </span>
-          <span class="tool-name text-xs font-bold font-mono">
-            {{ block.tool_name || 'Unknown Tool' }}
+          <span v-if="toolDisplayName" class="tool-name text-xs font-bold font-mono">
+            {{ toolDisplayName }}
           </span>
         </div>
       </div>
 
       <div class="flex items-center gap-2">
-        <span v-if="block.status" class="tool-status text-[10px] px-1.5 py-0.5 rounded font-bold">
+        <span v-if="isHidden" class="tool-hidden-badge" title="当前工具结果已排除，后续对话不会注入到 AI 上下文中">
+          已隐藏
+        </span>
+        <span v-if="block.status" class="tool-status text-[10px] px-1.5 py-0.5 rounded font-bold" :class="statusKind">
           {{ block.status }}
         </span>
+        <button
+          v-if="type === 'tool-result'"
+          @click.stop="toggleHidden"
+          class="tool-visibility-btn"
+          :class="{ 'is-hidden': isHidden }"
+          :title="hiddenBtnTitle"
+          :aria-label="hiddenBtnTitle"
+          :aria-pressed="isHidden"
+        >
+          <component :is="isHidden ? EyeOff : Eye" :size="14" />
+        </button>
         <button
           v-if="isExpanded && type === 'tool-result'"
           @click.stop="isFullScreen = true"

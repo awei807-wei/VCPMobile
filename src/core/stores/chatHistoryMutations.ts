@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Ref } from "vue";
 import { clearMessageCache } from "../utils/astRenderer";
+import {
+  collectClosedToolResultRanges,
+  setToolResultHidden,
+  toolResultBody,
+  toolResultBodyHash,
+} from "../utils/toolResultVisibility";
 import type { ChatMessage, ContentBlock } from "../types/chat";
 import type { ConversationIdentity } from "./chatStoreIdentity";
 
@@ -19,6 +25,12 @@ interface HistoryMutationDeps {
 interface MessageMutationResult {
   msgCount: number;
   deletedIds: string[];
+}
+
+/** 定位目标工具结果块：优先用原文哈希，缺失时退回“第几个工具结果”。 */
+export interface ToolResultVisibilityTarget {
+  ordinal: number;
+  rawHash?: string;
 }
 
 function readMessageMutationResult(value: unknown): MessageMutationResult {
@@ -206,6 +218,46 @@ async function fetchRawContent(
   }
 }
 
+async function toggleToolResultHidden(
+  deps: HistoryMutationDeps,
+  messageId: string,
+  target: ToolResultVisibilityTarget,
+  hidden: boolean,
+): Promise<boolean> {
+  const content = await fetchRawContent(deps, messageId);
+  if (!content) throw new Error("消息内容尚未加载，无法修改工具结果状态");
+
+  const candidates = collectClosedToolResultRanges(content).map(
+    (range, index) => {
+      const raw = content.slice(range.start, range.end);
+      return {
+        start: range.start,
+        end: range.end,
+        ordinal: index,
+        raw,
+        rawHash: toolResultBodyHash(toolResultBody(raw)),
+      };
+    },
+  );
+  if (candidates.length === 0)
+    throw new Error("未能在原始内容中定位该工具结果");
+
+  let picked = target.rawHash
+    ? candidates.find((item) => item.rawHash === target.rawHash)
+    : undefined;
+  if (!picked && target.ordinal >= 0 && target.ordinal < candidates.length)
+    picked = candidates[target.ordinal];
+  if (!picked) throw new Error("未能在原始内容中定位该工具结果");
+
+  const nextRaw = setToolResultHidden(picked.raw, hidden);
+  if (nextRaw === picked.raw) return false;
+
+  const nextContent =
+    content.slice(0, picked.start) + nextRaw + content.slice(picked.end);
+  await updateMessageContent(deps, messageId, nextContent);
+  return true;
+}
+
 async function persistMessageBlocks(
   deps: HistoryMutationDeps,
   messageId: string,
@@ -279,6 +331,11 @@ export function createHistoryMutations(deps: HistoryMutationDeps) {
       deleteAttachment(deps, topicId, messageId, hash),
     updateMessageContent: (messageId: string, newContent: string) =>
       updateMessageContent(deps, messageId, newContent),
+    toggleToolResultHidden: (
+      messageId: string,
+      target: ToolResultVisibilityTarget,
+      hidden: boolean,
+    ) => toggleToolResultHidden(deps, messageId, target, hidden),
     fetchRawContent: (messageId: string) => fetchRawContent(deps, messageId),
     persistMessageBlocks: (messageId: string, blocks: ContentBlock[]) =>
       persistMessageBlocks(deps, messageId, blocks),

@@ -23,6 +23,12 @@ pub enum ContentBlock {
         tool_name: String,
         content: String,
         is_complete: bool,
+        /// 是否 JEV（自然语言）工具请求，展示为 JEVToolUse 卡片。
+        #[serde(default)]
+        is_jev: bool,
+        /// JEV 卡片上的展示名（引号内工具名优先，其次 {能力}）。
+        #[serde(default)]
+        jev_display_name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         hash: Option<u64>,
     },
@@ -32,6 +38,12 @@ pub enum ContentBlock {
         status: String,
         details: Vec<ToolResultDetail>,
         footer: String,
+        /// 是否已被用户标记为“不注入上下文”。
+        #[serde(default)]
+        hidden: bool,
+        /// 原始正文的 FNV-1a 哈希，供前端在原文中精确定位该块。
+        #[serde(default)]
+        raw_hash: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         hash: Option<u64>,
     },
@@ -138,11 +150,22 @@ impl ContentBlock {
         }
     }
 
-    pub fn tool_use(tool_name: String, content: String, is_complete: bool) -> Self {
+    pub fn tool_use(
+        tool_name: String,
+        content: String,
+        is_complete: bool,
+        jev: Option<crate::vcp_modules::chat::jev_tool_use::JevToolUse>,
+    ) -> Self {
+        let (is_jev, jev_display_name) = match jev {
+            Some(jev) => (true, jev.display_name),
+            None => (false, String::new()),
+        };
         Self::ToolUse {
             tool_name,
             content,
             is_complete,
+            is_jev,
+            jev_display_name,
             hash: None,
         }
     }
@@ -152,12 +175,16 @@ impl ContentBlock {
         status: String,
         details: Vec<ToolResultDetail>,
         footer: String,
+        hidden: bool,
+        raw_hash: String,
     ) -> Self {
         Self::ToolResult {
             tool_name,
             status,
             details,
             footer,
+            hidden,
+            raw_hash,
             hash: None,
         }
     }
@@ -645,7 +672,16 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                         ContentBlock::daily_note(details)
                     } else {
                         let tool_name = extract_tool_name(inner_content);
-                        ContentBlock::tool_use(tool_name, inner_content.to_string(), is_complete)
+                        // JEV 是工具请求里的自然语言字段，没有 tool_name，
+                        // 识别出来后交给展示层渲染成 JEVToolUse 卡片。
+                        let jev =
+                            crate::vcp_modules::chat::jev_tool_use::detect_jev_use(inner_content);
+                        ContentBlock::tool_use(
+                            tool_name,
+                            inner_content.to_string(),
+                            is_complete,
+                            jev,
+                        )
                     }
                 }
                 BlockType::Thought => {
@@ -676,8 +712,14 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                     )
                 }
                 BlockType::ToolResult => {
-                    let (tool_name, status, details, footer) = parse_tool_result(inner_content);
-                    ContentBlock::tool_result(tool_name, status, details, footer)
+                    // 工具结果可以被用户手动标记为“隐藏”（不注入 AI 上下文）。
+                    // 标记写在起始标记之后，这里先记录状态与原文哈希，再把标记剥掉，
+                    // 保证工具字段解析与展示不受影响。
+                    let hidden = crate::vcp_modules::chat::tool_result_visibility::is_tool_result_hidden(inner_content);
+                    let raw_hash = crate::vcp_modules::chat::tool_result_visibility::tool_result_body_hash(inner_content);
+                    let body = crate::vcp_modules::chat::tool_result_visibility::strip_hidden_marker(inner_content);
+                    let (tool_name, status, details, footer) = parse_tool_result(&body);
+                    ContentBlock::tool_result(tool_name, status, details, footer, hidden, raw_hash)
                 }
                 BlockType::Diary => ContentBlock::daily_note(
                     crate::vcp_modules::chat::daily_note::parse_daily_note_legacy(inner_content),
@@ -964,6 +1006,87 @@ pub fn is_html_tag_block(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_jev_tool_request_is_flagged_as_jev_card() {
+        let raw = "<<<[TOOL_REQUEST]>>>\nJEV:「始」联络 'GPT生图'，画一张猫「末」\n<<<[END_TOOL_REQUEST]>>>";
+        let blocks = parse_content(raw);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolUse {
+                tool_name,
+                is_jev,
+                jev_display_name,
+                ..
+            } => {
+                assert!(is_jev);
+                assert_eq!(jev_display_name, "GPT生图");
+                // JEV 没有 tool_name 字段，沿用兜底名
+                assert_eq!(tool_name, "Processing...");
+            }
+            _ => panic!("Expected ToolUse block, got {:?}", blocks[0]),
+        }
+    }
+
+    #[test]
+    fn test_plain_tool_request_is_not_jev_card() {
+        let raw = "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SciCalculator「末」,\nexpression:「始」1+1「末」\n<<<[END_TOOL_REQUEST]>>>";
+        let blocks = parse_content(raw);
+        match &blocks[0] {
+            ContentBlock::ToolUse {
+                is_jev,
+                jev_display_name,
+                tool_name,
+                ..
+            } => {
+                assert!(!is_jev);
+                assert!(jev_display_name.is_empty());
+                assert_eq!(tool_name, "SciCalculator");
+            }
+            _ => panic!("Expected ToolUse block, got {:?}", blocks[0]),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_hidden_marker_is_parsed_and_stripped() {
+        let raw = "[[VCP调用结果信息汇总: [HIDDEN]\n- 工具名称: WebSearch\n- 执行状态: ✅ 成功\n- 返回内容: 结果\nVCP调用结果结束]]";
+        let blocks = parse_content(raw);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolResult {
+                tool_name,
+                status,
+                footer,
+                hidden,
+                raw_hash,
+                ..
+            } => {
+                assert!(hidden);
+                assert_eq!(tool_name, "WebSearch");
+                assert_eq!(status, "✅ 成功");
+                // 隐藏标记不能泄漏到展示字段里
+                assert!(!footer.contains("[HIDDEN]"));
+                // 哈希基于原文（包含标记），供前端精确回指
+                assert_eq!(
+                    raw_hash,
+                    &crate::vcp_modules::chat::tool_result_visibility::tool_result_body_hash(
+                        " [HIDDEN]\n- 工具名称: WebSearch\n- 执行状态: ✅ 成功\n- 返回内容: 结果\n"
+                    )
+                );
+            }
+            _ => panic!("Expected ToolResult block, got {:?}", blocks[0]),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_without_hidden_marker_is_visible() {
+        let raw = "[[VCP调用结果信息汇总:\n- 工具名称: WebSearch\n- 执行状态: ✅ 成功\n- 返回内容: 结果\nVCP调用结果结束]]";
+        let blocks = parse_content(raw);
+        match &blocks[0] {
+            ContentBlock::ToolResult { hidden, .. } => assert!(!hidden),
+            _ => panic!("Expected ToolResult block, got {:?}", blocks[0]),
+        }
+    }
 
     #[test]
     fn test_parse_content_style_blocks() {

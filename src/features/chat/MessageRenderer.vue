@@ -337,6 +337,66 @@ const messageBubbles = computed(() => {
   return list;
 });
 
+/**
+ * 工具结果块 → 它在整条消息里的“第几个工具结果”序号。
+ * 后端按原文顺序编译块，前端据此（以及原文哈希）在原始内容中回指目标块。
+ */
+const toolResultOrdinalByBlock = computed(() => {
+  const ordinals = new WeakMap<ContentBlock, number>();
+  let ordinal = 0;
+  const visit = (blocks?: ContentBlock[]) => {
+    for (const block of blocks || []) {
+      if (block.type !== "tool-result") continue;
+      ordinals.set(block, ordinal++);
+    }
+  };
+  visit(props.message.blocks);
+  visit(props.message.tailBlock ? [props.message.tailBlock] : undefined);
+  return ordinals;
+});
+
+/** 手动切换某个插件回调（工具结果）是否注入后续 AI 上下文。 */
+async function handleToggleToolResultHidden(block: ContentBlock) {
+  const hidden = !block.hidden;
+  if (isMessageInActiveStream.value) {
+    notificationStore.addNotification({
+      type: "warning",
+      title: "暂时无法修改",
+      message: "消息仍在生成中，暂时无法修改工具结果状态",
+      toastOnly: true,
+    });
+    return;
+  }
+  const ordinal = toolResultOrdinalByBlock.value.get(block) ?? -1;
+  try {
+    const changed = await historyStore.toggleToolResultHidden(
+      props.message.id,
+      { ordinal, rawHash: block.raw_hash },
+      hidden
+    );
+    if (!changed) return;
+    notificationStore.addNotification({
+      type: "success",
+      title: hidden ? "已隐藏工具结果" : "已恢复工具结果",
+      message: hidden
+        ? "已在上下文中隐藏此工具结果（不会注入给后续 AI）"
+        : "已恢复此工具结果，后续对话将重新包含此上下文",
+      toastOnly: true,
+    });
+  } catch (error) {
+    console.error("[MessageRenderer] 切换工具结果可见性失败：", error);
+    notificationStore.addNotification({
+      type: "error",
+      title: "修改失败",
+      message:
+        error instanceof Error
+          ? error.message
+          : "工具结果状态修改失败，请稍后重试",
+      toastOnly: true,
+    });
+  }
+}
+
 // === Event Delegation ===
 const messageContentRef = ref<HTMLElement | null>(null);
 useMessageEvents(messageContentRef);
@@ -1164,6 +1224,9 @@ onUnmounted(() => {
                     :content="block.content"
                     :block="block"
                     :default-expanded="isMessageInActiveStream"
+                    :tool-result-ordinal="toolResultOrdinalByBlock.get(block) ?? -1"
+                    :streaming="isMessageInActiveStream"
+                    @toggle-hidden="handleToggleToolResultHidden(block)"
                   />
 
                   <ThoughtBlock

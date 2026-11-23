@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useChatStreamStore } from "../../../core/stores/chatStreamStore";
+import { useTopicStore } from "../../../core/stores/topicListManager";
 import { parseStreamEvent } from "../../../core/stores/chatStreamProcessorSupport";
 import { mockInvoke } from "../../mocks/tauri";
 import type { MarkdownNode, StreamEvent } from "../../../core/types/chat";
@@ -91,6 +92,9 @@ describe("流式渲染背压与纪元门禁", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     mockInvoke("process_message_content", () => []);
+    const topicStore = useTopicStore();
+    topicStore.incrementTopicUnreadCount = vi.fn().mockResolvedValue({ success: true }) as any;
+    topicStore.incrementTopicMsgCount = vi.fn() as any;
   });
 
   it("群聊 skeleton 使用请求上下文中的发言 Agent 身份", async () => {

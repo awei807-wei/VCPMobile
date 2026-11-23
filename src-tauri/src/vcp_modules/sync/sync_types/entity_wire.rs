@@ -10,11 +10,12 @@ use crate::vcp_modules::sync_dto::{
 };
 use crate::vcp_modules::sync_error::WireSyncError;
 use crate::vcp_modules::topic_types::{MessageKey, TopicKey};
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 pub enum EntityPullData {
     Agent(AgentSyncDTO),
     Group(GroupSyncDTO),
@@ -22,42 +23,120 @@ pub enum EntityPullData {
     AgentTopic(AgentTopicSyncDTO),
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "entityType", rename_all = "lowercase", deny_unknown_fields)]
+#[derive(Debug)]
 pub enum EntityPullResult {
     Owner {
-        #[serde(rename = "ownerType")]
         owner_type: OwnerType,
-        #[serde(rename = "ownerId", deserialize_with = "deserialize_non_empty_string")]
         owner_id: String,
         ok: bool,
-        #[serde(default)]
         data: Option<EntityPullData>,
-        #[serde(default)]
         error: Option<WireSyncError>,
     },
     Topic {
-        #[serde(rename = "ownerType")]
         owner_type: OwnerType,
-        #[serde(rename = "ownerId", deserialize_with = "deserialize_non_empty_string")]
         owner_id: String,
-        #[serde(rename = "topicId", deserialize_with = "deserialize_non_empty_string")]
         topic_id: String,
         ok: bool,
-        #[serde(default)]
         data: Option<EntityPullData>,
-        #[serde(default)]
         error: Option<WireSyncError>,
     },
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+struct RawEntityPullResult {
+    entity_type: String,
+    owner_type: OwnerType,
+    #[serde(deserialize_with = "deserialize_non_empty_string")]
+    owner_id: String,
+    #[serde(default)]
+    topic_id: Option<String>,
+    ok: bool,
+    #[serde(default)]
+    data: Option<Value>,
+    #[serde(default)]
+    error: Option<WireSyncError>,
+}
+
+impl<'de> Deserialize<'de> for EntityPullResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawEntityPullResult::deserialize(deserializer)?;
+        if raw.ok && raw.error.is_some() {
+            return Err(D::Error::custom(
+                "entity pull result with ok=true must not contain error",
+            ));
+        }
+        if !raw.ok && raw.data.is_some() {
+            return Err(D::Error::custom(
+                "entity pull result with ok=false must not contain data",
+            ));
+        }
+        match raw.entity_type.as_str() {
+            "owner" => {
+                if raw.topic_id.is_some() {
+                    return Err(D::Error::custom(
+                        "owner entity pull result must not contain topicId",
+                    ));
+                }
+                let data = match raw.data {
+                    Some(value) => Some(match raw.owner_type {
+                        OwnerType::Agent => EntityPullData::Agent(
+                            serde_json::from_value(value).map_err(D::Error::custom)?,
+                        ),
+                        OwnerType::Group => EntityPullData::Group(
+                            serde_json::from_value(value).map_err(D::Error::custom)?,
+                        ),
+                    }),
+                    None => None,
+                };
+                Ok(Self::Owner {
+                    owner_type: raw.owner_type,
+                    owner_id: raw.owner_id,
+                    ok: raw.ok,
+                    data,
+                    error: raw.error,
+                })
+            }
+            "topic" => {
+                let topic_id = raw
+                    .topic_id
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        D::Error::custom("topic entity pull result requires non-empty topicId")
+                    })?;
+                let data = match raw.data {
+                    Some(value) => Some(match raw.owner_type {
+                        OwnerType::Agent => EntityPullData::AgentTopic(
+                            serde_json::from_value(value).map_err(D::Error::custom)?,
+                        ),
+                        OwnerType::Group => EntityPullData::GroupTopic(
+                            serde_json::from_value(value).map_err(D::Error::custom)?,
+                        ),
+                    }),
+                    None => None,
+                };
+                Ok(Self::Topic {
+                    owner_type: raw.owner_type,
+                    owner_id: raw.owner_id,
+                    topic_id,
+                    ok: raw.ok,
+                    data,
+                    error: raw.error,
+                })
+            }
+            other => Err(D::Error::custom(format!("unsupported entityType {other}"))),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct EntityPullResponse {
     #[serde(deserialize_with = "deserialize_bounded_vec")]
     pub results: Vec<EntityPullResult>,
 }
-
 impl EntityPullResponse {
     pub fn validate(&self) -> Result<(), String> {
         validate_pull_results(&self.results)

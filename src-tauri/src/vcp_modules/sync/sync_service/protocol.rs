@@ -2,20 +2,28 @@ use super::errors::{publish_sync_error, publish_sync_nonterminal_status};
 use super::logs::{emit_operator_sync_log, emit_sync_log};
 use super::types::{FinalAckKey, PendingFinalAck, SyncCommand, SyncWebSocket};
 use crate::vcp_modules::sync_error::encode_wire_sync_error;
+#[cfg(test)]
 use crate::vcp_modules::sync_types::ManifestType;
+#[cfg(test)]
 use crate::vcp_modules::topic_types::TopicKey;
 use crate::vcp_modules::wire_protocol::handshake::WIRE_PROTOCOL_VERSION;
 use crate::vcp_modules::wire_protocol::{
-    parse_version_handshake_json, VersionAck, VersionAckError, VersionHandshakeFrame,
+    parse_version_handshake_json_for, VersionAck, VersionAckError, VersionHandshakeFrame,
+    WireProtocolVersion,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::collections::HashSet;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime};
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::sync::mpsc;
+#[cfg(test)]
+use tokio::sync::Mutex as AsyncMutex;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +31,7 @@ pub(crate) const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const WS_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const PHASE3_WATCHDOG_TICK: Duration = Duration::from_secs(10);
 pub(crate) const PHASE3_WATCHDOG_STUCK_TICKS: u32 = 6;
+#[allow(dead_code)]
 pub(crate) const PHASE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const FINAL_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const ENTITY_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -69,7 +78,14 @@ pub(crate) enum VersionHandshakeError {
 pub(crate) fn parse_version_handshake_payload(
     payload: &str,
 ) -> Result<Option<VersionAck>, VersionHandshakeError> {
-    let frame = match parse_version_handshake_json(payload) {
+    parse_version_handshake_payload_for(payload, WireProtocolVersion::V1_6)
+}
+
+pub(crate) fn parse_version_handshake_payload_for(
+    payload: &str,
+    expected_wire: WireProtocolVersion,
+) -> Result<Option<VersionAck>, VersionHandshakeError> {
+    let frame = match parse_version_handshake_json_for(payload, expected_wire) {
         Ok(frame) => frame,
         Err(VersionAckError::WireVersionMismatch {
             expected,
@@ -239,7 +255,7 @@ pub(crate) async fn enforce_final_ack_deadline(
         });
     }
 }
-
+#[cfg(test)]
 pub(crate) async fn enforce_manifest_response_deadline(
     expected_types: Arc<Mutex<HashSet<ManifestType>>>,
     manifest_phase: Arc<AtomicU8>,
@@ -276,7 +292,7 @@ pub(crate) async fn enforce_manifest_response_deadline(
         failed_topic_ids: Vec::new(),
     });
 }
-
+#[cfg(test)]
 pub(crate) async fn enforce_topic_hash_response_deadline(
     expected_results: Arc<AsyncMutex<Option<HashSet<TopicKey>>>>,
     manifest_phase: Arc<AtomicU8>,

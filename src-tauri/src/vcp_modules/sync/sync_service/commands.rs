@@ -46,7 +46,6 @@ async fn start_manual(ctx: &mut AttemptContext) -> AttemptAction {
     if send_frame(ctx, &ManifestRequestFrame::new(manifest)).await == AttemptAction::Stop {
         return AttemptAction::Stop;
     }
-    super::phase::schedule_manifest_deadline(ctx, 1).await;
     AttemptAction::Continue
 }
 
@@ -81,7 +80,6 @@ async fn start_avatar_metadata(ctx: &mut AttemptContext) -> AttemptAction {
     if send_frame(ctx, &ManifestRequestFrame::new(manifest)).await == AttemptAction::Stop {
         return AttemptAction::Stop;
     }
-    super::phase::schedule_manifest_deadline(ctx, 2).await;
     AttemptAction::Continue
 }
 

@@ -34,6 +34,7 @@ export interface SyncSummary {
 export interface DesktopSyncInfo {
   packageVersion: string;
   backendMode: "legacy" | "cds";
+  wireVersion?: "1.5" | "1.6";
 }
 
 export type SyncErrorCategory =

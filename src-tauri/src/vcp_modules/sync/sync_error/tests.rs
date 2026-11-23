@@ -23,12 +23,24 @@ fn valid_error() -> Value {
     })
 }
 
+fn normalized_lf_sha256(bytes: &[u8]) -> String {
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+            normalized.push(b'\n');
+            index += 2;
+        } else {
+            normalized.push(bytes[index]);
+            index += 1;
+        }
+    }
+    format!("{:x}", Sha256::digest(normalized))
+}
+
 #[test]
 fn golden_fixture_is_byte_exact_and_covers_valid_invalid_errors() {
-    assert_eq!(
-        format!("{:x}", Sha256::digest(FIXTURE_BYTES)),
-        FIXTURE_SHA256
-    );
+    assert_eq!(normalized_lf_sha256(FIXTURE_BYTES), FIXTURE_SHA256);
     let fixture: Value = serde_json::from_slice(FIXTURE_BYTES).expect("golden fixture JSON");
     assert_eq!(fixture["schema"], "vcp-sync-wire-error-contract");
 

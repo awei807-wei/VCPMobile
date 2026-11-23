@@ -1,4 +1,4 @@
-//! Wire 1.5 版本声明与握手确认契约。
+//! Wire 1.6 / 1.5 版本声明与握手确认契约。
 
 use super::strict_json::parse_strict_json;
 use serde::{Deserialize, Serialize};
@@ -6,8 +6,41 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 
-/// 移动端与桌面同步插件之间唯一允许的 Wire 版本。
-pub const WIRE_PROTOCOL_VERSION: &str = "1.5";
+/// 移动端与桌面同步插件之间支持的 Wire 协议版本（首选 1.6，兼容回退 1.5）。
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum WireProtocolVersion {
+    #[serde(rename = "1.5")]
+    V1_5,
+    #[default]
+    #[serde(rename = "1.6")]
+    V1_6,
+}
+
+impl WireProtocolVersion {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::V1_5 => "1.5",
+            Self::V1_6 => "1.6",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "1.5" => Some(Self::V1_5),
+            "1.6" => Some(Self::V1_6),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for WireProtocolVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// 移动端默认首选的 Wire 版本。
+pub const WIRE_PROTOCOL_VERSION: &str = WireProtocolVersion::V1_6.as_str();
 const MAX_VERSION_TOKEN_BYTES: usize = 64;
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -50,12 +83,18 @@ pub enum DesktopBackendMode {
     Cds,
 }
 
-/// 已通过 Wire 1.5 严格校验的桌面端声明。
+/// 已通过 Wire 握手严格校验的桌面端声明。
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VersionAck {
     pub package_version: String,
     pub wire_version: String,
     pub backend_mode: DesktopBackendMode,
+}
+
+impl VersionAck {
+    pub fn protocol_version(&self) -> Option<WireProtocolVersion> {
+        WireProtocolVersion::parse(&self.wire_version)
+    }
 }
 
 /// 版本声明校验失败。
@@ -87,10 +126,19 @@ impl fmt::Display for VersionAckError {
 
 impl std::error::Error for VersionAckError {}
 
-/// 构造精确的移动端 `VERSION_CHECK` 对象。
+/// 构造默认首选版本（Wire 1.6）的移动端 `VERSION_CHECK` 对象。
 pub fn build_version_check(mobile_version: &str) -> Result<Value, VersionAckError> {
+    build_version_check_for(mobile_version, WireProtocolVersion::V1_6)
+}
+
+/// 构造指定 Wire 版本的移动端 `VERSION_CHECK` 对象。
+pub fn build_version_check_for(
+    mobile_version: &str,
+    wire: WireProtocolVersion,
+) -> Result<Value, VersionAckError> {
     validate_version_token(mobile_version, "mobile_app").map_err(VersionAckError::Invalid)?;
-    validate_version_token(WIRE_PROTOCOL_VERSION, "wire").map_err(VersionAckError::Invalid)?;
+    let wire_str = wire.as_str();
+    validate_version_token(wire_str, "wire").map_err(VersionAckError::Invalid)?;
     serde_json::to_value(VersionCheckFrame {
         frame_type: "VERSION_CHECK",
         versions: vec![
@@ -100,7 +148,7 @@ pub fn build_version_check(mobile_version: &str) -> Result<Value, VersionAckErro
             },
             VersionClaim {
                 component: VersionComponent::Wire,
-                version: WIRE_PROTOCOL_VERSION.to_string(),
+                version: wire_str.to_string(),
             },
         ],
     })
@@ -109,20 +157,47 @@ pub fn build_version_check(mobile_version: &str) -> Result<Value, VersionAckErro
     })
 }
 
-/// 构造精确序列化的移动端 `VERSION_CHECK` 帧。
+/// 构造默认首选版本（Wire 1.6）序列化的移动端 `VERSION_CHECK` 帧。
 pub fn build_version_check_json(mobile_version: &str) -> Result<String, VersionAckError> {
-    build_version_check(mobile_version).map(|value| value.to_string())
+    build_version_check_json_for(mobile_version, WireProtocolVersion::V1_6)
 }
 
-/// 解析并严格校验序列化的桌面端 `VERSION_ACK` 帧。
+/// 构造指定 Wire 版本序列化的移动端 `VERSION_CHECK` 帧。
+pub fn build_version_check_json_for(
+    mobile_version: &str,
+    wire: WireProtocolVersion,
+) -> Result<String, VersionAckError> {
+    build_version_check_for(mobile_version, wire).map(|value| value.to_string())
+}
+
+/// 解析并严格校验序列化的桌面端 `VERSION_ACK` 帧（默认期望 Wire 1.6）。
+#[allow(dead_code)]
 pub fn parse_version_ack_json(input: &str) -> Result<VersionAck, VersionAckError> {
+    parse_version_ack_json_for(input, WireProtocolVersion::V1_6)
+}
+
+/// 解析并严格校验序列化的桌面端 `VERSION_ACK` 帧（按指定期望 Wire 版本）。
+#[allow(dead_code)]
+pub fn parse_version_ack_json_for(
+    input: &str,
+    expected_wire: WireProtocolVersion,
+) -> Result<VersionAck, VersionAckError> {
     let payload = parse_strict_json(input)
         .map_err(|error| VersionAckError::InvalidJson(error.to_string()))?;
-    parse_version_ack(&payload)
+    parse_version_ack_for(&payload, expected_wire)
 }
 
-/// 严格校验已解码的桌面端 `VERSION_ACK` 对象。
+/// 严格校验已解码的桌面端 `VERSION_ACK` 对象（默认期望 Wire 1.6）。
+#[allow(dead_code)]
 pub fn parse_version_ack(payload: &Value) -> Result<VersionAck, VersionAckError> {
+    parse_version_ack_for(payload, WireProtocolVersion::V1_6)
+}
+
+/// 严格校验已解码的桌面端 `VERSION_ACK` 对象（按指定期望 Wire 版本）。
+pub fn parse_version_ack_for(
+    payload: &Value,
+    expected_wire: WireProtocolVersion,
+) -> Result<VersionAck, VersionAckError> {
     let ack = serde_json::from_value::<VersionAckFrame>(payload.clone())
         .map_err(|error| VersionAckError::Invalid(format!("invalid VERSION_ACK: {error}")))?;
     if ack.frame_type != "VERSION_ACK" {
@@ -144,9 +219,10 @@ pub fn parse_version_ack(payload: &Value) -> Result<VersionAck, VersionAckError>
         VersionAckError::Invalid("VERSION_ACK is missing wire version".to_string())
     })?;
 
-    if wire_version != WIRE_PROTOCOL_VERSION {
+    let expected_str = expected_wire.as_str();
+    if wire_version != expected_str {
         return Err(VersionAckError::WireVersionMismatch {
-            expected: WIRE_PROTOCOL_VERSION.to_string(),
+            expected: expected_str.to_string(),
             received: wire_version,
             package_version,
         });
@@ -217,7 +293,8 @@ fn validate_version_token(value: &str, label: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_version_check, parse_version_ack_json, DesktopBackendMode, VersionAckError,
+        build_version_check, build_version_check_for, parse_version_ack_json,
+        parse_version_ack_json_for, DesktopBackendMode, VersionAckError, WireProtocolVersion,
         WIRE_PROTOCOL_VERSION,
     };
     use serde_json::{json, Value};
@@ -232,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn version_check_matches_wire_1_5_fixture() {
+    fn version_check_matches_wire_1_6_fixture() {
         let actual = build_version_check("1.1.6").expect("valid mobile version");
         let fixture: Value =
             serde_json::from_str(include_str!("../fixtures/version_handshake_contract.json"))
@@ -242,19 +319,45 @@ mod tests {
     }
 
     #[test]
+    fn version_check_and_ack_support_wire_1_5_fallback() {
+        let check = build_version_check_for("1.1.6", WireProtocolVersion::V1_5)
+            .expect("valid legacy check");
+        assert_eq!(
+            check,
+            json!({
+                "type": "VERSION_CHECK",
+                "versions": [
+                    {"component": "mobile_app", "version": "1.1.6"},
+                    {"component": "wire", "version": "1.5"}
+                ]
+            })
+        );
+        let ack = parse_version_ack_json_for(
+            &valid_ack(json!([
+                {"component": "desktop_plugin", "version": "2.0.0"},
+                {"component": "wire", "version": "1.5"}
+            ])),
+            WireProtocolVersion::V1_5,
+        )
+        .expect("compatible 1.5 ACK");
+        assert_eq!(ack.protocol_version(), Some(WireProtocolVersion::V1_5));
+    }
+
+    #[test]
     fn version_ack_is_order_independent_and_package_version_is_diagnostic() {
         for versions in [
             json!([
                 {"component": "desktop_plugin", "version": "2.0.0"},
-                {"component": "wire", "version": "1.5"}
+                {"component": "wire", "version": "1.6"}
             ]),
             json!([
-                {"component": "wire", "version": "1.5"},
+                {"component": "wire", "version": "1.6"},
                 {"component": "desktop_plugin", "version": "9.9.9"}
             ]),
         ] {
             let accepted = parse_version_ack_json(&valid_ack(versions)).expect("compatible ACK");
             assert_eq!(accepted.wire_version, WIRE_PROTOCOL_VERSION);
+            assert_eq!(accepted.protocol_version(), Some(WireProtocolVersion::V1_6));
             assert_eq!(accepted.backend_mode, DesktopBackendMode::Cds);
         }
     }
@@ -265,7 +368,7 @@ mod tests {
             json!([{"component": "wire", "version": "1.4"}]),
             json!([
                 {"component": "wire", "version": "1.4"},
-                {"component": "wire", "version": "1.5"}
+                {"component": "wire", "version": "1.6"}
             ]),
             json!([
                 {"component": "mobile_app", "version": "1.1.6"},
@@ -292,14 +395,14 @@ mod tests {
     fn compatible_shape_with_wrong_wire_has_typed_mismatch() {
         let error = parse_version_ack_json(&valid_ack(json!([
             {"component": "desktop_plugin", "version": "2.0.0"},
-            {"component": "wire", "version": "1.4"}
+            {"component": "wire", "version": "1.5"}
         ])))
         .expect_err("wire mismatch");
         assert_eq!(
             error,
             VersionAckError::WireVersionMismatch {
-                expected: "1.5".to_string(),
-                received: "1.4".to_string(),
+                expected: "1.6".to_string(),
+                received: "1.5".to_string(),
                 package_version: "2.0.0".to_string(),
             }
         );
@@ -308,11 +411,11 @@ mod tests {
     #[test]
     fn old_fields_unknown_modes_and_duplicate_keys_are_rejected() {
         assert!(parse_version_ack_json(
-            r#"{"type":"VERSION_ACK","pluginVersion":"2.0.0","protocolVersion":"1.5","backendMode":"cds"}"#
+            r#"{"type":"VERSION_ACK","pluginVersion":"2.0.0","protocolVersion":"1.6","backendMode":"cds"}"#
         )
         .is_err());
         assert!(parse_version_ack_json(
-            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.5"}],"backendMode":"fallback"}"#
+            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.6"}],"backendMode":"fallback"}"#
         )
         .is_err());
         assert!(matches!(

@@ -2,7 +2,7 @@ use super::connection_config::ConnectionSettings;
 use super::errors::publish_sync_error;
 use super::logs::emit_operator_sync_log;
 use super::protocol::{
-    close_ws_with_deadline, parse_version_handshake_payload, schedule_sync_retry,
+    close_ws_with_deadline, parse_version_handshake_payload_for, schedule_sync_retry,
     send_ws_with_deadline, RetryBudget, VersionHandshakeError,
 };
 use super::types::{DesktopSyncInfo, SyncState};
@@ -10,6 +10,7 @@ use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
 use crate::vcp_modules::sync_hash::HashInitializer;
 use crate::vcp_modules::sync_logger::{LogLevel, SyncLogger};
+use crate::vcp_modules::wire_protocol::WireProtocolVersion;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -108,28 +109,54 @@ pub(crate) async fn connect_with_cancel(
     }
 }
 
+pub(crate) fn desktop_requests_wire_1_5(error: &VersionHandshakeError) -> bool {
+    match error {
+        VersionHandshakeError::Mismatch { received, .. } => received == "1.5",
+        VersionHandshakeError::Remote(raw) => {
+            crate::vcp_modules::sync_error::decode_wire_sync_error(raw).is_some_and(|wire| {
+                wire.code == "WIRE_VERSION_MISMATCH" && wire.message.contains("expected 1.5")
+            })
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn perform_handshake(
-    mut ws: super::types::SyncWebSocket,
+    ws: super::types::SyncWebSocket,
     cancel: &CancellationToken,
 ) -> Result<(super::types::SyncWebSocket, DesktopSyncInfo), VersionHandshakeError> {
-    let version =
-        crate::vcp_modules::wire_protocol::build_version_check_json(env!("CARGO_PKG_VERSION"))
-            .map_err(|error| VersionHandshakeError::Protocol(error.to_string()))?;
+    perform_handshake_for(ws, cancel, WireProtocolVersion::V1_6).await
+}
+
+pub(crate) async fn perform_handshake_for(
+    mut ws: super::types::SyncWebSocket,
+    cancel: &CancellationToken,
+    wire_version: WireProtocolVersion,
+) -> Result<(super::types::SyncWebSocket, DesktopSyncInfo), VersionHandshakeError> {
+    let version = crate::vcp_modules::wire_protocol::build_version_check_json_for(
+        env!("CARGO_PKG_VERSION"),
+        wire_version,
+    )
+    .map_err(|error| VersionHandshakeError::Protocol(error.to_string()))?;
     send_ws_with_deadline(&mut ws, Message::Text(version.into()))
         .await
         .map_err(VersionHandshakeError::Transport)?;
     let receive = async {
         while let Some(result) = ws.next().await {
             match result {
-                Ok(Message::Text(text)) => match parse_version_handshake_payload(&text)? {
-                    Some(ack) => {
-                        return Ok(DesktopSyncInfo {
-                            package_version: ack.package_version,
-                            backend_mode: ack.backend_mode,
-                        })
+                Ok(Message::Text(text)) => {
+                    match parse_version_handshake_payload_for(&text, wire_version)? {
+                        Some(ack) => {
+                            return Ok(DesktopSyncInfo {
+                                package_version: ack.package_version,
+                                backend_mode: ack.backend_mode,
+                                wire_version,
+                            })
+                        }
+                        None => continue,
                     }
-                    None => continue,
-                },
+                }
                 Ok(Message::Close(frame)) => return Err(close_error(frame)),
                 Ok(Message::Ping(payload)) => {
                     ws.send(Message::Pong(payload))
@@ -168,7 +195,6 @@ pub(crate) async fn perform_handshake(
         }
     }
 }
-
 pub(crate) fn close_error(
     frame: Option<tokio_tungstenite::tungstenite::protocol::CloseFrame>,
 ) -> VersionHandshakeError {

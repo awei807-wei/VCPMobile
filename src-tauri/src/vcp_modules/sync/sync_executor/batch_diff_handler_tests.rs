@@ -1,11 +1,13 @@
 use super::{
-    parse_message_diff_result_frame, parse_topic_decision, validate_phase3_result_topics,
-    validate_topic_batch_outcomes, TopicBatchOutcome, TopicDecision,
+    parse_message_diff_result_frame, parse_topic_decision, parse_topic_decision_for_wire,
+    validate_phase3_result_topics, validate_topic_batch_outcomes, TopicBatchOutcome, TopicDecision,
 };
 use crate::vcp_modules::sync_error::{encode_local_sync_error, SyncErrorStage};
+use crate::vcp_modules::sync_executor::{MessagePushSelection, MessagePushTarget};
 use crate::vcp_modules::sync_types::{MessageDeleteDecision, MessageDiffDecision, OwnerType};
 use crate::vcp_modules::topic_types::TopicKey;
-use serde_json::json;
+use crate::vcp_modules::wire_protocol::WireProtocolVersion;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 
 fn topic(owner_type: &str, owner_id: &str, topic_id: &str) -> TopicKey {
@@ -22,8 +24,11 @@ fn decision(key: &TopicKey) -> MessageDiffDecision {
         owner_id: key.owner_id.clone(),
         topic_id: key.topic_id.clone(),
         ok: true,
+        pull_all: Some(false),
         pull_message_ids: Some(Vec::new()),
-        push_topic: Some(false),
+        push_topic: None,
+        push_message_ids: Some(Vec::new()),
+        push_deleted_messages: Some(Vec::new()),
         delete_messages: Some(Vec::new()),
         error: None,
     }
@@ -51,11 +56,42 @@ fn decision_is_a_strict_live_or_tombstone_union() {
     assert_eq!(
         parse_topic_decision(&key, &valid).expect("valid decision"),
         TopicDecision {
+            pull_all: false,
             pull_message_ids: vec!["message-a".to_string()],
-            push_topic: false,
+            push_target: None,
             delete_messages: Vec::new(),
         }
     );
+
+    let mut pushed = decision(&key);
+    pushed.push_message_ids = Some(vec!["m-push".to_string()]);
+    pushed.push_deleted_messages = Some(vec![MessageDeleteDecision {
+        msg_id: "m-del".to_string(),
+        deleted_at: 99,
+    }]);
+    assert_eq!(
+        parse_topic_decision(&key, &pushed)
+            .expect("valid selected push")
+            .push_target,
+        Some(MessagePushTarget::Selected(MessagePushSelection {
+            topic: key.clone(),
+            message_ids: vec!["m-push".to_string()],
+            deleted_messages: vec![MessageDeleteDecision {
+                msg_id: "m-del".to_string(),
+                deleted_at: 99,
+            }],
+        }))
+    );
+
+    let mut pull_all = decision(&key);
+    pull_all.pull_all = Some(true);
+    assert!(
+        parse_topic_decision(&key, &pull_all)
+            .expect("pullAll")
+            .pull_all
+    );
+    pull_all.push_message_ids = Some(vec!["conflict".to_string()]);
+    assert!(parse_topic_decision(&key, &pull_all).is_err());
 
     let mut deleted = decision(&key);
     deleted.delete_messages = Some(vec![MessageDeleteDecision {
@@ -78,11 +114,48 @@ fn decision_is_a_strict_live_or_tombstone_union() {
 
     let mut overlap = decision(&key);
     overlap.pull_message_ids = Some(vec!["same".to_string()]);
-    overlap.delete_messages = Some(vec![MessageDeleteDecision {
-        msg_id: "same".to_string(),
-        deleted_at: 1,
-    }]);
+    overlap.push_message_ids = Some(vec!["same".to_string()]);
     assert!(parse_topic_decision(&key, &overlap).is_err());
+}
+
+#[test]
+fn wire_1_6_diff_matrix_cases_and_wire_1_5_fallback_parse_cleanly() {
+    let matrix: Value = serde_json::from_str(include_str!("../fixtures/message_diff_matrix.json"))
+        .expect("message diff matrix");
+    for case in matrix["cases"].as_array().expect("cases") {
+        let mut entry = case["expected"].clone();
+        entry["ownerType"] = case["ownerType"].clone();
+        entry["ownerId"] = case["ownerId"].clone();
+        entry["topicId"] = case["topicId"].clone();
+        entry["ok"] = json!(true);
+        let parsed: MessageDiffDecision = serde_json::from_value(entry).expect("matrix decision");
+        let key = topic(
+            case["ownerType"].as_str().unwrap(),
+            case["ownerId"].as_str().unwrap(),
+            case["topicId"].as_str().unwrap(),
+        );
+        parse_topic_decision_for_wire(&key, &parsed, WireProtocolVersion::V1_6)
+            .expect("valid Wire 1.6 matrix decision");
+    }
+
+    let key = topic("agent", "agent-a", "legacy-topic");
+    let legacy: MessageDiffDecision = serde_json::from_value(json!({
+        "ownerType": "agent",
+        "ownerId": "agent-a",
+        "topicId": "legacy-topic",
+        "ok": true,
+        "pullMessageIds": ["m-pull"],
+        "pushTopic": true,
+        "deleteMessages": []
+    }))
+    .expect("legacy decision JSON");
+    assert!(parse_topic_decision_for_wire(&key, &legacy, WireProtocolVersion::V1_6).is_err());
+    let parsed_v15 = parse_topic_decision_for_wire(&key, &legacy, WireProtocolVersion::V1_5)
+        .expect("Wire 1.5 fallback accepts pushTopic");
+    assert_eq!(
+        parsed_v15.push_target,
+        Some(MessagePushTarget::WholeTopic(key))
+    );
 }
 
 #[test]

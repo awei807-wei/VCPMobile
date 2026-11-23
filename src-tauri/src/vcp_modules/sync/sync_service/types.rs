@@ -2,7 +2,7 @@ use crate::vcp_modules::sync_executor::batch_diff_handler::Phase3ProtocolError;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_types::{DeleteTarget, MessageDiffTopicState};
 use crate::vcp_modules::topic_types::TopicKey;
-use crate::vcp_modules::wire_protocol::DesktopBackendMode;
+use crate::vcp_modules::wire_protocol::{DesktopBackendMode, WireProtocolVersion};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -26,6 +26,7 @@ pub(crate) type PendingDiffBatch = super::batching::Phase3DiffBatch;
 pub(crate) struct DesktopSyncInfo {
     pub(crate) package_version: String,
     pub(crate) backend_mode: DesktopBackendMode,
+    pub(crate) wire_version: WireProtocolVersion,
 }
 
 #[derive(Clone, Default)]

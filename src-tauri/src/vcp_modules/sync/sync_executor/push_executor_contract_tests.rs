@@ -1,15 +1,20 @@
 use super::entities::{load_owner_push_version, owner_push_idempotency_key};
-use super::message_store::{load_outbound_message_page, serialize_topic_messages};
+use super::message_store::{
+    load_outbound_message_page, serialize_selected_topic_messages, serialize_topic_messages,
+};
 use super::ndjson::parse_message_push_frames;
 use super::tombstone::{message_tombstone_body_len, preflight_topic_messages};
-use super::types::{BoundedJsonLine, MessageTombstone, MessageTombstoneRequest};
+use super::types::{
+    BoundedJsonLine, MessagePushSelection, MessageTombstone, MessageTombstoneRequest,
+};
 use crate::vcp_modules::message_repository::ContentCompressor;
-use crate::vcp_modules::sync::sync_types::{AvatarPushResponse, EntityPushResponse, OwnerType};
+use crate::vcp_modules::sync::sync_types::{
+    AvatarPushResponse, EntityPushResponse, MessageDeleteDecision, OwnerType,
+};
 use crate::vcp_modules::sync_dto::AttachmentSyncDTO;
 use crate::vcp_modules::topic_types::TopicKey;
 use serde_json::json;
 use std::io::Write;
-
 const MAX_SAFE_JSON_INTEGER: i64 = crate::vcp_modules::sync::sync_types::MAX_SAFE_TIMESTAMP;
 
 fn topic(owner_type: &str, owner_id: &str, topic_id: &str) -> TopicKey {
@@ -254,9 +259,68 @@ async fn same_topic_id_in_another_owner_namespace_is_isolated() {
         .await
         .expect("group page");
     assert_eq!(agent[0].content, "agent");
+    assert_eq!(agent[0].group_id, None);
+    assert_eq!(agent[0].is_group_message, Some(false));
     assert_eq!(group[0].content, "group");
+    assert_eq!(group[0].group_id.as_deref(), Some("group-a"));
+    assert_eq!(group[0].is_group_message, Some(true));
 }
 
+#[tokio::test]
+async fn selected_message_push_sorts_by_timestamp_and_id_and_detects_stale_snapshot() {
+    let pool = test_pool().await;
+    for (msg_id, ts) in [("m-c", 20), ("m-b", 10), ("m-a", 10), ("m-ignored", 5)] {
+        insert_message(
+            &pool,
+            MessageFixture {
+                owner_type: "group",
+                owner_id: "group-a",
+                topic_id: "shared",
+                msg_id,
+                timestamp: ts,
+                content: msg_id.as_bytes().to_vec(),
+                deleted_at: None,
+            },
+        )
+        .await;
+    }
+    let key = topic("group", "group-a", "shared");
+    let mut tx = pool.begin().await.expect("begin snapshot");
+    let selection = MessagePushSelection {
+        topic: key.clone(),
+        message_ids: vec!["m-c".to_string(), "m-b".to_string(), "m-a".to_string()],
+        deleted_messages: vec![MessageDeleteDecision {
+            msg_id: "m-del".to_string(),
+            deleted_at: 77,
+        }],
+    };
+    let serialized = serialize_selected_topic_messages(&mut tx, &selection)
+        .await
+        .expect("serialize selected");
+    assert_eq!(serialized.live_count, 3);
+    assert_eq!(serialized.tombstone_count, 1);
+    let frame: serde_json::Value = serde_json::from_slice(&serialized.line).expect("frame");
+    let ids = frame["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["m-a", "m-b", "m-c"]);
+    assert_eq!(frame["messages"][0]["groupId"], "group-a");
+    assert_eq!(frame["messages"][0]["isGroupMessage"], true);
+    assert_eq!(frame["deletedMessages"][0]["msgId"], "m-del");
+
+    let missing_selection = MessagePushSelection {
+        topic: key,
+        message_ids: vec!["m-a".to_string(), "m-missing".to_string()],
+        deleted_messages: Vec::new(),
+    };
+    let stale_err = serialize_selected_topic_messages(&mut tx, &missing_selection)
+        .await
+        .expect_err("missing selected message must trigger stale snapshot");
+    assert!(stale_err.contains("SYNC_SNAPSHOT_STALE"));
+}
 #[tokio::test]
 async fn outbound_message_snapshot_rejects_unsafe_timestamps_and_tombstones() {
     let pool = test_pool().await;

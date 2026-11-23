@@ -56,11 +56,7 @@ pub fn find_tool_result_end(text: &str, start_index: usize) -> Option<usize> {
     loop {
         let next_end = text[cursor..]
             .find(TOOL_RESULT_END_MARKER)
-            .map(|index| index + cursor);
-        let next_end = match next_end {
-            Some(value) => value,
-            None => return None,
-        };
+            .map(|index| index + cursor)?;
 
         if let Some(next_start_index) = next_start {
             if next_start_index < next_end {
@@ -142,7 +138,11 @@ pub fn tool_result_body(raw: &str) -> &str {
         None => trimmed,
     };
     match after_start.rfind(TOOL_RESULT_END_MARKER) {
-        Some(index) if after_start[index + TOOL_RESULT_END_MARKER.len()..].trim().is_empty() => {
+        Some(index)
+            if after_start[index + TOOL_RESULT_END_MARKER.len()..]
+                .trim()
+                .is_empty() =>
+        {
             &after_start[..index]
         }
         _ => after_start,
@@ -298,7 +298,8 @@ mod tests {
 
     #[test]
     fn metadata_line_marks_block_hidden() {
-        let raw = "[[VCP调用结果信息汇总:\n- 注入上下文: 隐藏\n- 工具名称: WebSearch\nVCP调用结果结束]]";
+        let raw =
+            "[[VCP调用结果信息汇总:\n- 注入上下文: 隐藏\n- 工具名称: WebSearch\nVCP调用结果结束]]";
         assert!(is_tool_result_hidden(raw));
         let restored = set_tool_result_hidden(raw, false);
         assert!(!is_tool_result_hidden(&restored));

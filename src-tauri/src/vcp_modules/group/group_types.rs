@@ -5,11 +5,11 @@ fn default_group_name() -> String {
     "Unnamed Group".to_string()
 }
 
-fn default_group_mode() -> String {
+pub(crate) fn default_group_mode() -> String {
     "sequential".to_string()
 }
 
-fn default_tag_match_mode() -> Option<String> {
+pub(crate) fn default_tag_match_mode() -> Option<String> {
     Some("strict".to_string())
 }
 

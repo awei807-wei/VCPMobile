@@ -65,7 +65,7 @@ async fn invalid_non_text(ctx: &mut AttemptContext, kind: &str) -> AttemptAction
     fail(
         ctx,
         "PROTOCOL_FRAME_INVALID",
-        format!("{kind} WebSocket frames are not valid Wire 1.5 business frames"),
+        format!("{kind} WebSocket frames are not valid Wire 1.6 business frames"),
         Vec::new(),
     )
     .await
@@ -93,7 +93,7 @@ async fn handle_text(ctx: &mut AttemptContext, text: &str) -> AttemptAction {
             fail(
                 ctx,
                 "PROTOCOL_FRAME_INVALID",
-                format!("Unknown Wire 1.5 frame type {other}"),
+                format!("Unknown Wire 1.6 frame type {other}"),
                 Vec::new(),
             )
             .await
@@ -199,6 +199,7 @@ async fn spawn_message_diff_handler(ctx: &AttemptContext, frame: MessageDiffResu
     let expected_states = ctx.expected_phase3_states.clone();
     let prerender = ctx.prerender_enabled;
     let attempt_id = ctx.attempt_id;
+    let wire_version = ctx.wire_version;
     ctx.task_tracker
         .spawn(async move {
             let result = BatchDiffHandler::handle_diff_batch(
@@ -216,6 +217,7 @@ async fn spawn_message_diff_handler(ctx: &AttemptContext, frame: MessageDiffResu
                 &expected,
                 &expected_states,
                 attempt_id,
+                wire_version,
             )
             .await;
             let _ = result_tx.send(SyncCommand::Phase3BatchFinished { attempt_id, result });

@@ -14,4 +14,4 @@ pub use pull_executor::{
     BatchPullResult, MessageBatchPullRequest, PullExecutor, PullProgressContext,
 };
 #[allow(unused_imports)]
-pub use push_executor::{PushBatchResult, PushExecutor};
+pub use push_executor::{MessagePushSelection, MessagePushTarget, PushBatchResult, PushExecutor};

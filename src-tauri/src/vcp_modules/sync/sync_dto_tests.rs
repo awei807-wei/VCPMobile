@@ -37,7 +37,7 @@ fn topic_dto_requires_the_complete_wire_1_5_version() {
             "unexpectedly accepted missing {missing}"
         );
     }
-    assert!(serde_json::from_value::<AgentTopicSyncDTO>(json!({
+    let extended: AgentTopicSyncDTO = serde_json::from_value(json!({
         "id": "topic-1",
         "name": "Topic",
         "createdAt": 123,
@@ -48,9 +48,32 @@ fn topic_dto_requires_the_complete_wire_1_5_version() {
         "updatedAt": 456,
         "desktopOnly": true
     }))
-    .is_err());
-}
+    .expect("entity DTO tolerates future desktop extension fields");
+    assert_eq!(extended.id, "topic-1");
 
+    let defaulted_group: GroupSyncDTO = serde_json::from_value(json!({
+        "name": "Group",
+        "members": ["agent-1"],
+        "useUnifiedModel": false,
+        "futureField": "ignored"
+    }))
+    .expect("group DTO fills defaults when optional fields are omitted");
+    assert_eq!(defaulted_group.mode, "sequential");
+    assert_eq!(defaulted_group.tag_match_mode.as_deref(), Some("strict"));
+    assert_eq!(defaulted_group.created_at, 0);
+
+    let explicit_null_tag_mode: GroupSyncDTO = serde_json::from_value(json!({
+        "name": "Group",
+        "members": ["agent-1"],
+        "mode": "invite_only",
+        "useUnifiedModel": false,
+        "tagMatchMode": null,
+        "createdAt": 99
+    }))
+    .expect("explicit null tagMatchMode remains None");
+    assert_eq!(explicit_null_tag_mode.tag_match_mode, None);
+    assert_eq!(explicit_null_tag_mode.created_at, 99);
+}
 #[test]
 fn topic_canonical_contract_matches_dto_bytes_and_config_hashes() {
     let bundle: serde_json::Value =

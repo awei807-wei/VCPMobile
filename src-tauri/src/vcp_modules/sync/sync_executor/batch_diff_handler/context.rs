@@ -4,11 +4,11 @@ use crate::vcp_modules::sync_service::{
     Phase3DiffBatch, Phase3MessageSnapshots, Phase3Tracker, SyncCommand,
 };
 use crate::vcp_modules::topic_types::TopicKey;
+use crate::vcp_modules::wire_protocol::WireProtocolVersion;
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
-
 pub(crate) struct BatchContext<'a> {
     pub(crate) app: &'a AppHandle,
     pub(crate) client: &'a reqwest::Client,
@@ -23,4 +23,5 @@ pub(crate) struct BatchContext<'a> {
     pub(crate) expected_topics: &'a Arc<AsyncMutex<HashSet<TopicKey>>>,
     pub(crate) expected_states: &'a Arc<AsyncMutex<Phase3MessageSnapshots>>,
     pub(crate) attempt_id: u64,
+    pub(crate) wire_version: WireProtocolVersion,
 }

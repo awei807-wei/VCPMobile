@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 /// Agent configuration exposed by the sync contract.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentSyncDTO {
     pub name: String,
     pub system_prompt: String,
@@ -35,10 +35,11 @@ impl From<&AgentConfig> for AgentSyncDTO {
 
 /// Group configuration exposed by the sync contract.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GroupSyncDTO {
     pub name: String,
     pub members: Vec<String>,
+    #[serde(default = "crate::vcp_modules::group_types::default_group_mode")]
     pub mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member_tags: Option<serde_json::Value>,
@@ -49,9 +50,13 @@ pub struct GroupSyncDTO {
     pub use_unified_model: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unified_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "crate::vcp_modules::group_types::default_tag_match_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tag_match_mode: Option<String>,
     #[serde(
+        default,
         deserialize_with = "deserialize_timestamp",
         serialize_with = "serialize_timestamp"
     )]
@@ -93,7 +98,7 @@ pub fn normalize_member_tags(value: Option<&Value>) -> Option<Value> {
 
 /// Agent topic sync DTO, including its lock and unread state.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTopicSyncDTO {
     pub id: String,
     pub name: String,
@@ -116,7 +121,7 @@ pub struct AgentTopicSyncDTO {
 
 /// Group topic sync DTO.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GroupTopicSyncDTO {
     pub id: String,
     pub name: String,

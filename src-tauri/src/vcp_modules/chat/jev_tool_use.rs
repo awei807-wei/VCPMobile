@@ -133,9 +133,7 @@ pub fn detect_jev_use(content: &str) -> Option<JevToolUse> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        detect_jev_use, field_end_marker, parse_jev, read_tool_request_field,
-    };
+    use super::{detect_jev_use, field_end_marker, parse_jev, read_tool_request_field};
 
     const TOOL_REQUEST: &str = "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SciCalculator「末」,\nexpression:「始」1+1「末」\n<<<[END_TOOL_REQUEST]>>>";
 
@@ -175,13 +173,12 @@ mod tests {
     #[test]
     fn parses_explicit_tool_name_from_quotes_and_backticks() {
         assert_eq!(
-            parse_jev("联络 'GPT生图'，告诉他画一张猫").unwrap().display_name,
+            parse_jev("联络 'GPT生图'，告诉他画一张猫")
+                .unwrap()
+                .display_name,
             "GPT生图"
         );
-        assert_eq!(
-            parse_jev("联络 `GPT生图`").unwrap().display_name,
-            "GPT生图"
-        );
+        assert_eq!(parse_jev("联络 `GPT生图`").unwrap().display_name, "GPT生图");
         assert_eq!(
             parse_jev("使用 ‘临时通讯’ 联系").unwrap().display_name,
             "临时通讯"

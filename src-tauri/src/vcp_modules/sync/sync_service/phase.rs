@@ -1,10 +1,6 @@
 use super::attempt::{AttemptAction, AttemptContext};
 use super::batching::{build_diff_batches, Phase3DiffBatch};
-use super::protocol::{
-    enforce_manifest_response_deadline, enforce_topic_hash_response_deadline,
-    send_ws_with_deadline, PHASE3_WATCHDOG_STUCK_TICKS, PHASE3_WATCHDOG_TICK,
-    PHASE_RESPONSE_TIMEOUT,
-};
+use super::protocol::{send_ws_with_deadline, PHASE3_WATCHDOG_STUCK_TICKS, PHASE3_WATCHDOG_TICK};
 use super::types::SyncCommand;
 use crate::vcp_modules::db_manager::DbState;
 use crate::vcp_modules::sync_pipeline::{Phase1Metadata, Phase3Message};
@@ -79,7 +75,6 @@ async fn start_topic_metadata(ctx: &mut AttemptContext) -> AttemptAction {
     if send_frame(ctx, &frame).await == AttemptAction::Stop {
         return AttemptAction::Stop;
     }
-    schedule_manifest_deadline(ctx, 3).await;
     AttemptAction::Continue
 }
 
@@ -113,16 +108,6 @@ async fn start_topic_validation(ctx: &mut AttemptContext) -> AttemptAction {
     if send_frame(ctx, &frame).await == AttemptAction::Stop {
         return AttemptAction::Stop;
     }
-    ctx.task_tracker
-        .spawn(enforce_topic_hash_response_deadline(
-            ctx.expected_topic_hash_results.clone(),
-            ctx.manifest_phase.clone(),
-            3,
-            ctx.tx.clone(),
-            ctx.attempt_id,
-            PHASE_RESPONSE_TIMEOUT,
-        ))
-        .await;
     AttemptAction::Continue
 }
 
@@ -318,20 +303,6 @@ async fn send_frame<T: Serialize>(ctx: &mut AttemptContext, frame: &T) -> Attemp
         Err(_) => AttemptAction::Stop,
     }
 }
-
-pub(crate) async fn schedule_manifest_deadline(ctx: &AttemptContext, expected_phase: u8) {
-    ctx.task_tracker
-        .spawn(enforce_manifest_response_deadline(
-            ctx.expected_manifest_types.clone(),
-            ctx.manifest_phase.clone(),
-            expected_phase,
-            ctx.tx.clone(),
-            ctx.attempt_id,
-            PHASE_RESPONSE_TIMEOUT,
-        ))
-        .await;
-}
-
 fn clear_manifest_expectation(ctx: &AttemptContext) {
     ctx.expected_manifest_count.store(0, Ordering::SeqCst);
     ctx.manifest_responses_received.store(0, Ordering::SeqCst);

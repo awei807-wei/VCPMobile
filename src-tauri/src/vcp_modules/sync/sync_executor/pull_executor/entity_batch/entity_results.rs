@@ -67,8 +67,20 @@ fn decode_entity_result(
             identity.label()
         )
     })?;
-    let allowed = result_keys(&identity, ok);
-    super::require_exact_keys(object, &allowed)?;
+    let required = result_keys(&identity, ok);
+    super::require_keys(object, &required)?;
+    if ok && object.contains_key("error") {
+        return Err(format!(
+            "Entity pull result {} with ok=true must not contain error",
+            identity.label()
+        ));
+    }
+    if !ok && object.contains_key("data") {
+        return Err(format!(
+            "Entity pull result {} with ok=false must not contain data",
+            identity.label()
+        ));
+    }
     if ok {
         decode_success_result(object, identity, owner_config_baselines)
     } else {

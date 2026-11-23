@@ -1,11 +1,12 @@
-use super::message_store::serialize_topic_messages;
+use super::message_store::{serialize_selected_topic_messages, serialize_topic_messages};
 use super::ndjson::send_message_chunk;
 use super::tombstone::preflight_topic_messages;
 use super::types::{
-    PushBatchResult, MAX_SYNC_BODY_BYTES, MAX_SYNC_MESSAGES, MAX_SYNC_TOPICS,
+    MessagePushSelection, MessagePushTarget, PushBatchResult, MAX_SYNC_MESSAGES, MAX_SYNC_TOPICS,
     MESSAGE_REQUEST_CHUNK_BYTES,
 };
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::sync::sync_error::{encode_local_sync_error, SyncErrorStage};
 use crate::vcp_modules::topic_types::TopicKey;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -18,14 +19,35 @@ pub(super) async fn push_messages_batch<R: Runtime>(
     sync_token: &str,
     topics: &[TopicKey],
 ) -> Result<Vec<PushBatchResult>, String> {
-    validate_topics(topics)?;
-    if topics.is_empty() {
+    let targets = topics
+        .iter()
+        .cloned()
+        .map(MessagePushTarget::WholeTopic)
+        .collect::<Vec<_>>();
+    push_message_targets_batch(app, client, http_url, sync_token, &targets).await
+}
+
+pub(super) async fn push_message_targets_batch<R: Runtime>(
+    app: &AppHandle<R>,
+    client: &reqwest::Client,
+    http_url: &str,
+    sync_token: &str,
+    targets: &[MessagePushTarget],
+) -> Result<Vec<PushBatchResult>, String> {
+    validate_targets(targets)?;
+    if targets.is_empty() {
         return Ok(Vec::new());
     }
     let db = app.state::<DbState>();
     let mut state = PushState::default();
-    for topic in topics {
-        let (line, message_count) = snapshot_topic(&db.pool, topic).await?;
+    for target in targets {
+        let topic = target.topic();
+        let (line, message_count) = match target {
+            MessagePushTarget::WholeTopic(topic) => snapshot_whole_topic(&db.pool, topic).await?,
+            MessagePushTarget::Selected(selection) => {
+                snapshot_selected_topic(&db.pool, selection).await?
+            }
+        };
         if !state.body.is_empty()
             && state.body.len().saturating_add(line.len()) > MESSAGE_REQUEST_CHUNK_BYTES
         {
@@ -37,38 +59,38 @@ pub(super) async fn push_messages_batch<R: Runtime>(
         }
     }
     state.flush(client, http_url, sync_token).await?;
-    if state.results.len() != topics.len() {
+    if state.results.len() != targets.len() {
         return Err("Message push response did not cover every requested topic".to_string());
     }
     log::info!(
-        "[PushExecutor] Wire 1.5 message push completed: {}/{} topics",
+        "[PushExecutor] Message push completed: {}/{} topics",
         state.results.iter().filter(|result| result.success).count(),
-        topics.len()
+        targets.len()
     );
     Ok(state.results)
 }
 
-fn validate_topics(topics: &[TopicKey]) -> Result<(), String> {
-    if topics.len() > MAX_SYNC_TOPICS {
+fn validate_targets(targets: &[MessagePushTarget]) -> Result<(), String> {
+    if targets.len() > MAX_SYNC_TOPICS {
         return Err(format!(
             "Message push contains {} topics, limit is {MAX_SYNC_TOPICS}",
-            topics.len()
+            targets.len()
         ));
     }
-    let identities = topics.iter().cloned().collect::<HashSet<_>>();
-    if identities.len() != topics.len() || topics.iter().any(|topic| !topic.is_valid()) {
-        return Err("Message push topics must have unique valid identities".to_string());
+    let mut identities = HashSet::with_capacity(targets.len());
+    for target in targets {
+        let topic = target.topic();
+        if !topic.is_valid() || !identities.insert(topic.clone()) {
+            return Err("Message push topics must have unique valid identities".to_string());
+        }
     }
     Ok(())
 }
 
-async fn snapshot_topic(pool: &SqlitePool, topic: &TopicKey) -> Result<(Vec<u8>, usize), String> {
-    let mut tx = pool.begin().await.map_err(|error| {
-        format!(
-            "Message push snapshot failed for {}: {error}",
-            topic.topic_id
-        )
-    })?;
+async fn ensure_topic_live(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    topic: &TopicKey,
+) -> Result<(), String> {
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
             SELECT 1 FROM topics
@@ -78,7 +100,7 @@ async fn snapshot_topic(pool: &SqlitePool, topic: &TopicKey) -> Result<(Vec<u8>,
     .bind(&topic.owner_type)
     .bind(&topic.owner_id)
     .bind(&topic.topic_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(|error| {
         format!(
@@ -87,11 +109,30 @@ async fn snapshot_topic(pool: &SqlitePool, topic: &TopicKey) -> Result<(Vec<u8>,
         )
     })?;
     if !exists {
-        return Err(format!(
-            "Message push topic {}/{}/{} is missing locally",
-            topic.owner_type, topic.owner_id, topic.topic_id
+        return Err(encode_local_sync_error(
+            "SYNC_SNAPSHOT_STALE",
+            SyncErrorStage::Messages,
+            &format!(
+                "Message push topic {}/{}/{} disappeared or became tombstoned",
+                topic.owner_type, topic.owner_id, topic.topic_id
+            ),
+            vec![topic.topic_id.clone()],
         ));
     }
+    Ok(())
+}
+
+async fn snapshot_whole_topic(
+    pool: &SqlitePool,
+    topic: &TopicKey,
+) -> Result<(Vec<u8>, usize), String> {
+    let mut tx = pool.begin().await.map_err(|error| {
+        format!(
+            "Message push snapshot failed for {}: {error}",
+            topic.topic_id
+        )
+    })?;
+    ensure_topic_live(&mut tx, topic).await?;
     let preflight = preflight_topic_messages(&mut tx, topic).await?;
     let line = serialize_topic_messages(&mut tx, topic).await?;
     let serialized_count = line
@@ -103,11 +144,42 @@ async fn snapshot_topic(pool: &SqlitePool, topic: &TopicKey) -> Result<(Vec<u8>,
         .checked_add(preflight.tombstone_count)
         .ok_or_else(|| format!("Message push count overflow for {}", topic.topic_id))?;
     if serialized_count != expected_count {
-        return Err(format!(
-            "Message push topic {} changed during serialization: expected {expected_count}, got {serialized_count}",
-            topic.topic_id
+        return Err(encode_local_sync_error(
+            "SYNC_SNAPSHOT_STALE",
+            SyncErrorStage::Messages,
+            &format!(
+                "Message push topic {} changed during serialization: expected {expected_count}, got {serialized_count}",
+                topic.topic_id
+            ),
+            vec![topic.topic_id.clone()],
         ));
     }
+    tx.commit().await.map_err(|error| {
+        format!(
+            "Message push snapshot close failed for {}: {error}",
+            topic.topic_id
+        )
+    })?;
+    Ok((line.line, serialized_count))
+}
+
+async fn snapshot_selected_topic(
+    pool: &SqlitePool,
+    selection: &MessagePushSelection,
+) -> Result<(Vec<u8>, usize), String> {
+    let topic = &selection.topic;
+    let mut tx = pool.begin().await.map_err(|error| {
+        format!(
+            "Message push snapshot failed for {}: {error}",
+            topic.topic_id
+        )
+    })?;
+    ensure_topic_live(&mut tx, topic).await?;
+    let line = serialize_selected_topic_messages(&mut tx, selection).await?;
+    let serialized_count = line
+        .live_count
+        .checked_add(line.tombstone_count)
+        .ok_or_else(|| format!("Message push count overflow for {}", topic.topic_id))?;
     tx.commit().await.map_err(|error| {
         format!(
             "Message push snapshot close failed for {}: {error}",
@@ -122,7 +194,6 @@ struct PushState {
     body: Vec<u8>,
     topics: Vec<TopicKey>,
     results: Vec<PushBatchResult>,
-    total_bytes: usize,
     total_messages: usize,
 }
 
@@ -133,13 +204,6 @@ impl PushState {
         line: Vec<u8>,
         message_count: usize,
     ) -> Result<(), String> {
-        self.total_bytes = self
-            .total_bytes
-            .checked_add(line.len())
-            .ok_or_else(|| "Message push byte count overflow".to_string())?;
-        if self.total_bytes > MAX_SYNC_BODY_BYTES {
-            return Err("Message push exceeds the 256 MiB total limit".to_string());
-        }
         self.total_messages = self
             .total_messages
             .checked_add(message_count)

@@ -17,12 +17,12 @@ use crate::vcp_modules::sync_service::{
 };
 use crate::vcp_modules::sync_types::MessageDiffResultFrame;
 use crate::vcp_modules::topic_types::TopicKey;
+use crate::vcp_modules::wire_protocol::WireProtocolVersion;
 use context::BatchContext;
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
-
 pub struct BatchDiffHandler;
 
 impl BatchDiffHandler {
@@ -43,6 +43,7 @@ impl BatchDiffHandler {
         expected_batch_topics: &Arc<AsyncMutex<HashSet<TopicKey>>>,
         expected_message_states: &Arc<AsyncMutex<Phase3MessageSnapshots>>,
         attempt_id: u64,
+        wire_version: WireProtocolVersion,
     ) -> Result<(), Phase3ProtocolError> {
         let context = BatchContext {
             app: app_handle,
@@ -58,6 +59,7 @@ impl BatchDiffHandler {
             expected_topics: expected_batch_topics,
             expected_states: expected_message_states,
             attempt_id,
+            wire_version,
         };
         operations::handle_batch(context, frame).await
     }
@@ -68,7 +70,7 @@ impl BatchDiffHandler {
 mod tests;
 
 #[cfg(test)]
-pub(crate) use decision::{parse_topic_decision, TopicDecision};
+pub(crate) use decision::{parse_topic_decision, parse_topic_decision_for_wire, TopicDecision};
 #[cfg(test)]
 pub(crate) use outcome::{validate_topic_batch_outcomes, TopicBatchOutcome};
 #[cfg(test)]

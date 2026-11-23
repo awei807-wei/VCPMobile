@@ -715,9 +715,18 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                     // 工具结果可以被用户手动标记为“隐藏”（不注入 AI 上下文）。
                     // 标记写在起始标记之后，这里先记录状态与原文哈希，再把标记剥掉，
                     // 保证工具字段解析与展示不受影响。
-                    let hidden = crate::vcp_modules::chat::tool_result_visibility::is_tool_result_hidden(inner_content);
-                    let raw_hash = crate::vcp_modules::chat::tool_result_visibility::tool_result_body_hash(inner_content);
-                    let body = crate::vcp_modules::chat::tool_result_visibility::strip_hidden_marker(inner_content);
+                    let hidden =
+                        crate::vcp_modules::chat::tool_result_visibility::is_tool_result_hidden(
+                            inner_content,
+                        );
+                    let raw_hash =
+                        crate::vcp_modules::chat::tool_result_visibility::tool_result_body_hash(
+                            inner_content,
+                        );
+                    let body =
+                        crate::vcp_modules::chat::tool_result_visibility::strip_hidden_marker(
+                            inner_content,
+                        );
                     let (tool_name, status, details, footer) = parse_tool_result(&body);
                     ContentBlock::tool_result(tool_name, status, details, footer, hidden, raw_hash)
                 }

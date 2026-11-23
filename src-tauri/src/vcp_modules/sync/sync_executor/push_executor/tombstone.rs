@@ -30,24 +30,14 @@ pub(super) async fn preflight_topic_messages(
     })?;
     let live_count = count(&row, "live_count", key)?;
     let tombstone_count = count(&row, "tombstone_count", key)?;
-    let content_bytes = count(&row, "content_bytes", key)?;
-    let attachment_bytes = attachment_bytes(tx, key).await?;
+    let _content_bytes = count(&row, "content_bytes", key)?;
+    let _attachment_bytes = attachment_bytes(tx, key).await?;
     let total_count = live_count
         .checked_add(tombstone_count)
         .ok_or_else(|| format!("Message count overflow for {}", key.topic_id))?;
     if total_count > MAX_MESSAGES_PER_TOPIC {
         return Err(format!(
             "Message push topic {} contains {total_count} messages, limit is {MAX_MESSAGES_PER_TOPIC}",
-            key.topic_id
-        ));
-    }
-    let estimated = content_bytes
-        .checked_add(attachment_bytes)
-        .and_then(|value| value.checked_add(tombstone_count.saturating_mul(64)))
-        .ok_or_else(|| format!("Message push size overflow for {}", key.topic_id))?;
-    if estimated > MAX_NDJSON_LINE_BYTES {
-        return Err(format!(
-            "Message push topic {} exceeds the 32 MiB line budget",
             key.topic_id
         ));
     }

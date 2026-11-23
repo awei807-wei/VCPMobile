@@ -104,7 +104,7 @@ impl PullExecutor {
             "vcp-sync-log",
             serde_json::json!({
                 "level": "info",
-                "message": "[PullExecutor] Wire 1.5 entity pull completed"
+                "message": "[PullExecutor] Entity pull completed"
             }),
         );
         Ok(())
@@ -179,7 +179,7 @@ fn parse_entity_response(bytes: &[u8]) -> Result<Vec<Value>, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "Entity pull response must be an object".to_string())?;
-    require_exact_keys(object, &["results"])?;
+    require_keys(object, &["results"])?;
     let results = object
         .get("results")
         .and_then(Value::as_array)
@@ -220,6 +220,18 @@ fn require_exact_keys(object: &Map<String, Value>, expected: &[&str]) -> Result<
         return Err(format!(
             "object fields mismatch: expected {expected:?}, got {actual:?}"
         ));
+    }
+    Ok(())
+}
+
+pub(super) fn require_keys(object: &Map<String, Value>, required: &[&str]) -> Result<(), String> {
+    let missing = required
+        .iter()
+        .copied()
+        .filter(|key| !object.contains_key(*key))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!("object is missing required fields: {missing:?}"));
     }
     Ok(())
 }

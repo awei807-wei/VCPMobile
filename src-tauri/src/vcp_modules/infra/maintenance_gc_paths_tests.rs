@@ -218,6 +218,7 @@ fn temp_grace_is_fail_closed_for_clock_or_metadata_errors() {
 async fn sweep_removes_only_strict_unindexed_regular_files() {
     let root = test_root("sweep");
     let hash = "a".repeat(64);
+    #[cfg(unix)]
     let symlink_hash = "c".repeat(64);
     let candidate = root.join(format!("{hash}.bin"));
     let adjacent = root.join(format!("{hash}extra.bin"));

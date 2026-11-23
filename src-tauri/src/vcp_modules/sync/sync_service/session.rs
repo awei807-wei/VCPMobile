@@ -4,15 +4,16 @@ use super::errors::publish_sync_nonterminal_status;
 use super::logs::emit_operator_sync_log;
 use super::protocol::{schedule_sync_retry, RetryBudget};
 use super::session_support::{
-    build_http_client, connect_with_cancel, create_session_resources, ensure_sync_hashes,
-    handle_connection_error, handle_handshake_error, perform_handshake, shutdown_session,
-    start_owner_phase,
+    build_http_client, connect_with_cancel, create_session_resources, desktop_requests_wire_1_5,
+    ensure_sync_hashes, handle_connection_error, handle_handshake_error, perform_handshake_for,
+    shutdown_session, start_owner_phase,
 };
 use super::types::{DesktopSyncInfo, NetworkAwareSemaphore, SyncCommand, SyncWebSocket};
 use crate::vcp_modules::db_write_queue::DbWriteQueue;
 use crate::vcp_modules::sync_error::attempt_restart_code;
 use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_pipeline::pipeline::{PipelineCommand, SyncPipeline};
+use crate::vcp_modules::wire_protocol::WireProtocolVersion;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
@@ -118,7 +119,7 @@ impl SessionRuntime {
         )
         .await;
         let ws = self.connect_socket(&settings).await?;
-        self.handshake_socket(ws).await
+        self.handshake_socket(ws, &settings).await
     }
 
     async fn connect_socket(&mut self, settings: &ConnectionSettings) -> Option<SyncWebSocket> {
@@ -147,9 +148,44 @@ impl SessionRuntime {
     async fn handshake_socket(
         &mut self,
         ws: SyncWebSocket,
+        settings: &ConnectionSettings,
     ) -> Option<(SyncWebSocket, DesktopSyncInfo)> {
-        match perform_handshake(ws, &self.cancel).await {
+        match perform_handshake_for(ws, &self.cancel, WireProtocolVersion::V1_6).await {
             Ok(value) => Some(value),
+            Err(error) if desktop_requests_wire_1_5(&error) => {
+                super::logs::emit_sync_log(
+                    &self.app,
+                    "info",
+                    "Desktop uses legacy Wire 1.5; downgrading session protocol to 1.5",
+                );
+                emit_operator_sync_log(
+                    &self.app,
+                    self.session_id,
+                    "info",
+                    "检测到旧版桌面端（Wire 1.5），自动切换兼容协议重连...",
+                );
+                let fallback_ws = self.connect_socket(settings).await?;
+                match perform_handshake_for(fallback_ws, &self.cancel, WireProtocolVersion::V1_5)
+                    .await
+                {
+                    Ok(value) => Some(value),
+                    Err(fallback_error) => {
+                        if !handle_handshake_error(
+                            &self.app,
+                            self.session_id,
+                            &self.status,
+                            &self.cancel,
+                            &mut self.retry_budget,
+                            fallback_error,
+                        )
+                        .await
+                        {
+                            self.fatal = true;
+                        }
+                        None
+                    }
+                }
+            }
             Err(error) => {
                 if !handle_handshake_error(
                     &self.app,
@@ -167,7 +203,6 @@ impl SessionRuntime {
             }
         }
     }
-
     async fn run_attempt(&mut self, mut ws: SyncWebSocket, desktop_info: &DesktopSyncInfo) {
         if !start_owner_phase(
             &self.app,
@@ -192,7 +227,7 @@ impl SessionRuntime {
             let _ = self.tx.send(SyncCommand::StartManualSync);
         }
         self.first_attempt = false;
-        let outcome = self.execute_attempt(ws).await;
+        let outcome = self.execute_attempt(ws, desktop_info.wire_version).await;
         self.finish_attempt(outcome).await;
     }
 
@@ -206,7 +241,11 @@ impl SessionRuntime {
         }
     }
 
-    async fn execute_attempt(&mut self, ws: SyncWebSocket) -> AttemptOutcome {
+    async fn execute_attempt(
+        &mut self,
+        ws: SyncWebSocket,
+        wire_version: WireProtocolVersion,
+    ) -> AttemptOutcome {
         let Some(command_rx) = self.rx.take() else {
             return AttemptOutcome {
                 success: false,
@@ -220,6 +259,7 @@ impl SessionRuntime {
             app: self.app.clone(),
             session_id: self.session_id,
             attempt_id: self.attempt_id,
+            wire_version,
             cancel: self.cancel.child_token(),
             tx: self.tx.clone(),
             status: self.status.clone(),

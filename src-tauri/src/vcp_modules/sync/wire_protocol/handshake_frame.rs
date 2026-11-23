@@ -1,8 +1,8 @@
-//! Wire 1.5 握手阶段允许帧的严格分派。
+//! Wire 1.6 / 1.5 握手阶段允许帧的严格分派。
 
 use super::{
-    parse_desktop_diagnostic_frame, parse_strict_json, parse_version_ack, DesktopDiagnosticFrame,
-    VersionAck, VersionAckError,
+    parse_desktop_diagnostic_frame, parse_strict_json, parse_version_ack_for,
+    DesktopDiagnosticFrame, VersionAck, VersionAckError, WireProtocolVersion,
 };
 use crate::vcp_modules::sync::sync_error::{parse_wire_sync_error_frame, WireSyncError};
 use serde_json::Value;
@@ -15,15 +15,24 @@ pub enum VersionHandshakeFrame {
     SyncLogEvent,
 }
 
-/// Parses exactly one handshake frame and rejects every other message shape.
+/// Parses exactly one handshake frame for the default Wire 1.6 target.
 pub fn parse_version_handshake_json(input: &str) -> Result<VersionHandshakeFrame, VersionAckError> {
+    parse_version_handshake_json_for(input, WireProtocolVersion::V1_6)
+}
+
+/// Parses exactly one handshake frame for a specific expected Wire version.
+pub fn parse_version_handshake_json_for(
+    input: &str,
+    expected_wire: WireProtocolVersion,
+) -> Result<VersionHandshakeFrame, VersionAckError> {
     let payload = parse_strict_json(input)
         .map_err(|error| VersionAckError::InvalidJson(error.to_string()))?;
-    parse_version_handshake_value(&payload)
+    parse_version_handshake_value(&payload, expected_wire)
 }
 
 fn parse_version_handshake_value(
     payload: &Value,
+    expected_wire: WireProtocolVersion,
 ) -> Result<VersionHandshakeFrame, VersionAckError> {
     let object = payload
         .as_object()
@@ -33,7 +42,9 @@ fn parse_version_handshake_value(
     })?;
 
     match message_type {
-        "VERSION_ACK" => parse_version_ack(payload).map(VersionHandshakeFrame::VersionAck),
+        "VERSION_ACK" => {
+            parse_version_ack_for(payload, expected_wire).map(VersionHandshakeFrame::VersionAck)
+        }
         "SYNC_ERROR" => parse_wire_sync_error_frame(payload)
             .map(VersionHandshakeFrame::SyncError)
             .map_err(VersionAckError::Invalid),
@@ -53,15 +64,25 @@ fn parse_version_handshake_value(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_version_handshake_json, VersionHandshakeFrame};
+    use super::{
+        parse_version_handshake_json, parse_version_handshake_json_for, VersionHandshakeFrame,
+        WireProtocolVersion,
+    };
 
     #[test]
     fn accepts_exact_ack_and_structured_error() {
         let ack = parse_version_handshake_json(
-            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.5"}],"backendMode":"cds"}"#,
+            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.6"}],"backendMode":"cds"}"#,
         )
         .expect("ack");
         assert!(matches!(ack, VersionHandshakeFrame::VersionAck(_)));
+
+        let legacy_ack = parse_version_handshake_json_for(
+            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.5"}],"backendMode":"cds"}"#,
+            WireProtocolVersion::V1_5,
+        )
+        .expect("legacy 1.5 ack");
+        assert!(matches!(legacy_ack, VersionHandshakeFrame::VersionAck(_)));
 
         let error = parse_version_handshake_json(
             r#"{"type":"SYNC_ERROR","error":{"code":"WIRE_VERSION_MISMATCH","origin":"desktop_plugin","stage":"handshake","kind":"compatibility","retry":"after_user_action","message":"mismatch","failedTopicIds":[]}}"#,

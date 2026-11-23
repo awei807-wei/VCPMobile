@@ -9,10 +9,11 @@ use super::logs::count_log_removal;
 use super::protocol::{
     consume_final_ack, enforce_final_ack_deadline, enforce_manifest_response_deadline,
     enforce_topic_hash_response_deadline, parse_unique_nonempty_strings,
-    parse_version_handshake_payload, protocol_send_failure_message, take_retry_slot, RetryBudget,
-    VersionHandshakeError, MAX_SYNC_RETRIES, MAX_SYNC_TOPICS,
+    parse_version_handshake_payload, parse_version_handshake_payload_for,
+    protocol_send_failure_message, take_retry_slot, RetryBudget, VersionHandshakeError,
+    MAX_SYNC_RETRIES, MAX_SYNC_TOPICS,
 };
-use super::session_support::perform_handshake;
+use super::session_support::{desktop_requests_wire_1_5, perform_handshake};
 use super::types::{FinalAckKey, SyncSessionHandle, SyncTaskTracker};
 use super::*;
 use crate::vcp_modules::settings_manager::{ConnectionProfile, Settings};
@@ -23,7 +24,7 @@ use crate::vcp_modules::sync_types::{
     TopicDiffResultFrame,
 };
 use crate::vcp_modules::topic_types::TopicKey;
-use crate::vcp_modules::wire_protocol::DesktopBackendMode;
+use crate::vcp_modules::wire_protocol::{DesktopBackendMode, WireProtocolVersion};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -307,22 +308,30 @@ async fn missing_topic_hash_frame_fails_the_current_attempt() {
 }
 
 #[test]
-fn protocol_1_5_version_ack_is_strict_and_uses_component_claims() {
+fn protocol_1_6_version_ack_is_strict_and_supports_1_5_fallback_detection() {
     let ack = parse_version_handshake_payload(
-        r#"{"type":"VERSION_ACK","versions":[{"component":"wire","version":"1.5"},{"component":"desktop_plugin","version":"2.0.0"}],"backendMode":"cds"}"#,
+        r#"{"type":"VERSION_ACK","versions":[{"component":"wire","version":"1.6"},{"component":"desktop_plugin","version":"2.0.0"}],"backendMode":"cds"}"#,
     )
-    .expect("strict 1.5 acknowledgement")
+    .expect("strict 1.6 acknowledgement")
     .expect("version acknowledgement frame");
     assert_eq!(ack.package_version, "2.0.0");
-    assert_eq!(ack.wire_version, "1.5");
+    assert_eq!(ack.wire_version, "1.6");
     assert_eq!(ack.backend_mode, DesktopBackendMode::Cds);
 
+    let legacy_ack = parse_version_handshake_payload_for(
+        r#"{"type":"VERSION_ACK","versions":[{"component":"wire","version":"1.5"},{"component":"desktop_plugin","version":"2.0.0"}],"backendMode":"cds"}"#,
+        WireProtocolVersion::V1_5,
+    )
+    .expect("strict 1.5 fallback acknowledgement")
+    .expect("version acknowledgement frame");
+    assert_eq!(legacy_ack.wire_version, "1.5");
+
     assert!(parse_version_handshake_payload(
-        r#"{"type":"VERSION_ACK","pluginVersion":"2.0.0","protocolVersion":"1.5","backendMode":"cds"}"#
+        r#"{"type":"VERSION_ACK","pluginVersion":"2.0.0","protocolVersion":"1.6","backendMode":"cds"}"#
     )
     .is_err());
     assert!(parse_version_handshake_payload(
-        r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":1.5}],"backendMode":"cds"}"#
+        r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":1.6}],"backendMode":"cds"}"#
     )
     .is_err());
     assert!(parse_version_handshake_payload(
@@ -334,9 +343,11 @@ fn protocol_1_5_version_ack_is_strict_and_uses_component_claims() {
 #[test]
 fn handshake_preserves_a_structured_desktop_error_before_version_ack() {
     let result = parse_version_handshake_payload(
-        r#"{"type":"SYNC_ERROR","error":{"code":"WIRE_VERSION_MISMATCH","origin":"desktop_plugin","stage":"handshake","kind":"compatibility","retry":"after_user_action","message":"wire mismatch","failedTopicIds":[]}}"#,
+        r#"{"type":"SYNC_ERROR","error":{"code":"WIRE_VERSION_MISMATCH","origin":"desktop_plugin","stage":"handshake","kind":"compatibility","retry":"after_user_action","message":"wire protocol mismatch: expected 1.5, received 1.6","failedTopicIds":[]}}"#,
     );
-    let VersionHandshakeError::Remote(encoded) = result.expect_err("remote error") else {
+    let err = result.expect_err("remote error");
+    assert!(desktop_requests_wire_1_5(&err));
+    let VersionHandshakeError::Remote(encoded) = err else {
         panic!("expected structured remote error");
     };
     assert_eq!(
@@ -392,13 +403,13 @@ async fn handshake_accepts_the_current_linux_pre_ack_log_sequence() {
                 "type": "VERSION_CHECK",
                 "versions": [
                     {"component": "mobile_app", "version": env!("CARGO_PKG_VERSION")},
-                    {"component": "wire", "version": "1.5"}
+                    {"component": "wire", "version": "1.6"}
                 ]
             })
         );
 
         ws.send(Message::Text(
-            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.5"}],"backendMode":"legacy"}"#.into(),
+            r#"{"type":"VERSION_ACK","versions":[{"component":"desktop_plugin","version":"2.0.0"},{"component":"wire","version":"1.6"}],"backendMode":"legacy"}"#.into(),
         ))
         .await
         .expect("send version acknowledgement");
@@ -413,6 +424,7 @@ async fn handshake_accepts_the_current_linux_pre_ack_log_sequence() {
         .expect("complete strict handshake after diagnostic log");
     assert_eq!(desktop_info.package_version, "2.0.0");
     assert_eq!(desktop_info.backend_mode, DesktopBackendMode::Legacy);
+    assert_eq!(desktop_info.wire_version, WireProtocolVersion::V1_6);
     established
         .close(None)
         .await
@@ -830,7 +842,11 @@ async fn test_diagnose_connection_refused() {
         diagnosis.error_message.contains("连接被拒绝")
             || diagnosis.error_message.contains("连接超时")
     );
-    assert!(diagnosis.solution.contains("启动") || diagnosis.solution.contains("同一个 WiFi"));
+    assert!(
+        diagnosis.solution.contains("启动")
+            || diagnosis.solution.contains("同一 WiFi")
+            || diagnosis.solution.contains("同一个 WiFi")
+    );
 }
 
 #[tokio::test]

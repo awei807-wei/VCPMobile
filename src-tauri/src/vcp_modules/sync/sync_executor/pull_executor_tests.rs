@@ -5,9 +5,7 @@ use super::frame_validation::{
 use super::ndjson_codec::parse_stream_error_frame;
 use super::ndjson_stream::NdjsonLineBuffer;
 use super::result_reporting::progress_payload;
-use super::{
-    PullProgressContext, MAX_NDJSON_ENTITIES, MAX_NDJSON_LINE_BYTES, MAX_NDJSON_TOTAL_BYTES,
-};
+use super::{PullProgressContext, MAX_NDJSON_ENTITIES};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -256,18 +254,13 @@ fn ndjson_byte_split_preserves_utf8_and_enforces_budgets() {
     assert_eq!(lines.len(), 1);
     let parsed = parse_topic_ndjson_frame(&lines[0][..lines[0].len() - 1]).unwrap();
     assert_eq!(parsed.topic.topic_id, "主题");
-
-    assert!(buffer.push(&vec![b'a'; MAX_NDJSON_LINE_BYTES + 1]).is_err());
     let mut budget = super::ndjson_codec::NdjsonBudget::new(1);
-    budget.observe_chunk(MAX_NDJSON_TOTAL_BYTES).unwrap();
-    assert!(budget.observe_chunk(1).is_err());
-    let mut budget = super::ndjson_codec::NdjsonBudget::new(1);
-    assert!(budget.observe_frame(MAX_NDJSON_LINE_BYTES + 1, 0).is_err());
-    let mut budget = super::ndjson_codec::NdjsonBudget::new(1);
-    budget.observe_frame(1, MAX_NDJSON_ENTITIES).unwrap();
+    budget.observe_chunk(64 * 1024 * 1024).unwrap();
+    budget
+        .observe_frame(64 * 1024 * 1024, MAX_NDJSON_ENTITIES)
+        .unwrap();
     assert!(budget.observe_frame(1, 1).is_err());
 }
-
 #[test]
 fn avatar_validation_requires_allowlisted_mime_matching_magic_and_sha256() {
     let png = b"\x89PNG\r\n\x1a\nmock";

@@ -480,8 +480,7 @@ fn build_stream_block(
                     "{}:{}",
                     tool_name, inner_content
                 ));
-                let jev =
-                    crate::vcp_modules::chat::jev_tool_use::detect_jev_use(inner_content);
+                let jev = crate::vcp_modules::chat::jev_tool_use::detect_jev_use(inner_content);
                 StreamBlock::tool(tool_name, inner_content.to_string(), hash, jev)
             }
         }

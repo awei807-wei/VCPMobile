@@ -1,15 +1,14 @@
 use super::message_attachments::load_message_attachments;
 use super::types::{
-    BoundedJsonLine, SerializedTopicMessages, MAX_MESSAGES_PER_TOPIC, MAX_NDJSON_LINE_BYTES,
-    MESSAGE_PAGE_SIZE,
+    MessagePushSelection, SerializedTopicMessages, MAX_MESSAGES_PER_TOPIC, MESSAGE_PAGE_SIZE,
 };
 use crate::vcp_modules::persistence::message_content_storage::decode_message_content;
-use crate::vcp_modules::sync::sync_types::MAX_SAFE_TIMESTAMP;
+use crate::vcp_modules::sync::sync_error::{encode_local_sync_error, SyncErrorStage};
+use crate::vcp_modules::sync::sync_types::{MessageDeleteDecision, MAX_SAFE_TIMESTAMP};
 use crate::vcp_modules::sync_dto::MessageSyncDTO;
 use crate::vcp_modules::topic_types::TopicKey;
 use sqlx::{Row, Sqlite, Transaction};
 use std::io::Write;
-
 pub(super) async fn load_outbound_message_page(
     tx: &mut Transaction<'_, Sqlite>,
     key: &TopicKey,
@@ -66,8 +65,7 @@ fn decode_message_row(
             key.owner_id, key.topic_id, message_id
         ));
     }
-    let (timestamp, updated_at, is_group_message, content) =
-        decode_message_payload(row, key, &message_id)?;
+    let (timestamp, updated_at, content) = decode_message_payload(row, key, &message_id)?;
     let content_hash: String = row.try_get("content_hash").map_err(|error| {
         format!(
             "Message content hash decode failed for {}/{}: {error}",
@@ -82,6 +80,7 @@ fn decode_message_row(
             key.owner_id, key.topic_id, message_id
         ));
     }
+    let is_group = key.owner_type == "group";
     Ok(MessageSyncDTO {
         id: message_id.clone(),
         role,
@@ -100,14 +99,9 @@ fn decode_message_row(
                 key.topic_id, message_id
             )
         })?,
-        group_id: row.try_get("group_id").map_err(|error| {
-            format!(
-                "Message group decode failed for {}/{}: {error}",
-                key.topic_id, message_id
-            )
-        })?,
+        group_id: is_group.then(|| key.owner_id.clone()),
         topic_id: Some(key.topic_id.clone()),
-        is_group_message: (is_group_message != 0).then_some(true),
+        is_group_message: Some(is_group),
         finish_reason: row.try_get("finish_reason").map_err(|error| {
             format!(
                 "Message finish reason decode failed for {}/{}: {error}",
@@ -123,10 +117,10 @@ fn decode_message_payload(
     row: &sqlx::sqlite::SqliteRow,
     key: &TopicKey,
     message_id: &str,
-) -> Result<(i64, i64, i64, String), String> {
+) -> Result<(i64, i64, String), String> {
     let timestamp = decode_non_negative_i64(row, "timestamp", message_id, key)?;
     let updated_at = decode_non_negative_i64(row, "updated_at", message_id, key)?;
-    let is_group_message: i64 = row.try_get("is_group_message").map_err(|error| {
+    let _is_group_message: i64 = row.try_get("is_group_message").map_err(|error| {
         format!(
             "Message group flag decode failed for {}/{}: {error}",
             key.topic_id, message_id
@@ -138,9 +132,8 @@ fn decode_message_payload(
             key.topic_id, message_id
         )
     })?;
-    Ok((timestamp, updated_at, is_group_message, content))
+    Ok((timestamp, updated_at, content))
 }
-
 fn decode_message_identity(
     row: &sqlx::sqlite::SqliteRow,
     key: &TopicKey,
@@ -179,7 +172,7 @@ pub(super) async fn serialize_topic_messages(
     tx: &mut Transaction<'_, Sqlite>,
     key: &TopicKey,
 ) -> Result<SerializedTopicMessages, String> {
-    let mut line = BoundedJsonLine::new(MAX_NDJSON_LINE_BYTES);
+    let mut line = Vec::new();
     write_json_prefix(&mut line, key)?;
     let mut cursor: Option<(i64, String)> = None;
     let mut live_count = 0usize;
@@ -210,14 +203,148 @@ pub(super) async fn serialize_topic_messages(
     line.write_all(b"]}\n")
         .map_err(|error| format!("Message push suffix failed for {}: {error}", key.topic_id))?;
     Ok(SerializedTopicMessages {
-        line: line.into_bytes(),
+        line,
         live_count,
         tombstone_count,
     })
 }
 
+pub(super) async fn serialize_selected_topic_messages(
+    tx: &mut Transaction<'_, Sqlite>,
+    selection: &MessagePushSelection,
+) -> Result<SerializedTopicMessages, String> {
+    let key = &selection.topic;
+    let ordered_ids = load_outbound_message_order(tx, key, &selection.message_ids).await?;
+    let mut line = Vec::new();
+    write_json_prefix(&mut line, key)?;
+    let mut live_count = 0usize;
+    for chunk in ordered_ids.chunks(MESSAGE_PAGE_SIZE) {
+        let page = load_outbound_message_page_by_ids(tx, key, chunk).await?;
+        if page.len() != chunk.len() {
+            return Err(encode_local_sync_error(
+                "SYNC_SNAPSHOT_STALE",
+                SyncErrorStage::Messages,
+                &format!(
+                    "Selected outbound messages for {} changed during snapshot",
+                    key.topic_id
+                ),
+                vec![key.topic_id.clone()],
+            ));
+        }
+        for message in page {
+            let (count, _) = append_serialized_message(&mut line, key, message, live_count)?;
+            live_count = count;
+        }
+    }
+    let tombstone_count =
+        append_selected_tombstones(key, &selection.deleted_messages, &mut line, live_count)?;
+    line.write_all(b"]}\n")
+        .map_err(|error| format!("Message push suffix failed for {}: {error}", key.topic_id))?;
+    Ok(SerializedTopicMessages {
+        line,
+        live_count,
+        tombstone_count,
+    })
+}
+
+async fn load_outbound_message_order(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &TopicKey,
+    message_ids: &[String],
+) -> Result<Vec<String>, String> {
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if message_ids.len() > MAX_MESSAGES_PER_TOPIC {
+        return Err(format!(
+            "Message push topic {} exceeds the {MAX_MESSAGES_PER_TOPIC}-message limit",
+            key.topic_id
+        ));
+    }
+    let mut entries = Vec::with_capacity(message_ids.len());
+    for chunk in message_ids.chunks(MESSAGE_PAGE_SIZE) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT timestamp, msg_id
+             FROM messages
+             WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL
+               AND msg_id IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql)
+            .bind(&key.owner_type)
+            .bind(&key.owner_id)
+            .bind(&key.topic_id);
+        for id in chunk {
+            query = query.bind(id);
+        }
+        let rows = query.fetch_all(&mut **tx).await.map_err(|error| {
+            format!(
+                "Selected message order query failed for {}: {error}",
+                key.topic_id
+            )
+        })?;
+        if rows.len() != chunk.len() {
+            return Err(encode_local_sync_error(
+                "SYNC_SNAPSHOT_STALE",
+                SyncErrorStage::Messages,
+                &format!(
+                    "Selected outbound messages for {} disappeared or became tombstoned",
+                    key.topic_id
+                ),
+                vec![key.topic_id.clone()],
+            ));
+        }
+        for row in rows {
+            let id: String = row.try_get("msg_id").map_err(|error| {
+                format!("Message id decode failed for {}: {error}", key.topic_id)
+            })?;
+            let timestamp = decode_non_negative_i64(&row, "timestamp", &id, key)?;
+            entries.push((timestamp, id));
+        }
+    }
+    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(entries.into_iter().map(|(_, id)| id).collect())
+}
+
+pub(super) async fn load_outbound_message_page_by_ids(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &TopicKey,
+    ids: &[String],
+) -> Result<Vec<MessageSyncDTO>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let sql = format!(
+        "SELECT msg_id, role, name, agent_id, content, timestamp,
+                is_group_message, group_id, finish_reason, content_hash, updated_at
+         FROM messages
+         WHERE owner_type = ? AND owner_id = ? AND topic_id = ? AND deleted_at IS NULL
+           AND msg_id IN ({placeholders})"
+    );
+    let mut query = sqlx::query(&sql)
+        .bind(&key.owner_type)
+        .bind(&key.owner_id)
+        .bind(&key.topic_id);
+    for id in ids {
+        query = query.bind(id);
+    }
+    let rows = query.fetch_all(&mut **tx).await.map_err(|error| {
+        format!(
+            "Selected message page query failed for {}: {error}",
+            key.topic_id
+        )
+    })?;
+    let mut messages = Vec::with_capacity(rows.len());
+    for row in rows {
+        messages.push(decode_message_row(&row, key)?);
+    }
+    messages.sort_unstable_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
+    load_message_attachments(tx, key, &mut messages).await
+}
+
 fn append_serialized_message(
-    line: &mut BoundedJsonLine,
+    line: &mut Vec<u8>,
     key: &TopicKey,
     message: MessageSyncDTO,
     live_count: usize,
@@ -239,7 +366,7 @@ fn append_serialized_message(
     }
     serde_json::to_writer(&mut *line, &message).map_err(|error| {
         format!(
-            "Message push topic {} exceeds the 32 MiB line limit or contains invalid data: {error}",
+            "Message push topic {} contains invalid data: {error}",
             key.topic_id
         )
     })?;
@@ -255,7 +382,7 @@ fn append_serialized_message(
     Ok((count, next_cursor))
 }
 
-fn write_json_prefix(line: &mut BoundedJsonLine, key: &TopicKey) -> Result<(), String> {
+fn write_json_prefix(line: &mut Vec<u8>, key: &TopicKey) -> Result<(), String> {
     line.write_all(br#"{"kind":"topic","topicId":"#)
         .map_err(|error| format!("Message push prefix failed for {}: {error}", key.topic_id))?;
     serde_json::to_writer(&mut *line, &key.topic_id)
@@ -280,10 +407,40 @@ fn write_json_prefix(line: &mut BoundedJsonLine, key: &TopicKey) -> Result<(), S
         .map_err(|error| format!("Message push prefix failed for {}: {error}", key.topic_id))
 }
 
+fn append_selected_tombstones(
+    key: &TopicKey,
+    deleted_messages: &[MessageDeleteDecision],
+    line: &mut Vec<u8>,
+    live_count: usize,
+) -> Result<usize, String> {
+    line.write_all(b"],\"deletedMessages\":[")
+        .map_err(|error| {
+            format!(
+                "Message tombstone prefix failed for {}: {error}",
+                key.topic_id
+            )
+        })?;
+    let mut count = 0usize;
+    for tombstone in deleted_messages {
+        append_tombstone_entry(
+            line,
+            key,
+            &tombstone.msg_id,
+            tombstone.deleted_at,
+            live_count,
+            count,
+        )?;
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| "Message tombstone count overflow".to_string())?;
+    }
+    Ok(count)
+}
+
 async fn append_tombstones(
     tx: &mut Transaction<'_, Sqlite>,
     key: &TopicKey,
-    line: &mut BoundedJsonLine,
+    line: &mut Vec<u8>,
     live_count: usize,
 ) -> Result<usize, String> {
     line.write_all(b"],\"deletedMessages\":[")
@@ -296,7 +453,19 @@ async fn append_tombstones(
     let rows = load_tombstone_rows(tx, key).await?;
     let mut count = 0usize;
     for row in rows {
-        append_tombstone(line, key, row, live_count, count)?;
+        let message_id: String = row.try_get("msg_id").map_err(|error| {
+            format!(
+                "Message tombstone id decode failed for {}: {error}",
+                key.topic_id
+            )
+        })?;
+        let deleted_at: i64 = row.try_get("deleted_at").map_err(|error| {
+            format!(
+                "Message tombstone timestamp decode failed for {}/{}: {error}",
+                key.topic_id, message_id
+            )
+        })?;
+        append_tombstone_entry(line, key, &message_id, deleted_at, live_count, count)?;
         count = count
             .checked_add(1)
             .ok_or_else(|| "Message tombstone count overflow".to_string())?;
@@ -326,25 +495,14 @@ async fn load_tombstone_rows(
     })
 }
 
-fn append_tombstone(
-    line: &mut BoundedJsonLine,
+fn append_tombstone_entry(
+    line: &mut Vec<u8>,
     key: &TopicKey,
-    row: sqlx::sqlite::SqliteRow,
+    message_id: &str,
+    deleted_at: i64,
     live_count: usize,
     tombstone_count: usize,
 ) -> Result<(), String> {
-    let message_id: String = row.try_get("msg_id").map_err(|error| {
-        format!(
-            "Message tombstone id decode failed for {}: {error}",
-            key.topic_id
-        )
-    })?;
-    let deleted_at: i64 = row.try_get("deleted_at").map_err(|error| {
-        format!(
-            "Message tombstone timestamp decode failed for {}/{}: {error}",
-            key.topic_id, message_id
-        )
-    })?;
     if message_id.is_empty() || !(0..=MAX_SAFE_TIMESTAMP).contains(&deleted_at) {
         return Err(format!(
             "Message tombstone {}/{} has invalid identity or timestamp",

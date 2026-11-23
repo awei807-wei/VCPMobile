@@ -81,13 +81,7 @@ impl NdjsonLineBuffer {
         let mut lines = Vec::new();
         while let Some(position) = self.buffer.iter().position(|byte| *byte == b'\n') {
             let line = self.buffer.split_to(position + 1).freeze();
-            if line.len() > super::MAX_NDJSON_LINE_BYTES {
-                return Err("NDJSON frame exceeds 32 MiB budget".to_string());
-            }
             lines.push(line);
-        }
-        if self.buffer.len() > super::MAX_NDJSON_LINE_BYTES {
-            return Err("NDJSON frame exceeds 32 MiB budget".to_string());
         }
         Ok(lines)
     }
@@ -95,9 +89,6 @@ impl NdjsonLineBuffer {
     pub(crate) fn finish(&mut self) -> Result<Option<Bytes>, String> {
         if self.buffer.is_empty() {
             return Ok(None);
-        }
-        if self.buffer.len() > super::MAX_NDJSON_LINE_BYTES {
-            return Err("NDJSON frame exceeds 32 MiB budget".to_string());
         }
         Ok(Some(self.buffer.split_to(self.buffer.len()).freeze()))
     }
@@ -148,9 +139,6 @@ where
         consume_complete_lines(state)
             .await
             .map_err(|error| (error, false))?;
-        if state.buffer.len() > super::MAX_NDJSON_LINE_BYTES {
-            return Err(("NDJSON frame exceeds 32 MiB budget".to_string(), false));
-        }
     }
     Ok(())
 }
@@ -199,9 +187,6 @@ fn decode_topic_line<R: Runtime>(
 ) -> Result<Option<super::frame_validation::TopicNDJSONFrame>, String> {
     if line.iter().all(|byte| byte.is_ascii_whitespace()) {
         return Ok(None);
-    }
-    if line.len() > super::MAX_NDJSON_LINE_BYTES {
-        return Err("NDJSON frame exceeds 32 MiB budget".to_string());
     }
     let line_without_newline: &[u8] = if line.last() == Some(&b'\n') {
         &line[..line.len() - 1]

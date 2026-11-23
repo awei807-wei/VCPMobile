@@ -49,7 +49,7 @@ const RETRY_ACTIONS = new Set<SyncRetryAction>([
 
 const MAX_FAILED_TOPIC_IDS = 8;
 
-export const WIRE_PROTOCOL_VERSION = "1.5";
+export const WIRE_PROTOCOL_VERSION = "1.6";
 export const CDS_BUILD_COMMAND = "node rust_chat_data_service/build-runtime.js";
 export const MAX_BUFFERED_SESSION_EVENTS = 32;
 
@@ -89,7 +89,7 @@ const LOCAL_ERROR_COPY: Record<
     origin: "mobile_ui",
     stage: "finalize",
     retryAction: "after_user_action",
-    message: "同步响应不符合 Wire 1.5 规范，已安全停止",
+    message: "同步响应不符合 Wire 1.6 规范，已安全停止",
     guidance:
       "确认两端版本一致并重启电脑端同步插件；若仍出现，请保留最新日志。",
   },
@@ -314,10 +314,14 @@ export const readDesktopInfo = (value: unknown): DesktopSyncInfo | null => {
   ) {
     return null;
   }
-  return {
+  const info: DesktopSyncInfo = {
     packageVersion: source.packageVersion,
     backendMode: source.backendMode,
   };
+  if (source.wireVersion === "1.5" || source.wireVersion === "1.6") {
+    info.wireVersion = source.wireVersion;
+  }
+  return info;
 };
 
 export const readProgressSummary = (payload: Record<string, unknown>) => {

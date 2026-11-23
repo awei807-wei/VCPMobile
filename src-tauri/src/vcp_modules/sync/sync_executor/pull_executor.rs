@@ -8,8 +8,6 @@ mod ndjson_codec;
 mod ndjson_stream;
 mod result_reporting;
 
-pub(crate) const MAX_NDJSON_LINE_BYTES: usize = 32 * 1024 * 1024;
-pub(crate) const MAX_NDJSON_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_NDJSON_TOPICS: usize = 10_000;
 pub(crate) const MAX_NDJSON_ENTITIES: usize = 100_000;
 pub(crate) const MAX_WARNING_SAMPLES: usize = 8;

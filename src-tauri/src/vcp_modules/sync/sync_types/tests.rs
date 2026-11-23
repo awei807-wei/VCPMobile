@@ -244,8 +244,25 @@ fn message_diff_supports_live_and_tombstone_states() {
             "deleteMessages": [{"msgId": "m2", "deletedAt": 22}]
         }]
     }))
-    .expect("message diff result should decode");
+    .expect("legacy message diff result should decode");
     assert_eq!(result.results.len(), 1);
+
+    let result_v16: MessageDiffResultFrame = serde_json::from_value(json!({
+        "type": "SYNC_MESSAGE_DIFF_RESULT",
+        "results": [{
+            "ownerType": "agent",
+            "ownerId": "agent-a",
+            "topicId": "shared",
+            "ok": true,
+            "pullAll": false,
+            "pullMessageIds": ["m1"],
+            "pushMessageIds": ["m3"],
+            "pushDeletedMessages": [{"msgId": "m4", "deletedAt": 23}],
+            "deleteMessages": [{"msgId": "m2", "deletedAt": 22}]
+        }]
+    }))
+    .expect("Wire 1.6 message diff result should decode");
+    assert_eq!(result_v16.results.len(), 1);
 }
 
 #[test]
@@ -256,16 +273,17 @@ fn entity_pull_and_message_pull_reject_incomplete_identity() {
             "ownerType": "agent",
             "ownerId": "agent-a",
             "topicId": "shared",
-            "ok": false
-        }]
+            "ok": false,
+            "desktopDiagnostic": "tolerated"
+        }],
+        "serverMeta": "tolerated"
     }))
-    .expect("entity result should decode");
+    .expect("entity result should decode and tolerate unknown envelope fields");
     assert_eq!(response.results.len(), 1);
     assert!(serde_json::from_value::<EntityPullResponse>(json!({
         "results": [{"entityType": "topic", "ownerType": "agent", "topicId": "shared", "ok": false}]
     }))
     .is_err());
-
     let request = MessagePullRequest {
         topics: vec![
             MessagePullTopicSelector {

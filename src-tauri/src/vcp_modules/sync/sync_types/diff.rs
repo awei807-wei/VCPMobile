@@ -276,12 +276,15 @@ impl MessageDiffRequestFrame {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageDeleteDecision {
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     pub msg_id: String,
-    #[serde(deserialize_with = "deserialize_timestamp")]
+    #[serde(
+        deserialize_with = "deserialize_timestamp",
+        serialize_with = "serialize_timestamp"
+    )]
     pub deleted_at: i64,
 }
 
@@ -294,16 +297,21 @@ pub struct MessageDiffDecision {
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     pub topic_id: String,
     pub ok: bool,
+    #[serde(default)]
+    pub pull_all: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_bounded_strings")]
     pub pull_message_ids: Option<Vec<String>>,
     #[serde(default)]
     pub push_topic: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_bounded_strings")]
+    pub push_message_ids: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_delete_decisions")]
+    pub push_deleted_messages: Option<Vec<MessageDeleteDecision>>,
     #[serde(default, deserialize_with = "deserialize_optional_delete_decisions")]
     pub delete_messages: Option<Vec<MessageDeleteDecision>>,
     #[serde(default)]
     pub error: Option<WireSyncError>,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageDiffResultFrame {
@@ -377,6 +385,12 @@ where
             ));
         }
         if let Some(ids) = &value.pull_message_ids {
+            message_count = message_count.saturating_add(ids.len());
+        }
+        if let Some(ids) = &value.push_message_ids {
+            message_count = message_count.saturating_add(ids.len());
+        }
+        if let Some(ids) = &value.push_deleted_messages {
             message_count = message_count.saturating_add(ids.len());
         }
         if let Some(ids) = &value.delete_messages {

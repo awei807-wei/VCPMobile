@@ -1,5 +1,5 @@
 use super::http::{http_transport_error, parse_strict_response, read_response_limited};
-use super::types::{MessagePushFrame, PushBatchResult, MAX_NDJSON_LINE_BYTES, MAX_SYNC_BODY_BYTES};
+use super::types::{MessagePushFrame, PushBatchResult, MAX_MESSAGE_ACK_BYTES};
 use crate::vcp_modules::sync::sync_error::{encode_wire_sync_error, SyncErrorStage};
 use crate::vcp_modules::sync::sync_types::MessagePushResponseFrame;
 use crate::vcp_modules::topic_types::TopicKey;
@@ -19,9 +19,6 @@ pub(super) fn parse_message_push_frames(
         let line = raw_line.trim();
         if line.is_empty() {
             continue;
-        }
-        if line.len() > MAX_NDJSON_LINE_BYTES {
-            return Err("Message push response contains a line over 32 MiB".to_string());
         }
         let value = parse_strict_response(line.as_bytes(), "Message push")?;
         let frame: MessagePushResponseFrame = serde_json::from_value(value)
@@ -109,9 +106,6 @@ pub(super) async fn send_message_chunk(
     body: Vec<u8>,
     expected_topics: &[TopicKey],
 ) -> Result<Vec<MessagePushFrame>, String> {
-    if body.len() > MAX_SYNC_BODY_BYTES {
-        return Err("Message push request exceeds the 256 MiB body limit".to_string());
-    }
     let response = client
         .post(format!("{http_url}/api/mobile-sync/messages/push"))
         .header("Authorization", format!("Bearer {sync_token}"))
@@ -124,7 +118,7 @@ pub(super) async fn send_message_chunk(
         })?;
     let (status, bytes) = read_response_limited(
         response,
-        MAX_SYNC_BODY_BYTES,
+        MAX_MESSAGE_ACK_BYTES,
         "Message push",
         SyncErrorStage::Messages,
     )

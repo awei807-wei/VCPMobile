@@ -35,7 +35,7 @@ export const buildDiagnostics = async (
     .join(", ");
   return [
     `VCP Mobile: ${mobileVersion}`,
-    `Wire protocol: ${WIRE_PROTOCOL_VERSION}`,
+    `Wire protocol: ${desktopInfo?.wireVersion ?? WIRE_PROTOCOL_VERSION}`,
     `Desktop sync plugin: ${desktopInfo?.packageVersion ?? "unavailable"}`,
     `Desktop backend: ${desktopInfo?.backendMode ?? "unavailable"}`,
     `Session: ${sessionId ?? "none"}`,

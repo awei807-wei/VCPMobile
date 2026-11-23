@@ -8,11 +8,10 @@ mod orchestration;
 mod tombstone;
 mod types;
 
-pub use types::PushBatchResult;
-
 use crate::vcp_modules::sync_types::EntityPushItem;
 use crate::vcp_modules::topic_types::TopicKey;
 use tauri::{AppHandle, Runtime};
+pub use types::{MessagePushSelection, MessagePushTarget, PushBatchResult};
 
 pub struct PushExecutor;
 
@@ -66,6 +65,16 @@ impl PushExecutor {
         topics: &[TopicKey],
     ) -> Result<Vec<PushBatchResult>, String> {
         orchestration::push_messages_batch(app, client, http_url, sync_token, topics).await
+    }
+
+    pub async fn push_message_targets_batch<R: Runtime>(
+        app: &AppHandle<R>,
+        client: &reqwest::Client,
+        http_url: &str,
+        sync_token: &str,
+        targets: &[MessagePushTarget],
+    ) -> Result<Vec<PushBatchResult>, String> {
+        orchestration::push_message_targets_batch(app, client, http_url, sync_token, targets).await
     }
 }
 

@@ -5,14 +5,15 @@ use super::plan::BatchPlan;
 use crate::vcp_modules::db_write_queue::SNAPSHOT_STALE_MARKER;
 use crate::vcp_modules::sync_error::decode_wire_sync_error;
 use crate::vcp_modules::sync_executor::{
-    BatchPullResult, DeleteExecutor, MessageBatchPullRequest, PullExecutor, PullProgressContext,
-    PushExecutor,
+    BatchPullResult, DeleteExecutor, MessageBatchPullRequest, MessagePushTarget, PullExecutor,
+    PullProgressContext, PushExecutor,
 };
 use crate::vcp_modules::sync_types::{MessageDeleteDecision, MessageDiffResultFrame};
 use crate::vcp_modules::topic_types::TopicKey;
+use crate::vcp_modules::wire_protocol::WireProtocolVersion;
 use std::sync::atomic::Ordering;
 
-/// Validate, execute and finalize one Wire 1.5 message-diff batch.
+/// Validate, execute and finalize one message-diff batch.
 pub(crate) async fn handle_batch(
     ctx: BatchContext<'_>,
     frame: MessageDiffResultFrame,
@@ -22,7 +23,7 @@ pub(crate) async fn handle_batch(
         super::plan::validate_phase3_result_topics(&expected, &frame.results)
             .map_err(|message| topic_mismatch(message, &expected))?
     };
-    let plan = super::plan::build_plan(keyed)?;
+    let plan = super::plan::build_plan(keyed, ctx.wire_version)?;
     complete_idle_topics(&ctx, &plan).await;
     mark_active_topics_modified(&ctx, &plan).await;
     apply_operations(&ctx, &plan).await?;
@@ -79,16 +80,44 @@ async fn apply_operations(
     if !plan.delete_batch.is_empty() {
         apply_deletes(ctx, &plan.delete_batch).await?;
     }
-    if !plan.pull_batch.is_empty() {
-        run_pull(ctx, &plan.pull_batch).await?;
-        flush_pull(ctx, &plan.pull_batch).await?;
-    }
-    if !plan.push_topics.is_empty() {
-        run_push(ctx, &plan.push_topics).await?;
+    match ctx.wire_version {
+        WireProtocolVersion::V1_6 => {
+            // Wire 1.6 增量消息 ID 在四象限严格互斥，Pull 与 Push 可并发执行。
+            let has_pull = !plan.pull_batch.is_empty();
+            let has_push = !plan.push_targets.is_empty();
+            match (has_pull, has_push) {
+                (true, true) => {
+                    let (pull_res, push_res) = tokio::join!(
+                        run_pull(ctx, &plan.pull_batch),
+                        run_push(ctx, &plan.push_targets),
+                    );
+                    pull_res?;
+                    flush_pull(ctx, &plan.pull_batch).await?;
+                    push_res?;
+                }
+                (true, false) => {
+                    run_pull(ctx, &plan.pull_batch).await?;
+                    flush_pull(ctx, &plan.pull_batch).await?;
+                }
+                (false, true) => {
+                    run_push(ctx, &plan.push_targets).await?;
+                }
+                (false, false) => {}
+            }
+        }
+        WireProtocolVersion::V1_5 => {
+            // Wire 1.5 Push 为整话题快照上传，必须等 Pull 落盘后再执行！
+            if !plan.pull_batch.is_empty() {
+                run_pull(ctx, &plan.pull_batch).await?;
+                flush_pull(ctx, &plan.pull_batch).await?;
+            }
+            if !plan.push_targets.is_empty() {
+                run_push(ctx, &plan.push_targets).await?;
+            }
+        }
     }
     Ok(())
 }
-
 async fn apply_deletes(
     ctx: &BatchContext<'_>,
     delete_batch: &[(TopicKey, Vec<MessageDeleteDecision>)],
@@ -212,23 +241,34 @@ async fn flush_pull(
     Ok(())
 }
 
-async fn run_push(ctx: &BatchContext<'_>, topics: &[TopicKey]) -> Result<(), Phase3ProtocolError> {
-    let result =
-        PushExecutor::push_messages_batch(ctx.app, ctx.client, ctx.base_url, ctx.token, topics)
-            .await
-            .map(|results| {
-                results
-                    .into_iter()
-                    .map(|result| TopicBatchOutcome {
-                        topic: result.topic,
-                        success: result.success,
-                        error: result.error,
-                    })
-                    .collect()
-            });
-    apply_outcomes(ctx, "push", topics, result).await
+async fn run_push(
+    ctx: &BatchContext<'_>,
+    targets: &[MessagePushTarget],
+) -> Result<(), Phase3ProtocolError> {
+    let expected = targets
+        .iter()
+        .map(|target| target.topic().clone())
+        .collect::<Vec<_>>();
+    let result = PushExecutor::push_message_targets_batch(
+        ctx.app,
+        ctx.client,
+        ctx.base_url,
+        ctx.token,
+        targets,
+    )
+    .await
+    .map(|results| {
+        results
+            .into_iter()
+            .map(|result| TopicBatchOutcome {
+                topic: result.topic,
+                success: result.success,
+                error: result.error,
+            })
+            .collect()
+    });
+    apply_outcomes(ctx, "push", &expected, result).await
 }
-
 async fn apply_outcomes(
     ctx: &BatchContext<'_>,
     operation: &str,
@@ -283,7 +323,7 @@ fn operation_error(code: &str, message: String, topics: &[TopicKey]) -> Phase3Pr
 fn log_batch_summary(plan: &BatchPlan) {
     log::info!(
         "[SyncService] Phase 3 batch done: push={} pull={} delete={}",
-        plan.push_topics.len(),
+        plan.push_targets.len(),
         plan.pull_batch.len(),
         plan.delete_batch
             .iter()

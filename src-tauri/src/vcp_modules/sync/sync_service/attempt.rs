@@ -11,6 +11,7 @@ use crate::vcp_modules::sync_logger::SyncLogger;
 use crate::vcp_modules::sync_pipeline::pipeline::{PipelineCommand, SyncPipeline};
 use crate::vcp_modules::sync_types::ManifestType;
 use crate::vcp_modules::topic_types::{OwnerKey, TopicKey};
+use crate::vcp_modules::wire_protocol::WireProtocolVersion;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -50,6 +51,7 @@ pub(crate) struct AttemptContextParams {
     pub(crate) app: AppHandle,
     pub(crate) session_id: u64,
     pub(crate) attempt_id: u64,
+    pub(crate) wire_version: WireProtocolVersion,
     pub(crate) cancel: CancellationToken,
     pub(crate) tx: mpsc::UnboundedSender<SyncCommand>,
     pub(crate) status: Arc<RwLock<String>>,
@@ -70,6 +72,7 @@ pub(crate) struct AttemptContext {
     pub(crate) app: AppHandle,
     pub(crate) session_id: u64,
     pub(crate) attempt_id: u64,
+    pub(crate) wire_version: WireProtocolVersion,
     pub(crate) cancel: CancellationToken,
     pub(crate) tx: mpsc::UnboundedSender<SyncCommand>,
     pub(crate) status: Arc<RwLock<String>>,
@@ -116,6 +119,7 @@ impl AttemptContext {
             app: params.app,
             session_id: params.session_id,
             attempt_id: params.attempt_id,
+            wire_version: params.wire_version,
             cancel: params.cancel,
             tx: params.tx,
             status: params.status,

@@ -57,6 +57,7 @@ async function stopMessage(
 
   const messageKey = deps.activeMessageKey(identity, resolvedMessageId);
   if (!messageKey) return;
+  const generation = deps.runtimeState.streamGenerations.get(messageKey);
   try {
     await invoke("interruptRequest", {
       messageId: resolvedMessageId,
@@ -64,6 +65,11 @@ async function stopMessage(
       ownerType: identity.ownerType,
       topicId: identity.topicId,
     });
+    // A terminal event or a newer reply can win the race with the IPC ack.
+    if (generation !== deps.runtimeState.streamGenerations.get(messageKey)) return;
+    const wire = deps.runtimeState.wireGenerations?.get(messageKey);
+    if (wire && wire.streamGeneration === generation) wire.interrupted = true;
+    clearStreamMessageRendering(deps.runtimeState, messageKey, true);
     const message = deps.activeStreamMessages.get(messageKey);
     if (message) {
       message.isThinking = false;
@@ -72,7 +78,7 @@ async function stopMessage(
       if (!(message.content || "").endsWith(errorText))
         message.content = (message.content || "") + errorText;
     }
-    clearStreamMessageRendering(deps.runtimeState, messageKey, false);
+
     if (deps.streamingMessageKey.value === messageKey) {
       deps.streamingMessageId.value = null;
       deps.streamingMessageKey.value = null;

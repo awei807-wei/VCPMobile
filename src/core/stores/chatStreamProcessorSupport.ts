@@ -74,6 +74,7 @@ export interface GenerationWatermark {
 }
 
 export interface WireGenerationState {
+  interrupted?: boolean;
   wireGeneration: number;
   streamGeneration: number;
 }

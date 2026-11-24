@@ -45,12 +45,11 @@ const openTarvenSelector = () => {
 
     <Transition name="pop-slide">
       <button
-        v-if="hasContent || isGenerating"
-        :disabled="!isGenerating && sendDisabled"
+        :disabled="!isGenerating && (!hasContent || sendDisabled)"
         @click="emit('action')"
         class="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-full shadow-sm active:scale-95 transition-all bg-blue-500 text-white disabled:opacity-40"
         :class="{ 'bg-red-500': isGenerating }"
-        aria-label="发送消息"
+        :aria-label="isGenerating ? '停止生成' : '发送消息'"
       >
         <div
           v-if="isGenerating"

@@ -331,7 +331,15 @@ pub(crate) enum BlockType {
     ToolCallSummary,
 }
 
+// Shared with the incremental scanner. Consume only the envelope token, never its payload.
+macro_rules! tool_batch_boundary_pattern {
+    () => {
+        r"(?m:^[ \t]*<<<\[VCP_TOOL_BATCH_(?:START|END):[^\]\r\n]+\]>>>)"
+    };
+}
+
 lazy_static! {
+    pub(crate) static ref TOOL_BATCH_BOUNDARY: Regex = Regex::new(tool_batch_boundary_pattern!()).unwrap();
     // 核心修复：为所有 VCP 块的起始标记强制增加行首锚定符 `(?im)^[ \t]*`
     // 这将彻底消除因正文提及 `<<<[TOOL_REQUEST]>>>` 等内联代码而引发的 AST 错误截断
     pub(crate) static ref TOOL_START: Regex = Regex::new(r"(?im)^[ \t]*<<<\[TOOL_REQUEST\]>>>").unwrap();
@@ -522,7 +530,8 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
             r"(^[ \t]*<style\b[^>]*>)|",                                      // 9
             r"(^[ \t]*`{3,}[a-zA-Z0-9-]*[ \t]*$)|",                    // 10
             r"(^[ \t]*<(div|section|article|header|footer|main|aside|figure|figcaption)\b[^>]*>)|", // 11
-            r"(^[ \t]*\[本轮工具调用摘要:\])"                          // 13
+            r"(^[ \t]*\[本轮工具调用摘要:\])|",                         // 13
+            "(", tool_batch_boundary_pattern!(), ")"                   // 14
         )).unwrap();
     }
 
@@ -547,6 +556,11 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                         )),
                     ));
                 }
+            }
+
+            if caps.get(14).is_some() {
+                current_pos += end_idx;
+                continue;
             }
 
             // 识别匹配到的块类型

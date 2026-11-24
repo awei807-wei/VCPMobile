@@ -298,6 +298,10 @@ impl StreamBlockParser {
                     }
                 }
 
+                let Some(block_type) = block_type else {
+                    pos += end;
+                    continue;
+                };
                 // 3. 寻找对应结束标记
                 let content_start = end;
                 let search_area = &remaining[content_start..];
@@ -375,7 +379,7 @@ impl StreamBlockParser {
 
 /// 在文本中寻找最早出现的特种块起始标记
 /// 返回 (start_offset, end_offset, BlockType)
-fn find_earliest_start_marker(text: &str) -> Option<(usize, usize, BlockType)> {
+fn find_earliest_start_marker(text: &str) -> Option<(usize, usize, Option<BlockType>)> {
     let checks: [(&regex::Regex, BlockType); 12] = [
         (&TOOL_START, BlockType::Tool),
         (&THOUGHT_START, BlockType::Thought),
@@ -405,7 +409,15 @@ fn find_earliest_start_marker(text: &str) -> Option<(usize, usize, BlockType)> {
             }
         }
     }
-    earliest
+    // Bound the boundary search by the first semantic block: fenced examples
+    // and tokens within a tool's payload stay the responsibility of that block.
+    let prefix = earliest
+        .as_ref()
+        .map_or(text, |(start, _, _)| &text[..*start]);
+    if let Some(m) = crate::vcp_modules::content_parser::TOOL_BATCH_BOUNDARY.find(prefix) {
+        return Some((m.start(), m.end(), None));
+    }
+    earliest.map(|(start, end, kind)| (start, end, Some(kind)))
 }
 
 /// 寻找对应块的结束标记
@@ -756,6 +768,41 @@ fn parse_tool_result(content: &str) -> (String, String, Vec<ToolResultDetail>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_batch_boundaries_are_display_only() {
+        let end = "<<<[VCP_TOOL_BATCH_END:2026-11-23T21:02:38.553+08:00]>>>";
+        let start = end.replace("BATCH_END", "BATCH_START");
+        let receipt =
+            "[[VCP调用结果信息汇总:\n- 工具名称: Demo\n- 返回内容: payload\nVCP调用结果结束]]";
+        let sample = format!("before\n{start}\n{receipt}\n{end}\nafter");
+        let mut parser = StreamBlockParser::new();
+        let (mut streamed, _) = parser.process(&sample[..sample.rfind("08:00").unwrap()]);
+        streamed.extend(parser.finalize(&sample));
+        for display in [
+            serde_json::to_string(&streamed).unwrap(),
+            serde_json::to_string(&crate::vcp_modules::content_parser::parse_content(&sample))
+                .unwrap(),
+        ] {
+            for kept in ["before", "after", "tool-result", "payload"] {
+                assert!(display.contains(kept), "missing {kept}: {display}");
+            }
+            assert!(!display.contains("VCP_TOOL_BATCH"), "{display}");
+        }
+        for (text, visible) in [
+            (end.to_string(), false),
+            (format!("```text\n{end}\n```"), true),
+        ] {
+            let history = crate::vcp_modules::content_parser::parse_content(&text);
+            let live = StreamBlockParser::new().finalize(&text);
+            for display in [
+                serde_json::to_string(&history).unwrap(),
+                serde_json::to_string(&live).unwrap(),
+            ] {
+                assert_eq!(display.contains("VCP_TOOL_BATCH_END"), visible);
+            }
+        }
+    }
 
     #[test]
     fn test_daily_note_static_and_stream_parsers_agree() {

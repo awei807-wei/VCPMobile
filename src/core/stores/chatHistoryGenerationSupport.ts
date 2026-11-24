@@ -198,6 +198,7 @@ function handleGenerationFinished(
 export function createGenerationChannel(
   deps: HistoryGenerationDeps,
   identity: ConversationIdentity,
+  requestId: string,
 ): Channel<any> {
   const streamChannel = new Channel<any>();
   streamChannel.onmessage = (event) =>
@@ -208,7 +209,18 @@ export function createGenerationChannel(
         ownerId: string,
         ownerType: ConversationOwnerType,
         generation: number,
-      ) =>
+      ) => {
+        // An agent request now has a real interruptible reply ID. Group
+        // turns keep their pending marker between speakers until invoke settles.
+        if (
+          ownerType === "agent" && ownerType === identity.ownerType &&
+          ownerId === identity.ownerId && topicId === identity.topicId
+        ) {
+          // The processor registers the reply immediately after this callback.
+          queueMicrotask(() =>
+            deps.streamStore.removePendingGeneration(ownerId, ownerType, topicId, requestId),
+          );
+        }
         handleGenerationMessage(
           deps,
           identity,
@@ -217,7 +229,8 @@ export function createGenerationChannel(
           ownerId,
           ownerType,
           generation,
-        ),
+        );
+      },
       onStreamFinished: (
         messageId: string,
         topicId: string,

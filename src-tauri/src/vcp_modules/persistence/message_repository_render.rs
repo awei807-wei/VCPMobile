@@ -7,7 +7,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
-pub const RENDERER_SCHEMA_VERSION: i64 = 1;
+pub const RENDERER_SCHEMA_VERSION: i64 = 2;
 
 pub struct MessageRenderCompiler;
 

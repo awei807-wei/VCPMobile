@@ -66,7 +66,7 @@ async function triggerGeneration(
     try {
       const settings = deps.settingsStore.settings;
       if (!settings) throw new Error("应用尚未完成初始化");
-      const streamChannel = createGenerationChannel(deps, identity);
+      const streamChannel = createGenerationChannel(deps, identity, requestId);
       await invokeChatGeneration(identity, userMsg, settings, streamChannel);
     } catch (error) {
       console.error("[ChatHistoryStore] Generation failed:", error);

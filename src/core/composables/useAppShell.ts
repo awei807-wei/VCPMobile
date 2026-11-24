@@ -93,6 +93,12 @@ const pushAgentSystemNotification = async (
   );
   if (!agentPayload && notification.type !== "agent") return;
   if (agentPayload?.androidNotification?.delivered === true) return;
+  // VCPLog 链路：Rust 已推送过原生通知，标记打在顶层 payload 上
+  if (
+    (rawPayload ?? notification.rawPayload)?.nativeNotificationDelivered ===
+    true
+  )
+    return;
   const title = String(
     agentPayload?.title ||
       (agentPayload?.recipient
@@ -117,14 +123,19 @@ const pushAgentSystemNotification = async (
   }
 };
 
-const createSystemEventHandler = (
+export const createSystemEventHandler = (
   context: AppShellContext,
 ): ((event: any) => void) => {
   return (event: any) => {
     const processed = context.processPayload(event.payload);
     if (!processed || processed.silent) return;
     void pushAgentSystemNotification(processed, event.payload);
-    context.notificationStore.addNotification(processed);
+    // 审批类（带 actions、duration=0）必须即时可点，保留弹窗；其余 WS 通知只进收纳栏
+    const needsImmediateAction = (processed.actions?.length ?? 0) > 0;
+    context.notificationStore.addNotification({
+      ...processed,
+      historyOnly: processed.historyOnly || !needsImmediateAction,
+    });
   };
 };
 

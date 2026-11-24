@@ -404,9 +404,10 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                                                             summarize_agent_message_payload(&payload)
                                                         );
                                                     }
+                                                    let mut payload = payload;
                                                     maybe_push_agent_message_notification(
                                                         &app_handle,
-                                                        &payload,
+                                                        &mut payload,
                                                     );
                                                     if let Err(e) =
                                                         app_handle.emit("vcp-system-event", payload)
@@ -418,18 +419,16 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
                                                     }
                                                 }
                                                 Err(_) => {
-                                                    let raw_payload = serde_json::json!({
+                                                    let mut raw_payload = serde_json::json!({
                                                         "type": "raw_text",
                                                         "data": text
                                                     });
                                                     maybe_push_agent_message_notification(
                                                         &app_handle,
-                                                        &raw_payload,
+                                                        &mut raw_payload,
                                                     );
-                                                    let _ = app_handle.emit("vcp-system-event", serde_json::json!({
-                                                        "type": "raw_text",
-                                                        "data": text
-                                                    }));
+                                                    // 直接 emit 带标记的对象，不再重新拼一个
+                                                    let _ = app_handle.emit("vcp-system-event", raw_payload);
                                                 }
                                             }
                                         }
@@ -552,11 +551,38 @@ async fn start_vcp_log_listener<R: tauri::Runtime>(app_handle: AppHandle<R>) {
     log::info!("[VCPLog] Listener task terminated, connection flag reset.");
 }
 
+const NATIVE_DELIVERED_KEY: &str = "nativeNotificationDelivered";
+
+fn mark_native_delivered(payload: &mut Value) {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(NATIVE_DELIVERED_KEY.into(), Value::Bool(true));
+    }
+}
+
+fn native_delivered(payload: &Value) -> bool {
+    payload
+        .get(NATIVE_DELIVERED_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// 纯判断：已打过原生送达标记的不推；否则交给提取逻辑决定
+fn agent_message_notification_to_push(payload: &Value) -> Option<(String, String)> {
+    if native_delivered(payload) {
+        return None;
+    }
+    extract_agent_message_notification(payload)
+}
+
 fn maybe_push_agent_message_notification<R: tauri::Runtime>(
     app_handle: &AppHandle<R>,
-    payload: &Value,
+    payload: &mut Value,
 ) {
-    if let Some((title, body)) = extract_agent_message_notification(payload) {
+    // 幂等：重入 / 后台补发时不会重复推送
+    if native_delivered(payload) {
+        return;
+    }
+    if let Some((title, body)) = agent_message_notification_to_push(payload) {
         log::info!(
             "[VCPLog] AgentMessage payload matched for Android notification (title_len={}, body_len={}).",
             title.chars().count(),
@@ -569,6 +595,7 @@ fn maybe_push_agent_message_notification<R: tauri::Runtime>(
         ) {
             log::warn!("[VCPLog] Failed to push agent_message notification: {}", e);
         } else {
+            mark_native_delivered(payload);
             log::info!("[VCPLog] Android notification request submitted for AgentMessage.");
         }
     } else if payload_has_agent_message_hint(payload, 0) {
@@ -900,6 +927,39 @@ fn summarize_agent_message_payload(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wrapped_agent_message() -> Value {
+        serde_json::json!({
+            "type": "vcp_log",
+            "data": {
+                "content": "{\"type\":\"agent_message\",\"recipient\":\"小克\",\"originalContent\":\"字符串包裹消息\"}"
+            }
+        })
+    }
+
+    #[test]
+    fn pushes_unmarked_agent_message() {
+        let payload = wrapped_agent_message();
+        let (_, body) =
+            agent_message_notification_to_push(&payload).expect("未打标记的 AgentMessage 应当推送");
+        assert!(body.contains("字符串包裹消息"), "body={body}");
+    }
+
+    #[test]
+    fn skips_after_native_delivered_mark() {
+        let mut payload = wrapped_agent_message();
+        mark_native_delivered(&mut payload);
+        assert!(native_delivered(&payload));
+        assert!(agent_message_notification_to_push(&payload).is_none());
+    }
+
+    #[test]
+    fn mark_on_non_object_is_noop() {
+        let mut payload = Value::String("raw".into());
+        mark_native_delivered(&mut payload);
+        assert_eq!(payload, Value::String("raw".into()));
+        assert!(!native_delivered(&payload));
+    }
     use serde_json::json;
 
     #[test]

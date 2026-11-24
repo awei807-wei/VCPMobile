@@ -138,6 +138,24 @@ export const useNotificationStore = defineStore("notification", () => {
     }
 
     // 2. 活动气泡最多保留两条；溢出的后端通知已经写入历史，不再进入待弹队列。
+    //    例外：toastOnly 不进历史，溢出即丢失。为它淘汰最老的可自动消失 Toast；
+    //    若全是 duration=0 的常驻审批，则降级写入历史，保证至少有一处可见。
+    if (
+      payload.toastOnly &&
+      !isDrawerOpen.value &&
+      !payload.historyOnly &&
+      activeToasts.value.length >= MAX_ACTIVE_TOASTS
+    ) {
+      const evictIndex = activeToasts.value.findIndex((t) => t.duration !== 0);
+      if (evictIndex !== -1) {
+        activeToasts.value.splice(evictIndex, 1);
+      } else {
+        historyList.value.unshift({ ...notification, toastOnly: false });
+        if (historyList.value.length > 100) historyList.value.pop();
+        unreadCount.value++;
+        return;
+      }
+    }
     const canDisplayToast =
       !isDrawerOpen.value &&
       !payload.historyOnly &&

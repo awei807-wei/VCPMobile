@@ -87,4 +87,26 @@ describe("ToastManager", () => {
     expect(renderedToastIds()).toEqual([]);
     expect(store.historyList.map((item) => item.id)).toEqual(["toast-1"]);
   });
+
+  it("toastOnly 满载时挤掉最老的可自动消失 Toast，保留常驻审批", async () => {
+    const store = useNotificationStore();
+    store.addNotification(makeToast(1)); // duration 0，常驻
+    store.addNotification({ ...makeToast(2), duration: 3000 });
+    store.addNotification({ ...makeToast(3), duration: 3000, toastOnly: true });
+    await nextTick();
+
+    expect(renderedToastIds()).toEqual(["toast-1", "toast-3"]);
+    expect(store.historyList.some((item) => item.id === "toast-3")).toBe(false);
+  });
+
+  it("toastOnly 遇到全常驻 Toast 时降级写入历史而不是丢失", async () => {
+    const store = useNotificationStore();
+    [1, 2].forEach((index) => store.addNotification(makeToast(index)));
+    store.addNotification({ ...makeToast(3), toastOnly: true });
+    await nextTick();
+
+    expect(renderedToastIds()).toEqual(["toast-1", "toast-2"]);
+    expect(store.historyList[0].id).toBe("toast-3");
+    expect(store.unreadCount).toBe(3);
+  });
 });

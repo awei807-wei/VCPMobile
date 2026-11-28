@@ -47,6 +47,7 @@ pub use message_service_stream::{
     finalize_stream_message, finalize_stream_message_guarded, persist_stream_skeleton_guarded,
     update_existing_message_content, StreamFinalizationStatus,
 };
+pub(crate) use message_service_support::load_attachments_for_topic;
 
 #[cfg(test)]
 #[path = "message_service_tests.rs"]

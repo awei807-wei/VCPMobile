@@ -1,11 +1,47 @@
 use crate::vcp_modules::chat_manager::ChatMessage;
 use crate::vcp_modules::db_manager::DbState;
+use crate::vcp_modules::message_service::MessageMutationResult;
 use crate::vcp_modules::settings_manager::SettingsState;
 use crate::vcp_modules::topic_types::TopicKey;
 use serde_json::{json, Value};
 use sqlx::Row;
 use tauri::{ipc::Channel, AppHandle, State};
 
+/// 重新生成的第一阶段：只做锚点定位、历史截断与旧请求取消，立即返回权威 mutation 结果。
+///
+/// 与 `regenerate_topic_response` 的关键区别：这里绝不等待整轮 SSE 生成结束。
+/// 前端拿到 `deletedIds` / `msgCount` / `userMessage` 后立刻淘汰旧气泡，
+/// 再复用标准 `handle_agent_chat_message` / `handle_group_chat_message` 管道启动生成，
+/// 思考态与流式吐字因此能即时可见。
+#[tauri::command]
+pub async fn prepare_topic_regeneration(
+    db_state: State<'_, DbState>,
+    active_requests: State<'_, crate::vcp_modules::vcp_client::ActiveRequests>,
+    owner_id: String,
+    owner_type: String,
+    topic_id: String,
+    target_response_msg_id: String,
+) -> Result<Value, String> {
+    let (chat_msg, mutation) = prepare_regeneration(
+        &db_state,
+        &active_requests,
+        owner_id,
+        owner_type,
+        topic_id,
+        &target_response_msg_id,
+    )
+    .await?;
+    Ok(json!({
+        "status": "prepared",
+        "msgCount": mutation.msg_count,
+        "deletedIds": mutation.deleted_ids,
+        "anchor": mutation.anchor,
+        "userMessage": chat_msg,
+    }))
+}
+
+/// 兼容保留的单命令入口：内部同样先走 `prepare_regeneration`，
+/// 再同步派发整轮生成。新代码请使用两阶段的 `prepare_topic_regeneration`。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn regenerate_topic_response(
@@ -22,26 +58,15 @@ pub async fn regenerate_topic_response(
     target_response_msg_id: String,
     stream_channel: Channel<crate::vcp_modules::vcp_client::StreamEvent>,
 ) -> Result<Value, String> {
-    let topic_key = TopicKey::new(owner_type.clone(), owner_id.clone(), topic_id.clone());
-    let (chat_msg, anchor_message_id) =
-        load_regeneration_message(&db_state.pool, &topic_key, &target_response_msg_id).await?;
-    let captured = crate::vcp_modules::chat_manager::capture_active_request_epochs(
+    let (chat_msg, mutation) = prepare_regeneration(
+        &db_state,
         &active_requests,
-        &topic_key,
-    );
-    let mutation = crate::vcp_modules::message_service::truncate_history_after_timestamp_for_topic(
-        &db_state.pool,
-        &topic_key,
-        &anchor_message_id,
-        false,
+        owner_id.clone(),
+        owner_type.clone(),
+        topic_id.clone(),
+        &target_response_msg_id,
     )
     .await?;
-    crate::vcp_modules::chat_manager::cancel_captured_active_requests(
-        &active_requests,
-        captured,
-        &mutation.active_ids,
-    )
-    .await;
     let settings =
         crate::vcp_modules::settings_manager::read_settings(app_handle.clone(), settings_state)
             .await?;
@@ -67,6 +92,38 @@ pub async fn regenerate_topic_response(
         "anchor": mutation.anchor,
         "dispatch": dispatch,
     }))
+}
+
+/// 截断历史并取消被截断消息上仍存活的旧请求，返回 user 锚点消息与权威 mutation。
+async fn prepare_regeneration(
+    db_state: &DbState,
+    active_requests: &crate::vcp_modules::vcp_client::ActiveRequests,
+    owner_id: String,
+    owner_type: String,
+    topic_id: String,
+    target_response_msg_id: &str,
+) -> Result<(ChatMessage, MessageMutationResult), String> {
+    let topic_key = TopicKey::new(owner_type, owner_id, topic_id);
+    let (chat_msg, anchor_message_id) =
+        load_regeneration_message(&db_state.pool, &topic_key, target_response_msg_id).await?;
+    let captured = crate::vcp_modules::chat_manager::capture_active_request_epochs(
+        active_requests,
+        &topic_key,
+    );
+    let mutation = crate::vcp_modules::message_service::truncate_history_after_timestamp_for_topic(
+        &db_state.pool,
+        &topic_key,
+        &anchor_message_id,
+        false,
+    )
+    .await?;
+    crate::vcp_modules::chat_manager::cancel_captured_active_requests(
+        active_requests,
+        captured,
+        &mutation.active_ids,
+    )
+    .await;
+    Ok((chat_msg, mutation))
 }
 
 async fn load_regeneration_message(
@@ -126,23 +183,33 @@ async fn load_regeneration_message(
 }
 
 async fn decode_regeneration_message(
-    _pool: &sqlx::SqlitePool,
+    pool: &sqlx::SqlitePool,
     topic_key: &TopicKey,
     row: sqlx::sqlite::SqliteRow,
 ) -> Result<ChatMessage, String> {
     let content = crate::vcp_modules::persistence::message_content_storage::decode_message_content(
         &row, "content",
     )?;
+    let msg_id: String = row
+        .try_get("msg_id")
+        .map_err(|error| format!("读取 user 锚点 ID 失败：{error}"))?;
     let timestamp: i64 = row
         .try_get("timestamp")
         .map_err(|error| format!("读取 user 锚点时间失败：{error}"))?;
     let updated_at: i64 = row
         .try_get("updated_at")
         .map_err(|error| format!("读取 user 锚点更新时间失败：{error}"))?;
+    // 附件必须随锚点一起回传：重新生成的请求体与首次发送完全同构，
+    // 否则带图/带文档的 user 消息会在重生成时丢失多模态输入。
+    let mut attachment_map = crate::vcp_modules::message_service::load_attachments_for_topic(
+        pool,
+        topic_key,
+        std::slice::from_ref(&msg_id),
+        true,
+    )
+    .await?;
     Ok(ChatMessage {
-        id: row
-            .try_get("msg_id")
-            .map_err(|error| format!("读取 user 锚点 ID 失败：{error}"))?,
+        id: msg_id.clone(),
         role: row
             .try_get("role")
             .map_err(|error| format!("读取 user 锚点角色失败：{error}"))?,
@@ -170,7 +237,7 @@ async fn decode_regeneration_message(
         finish_reason: row
             .try_get("finish_reason")
             .map_err(|error| format!("读取 user 锚点结束原因失败：{error}"))?,
-        attachments: None,
+        attachments: attachment_map.remove(&msg_id),
         blocks: None,
         shell: None,
         content_hash: None,

@@ -20,7 +20,7 @@ pub use listing::{get_topics, get_topics_streamed, get_unread_counts};
 pub use mutations::{
     create_topic, delete_topic, summarize_topic, toggle_topic_lock, update_topic_title,
 };
-pub use regeneration::regenerate_topic_response;
+pub use regeneration::{prepare_topic_regeneration, regenerate_topic_response};
 #[allow(unused_imports)]
 pub use unread::{
     get_owner_unread_count, increment_topic_unread_count, set_topic_unread, OwnerUnreadState,

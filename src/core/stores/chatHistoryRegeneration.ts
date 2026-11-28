@@ -1,34 +1,38 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { acquireScreenKeep } from "../composables/useScreenKeeper";
 import type { Ref } from "vue";
 import type { ChatMessage } from "../types/chat";
-import {
-  makeConversationIdentity,
-  sameConversationIdentity,
-  type ConversationIdentity,
-  type ConversationOwnerType,
-} from "./chatStoreIdentity";
+import type { PendingGenerationOptions } from "./chatHistoryGenerationTypes";
+import type { ConversationIdentity } from "./chatStoreIdentity";
 
 interface RegenerationDeps {
   currentChatHistory: Ref<ChatMessage[]>;
-  sessionStore: any;
   streamStore: any;
   topicStore: any;
   currentIdentity: () => ConversationIdentity | null;
   isCurrentIdentity: (identity: ConversationIdentity) => boolean;
-  summarizeTopic: () => Promise<void>;
+  /** 标准生成管道入口（与首次发送、编辑重发完全同构）。 */
+  triggerGeneration: (
+    message: ChatMessage,
+    options: PendingGenerationOptions,
+  ) => Promise<void>;
   reloadCurrentHistory?: (identity: ConversationIdentity) => Promise<void>;
 }
 
-interface RegenerationMutationResult {
+interface RegenerationPreparation {
   msgCount: number;
   deletedIds: string[];
+  userMessage: ChatMessage;
 }
 
-function readRegenerationResult(value: unknown): RegenerationMutationResult {
+function readPreparationResult(value: unknown): RegenerationPreparation {
   if (!value || typeof value !== "object")
-    throw new Error("后端未返回有效的重新生成结果");
-  const result = value as { msgCount?: unknown; deletedIds?: unknown };
+    throw new Error("后端未返回有效的重新生成准备结果");
+  const result = value as {
+    msgCount?: unknown;
+    deletedIds?: unknown;
+    userMessage?: unknown;
+  };
   if (
     typeof result.msgCount !== "number" ||
     !Number.isSafeInteger(result.msgCount) ||
@@ -36,130 +40,30 @@ function readRegenerationResult(value: unknown): RegenerationMutationResult {
     !Array.isArray(result.deletedIds) ||
     result.deletedIds.some((messageId) => typeof messageId !== "string")
   )
-    throw new Error("后端返回的重新生成结果无效");
+    throw new Error("后端返回的重新生成准备结果无效");
+  const userMessage = result.userMessage as ChatMessage | undefined;
+  if (
+    !userMessage ||
+    typeof userMessage !== "object" ||
+    typeof userMessage.id !== "string" ||
+    typeof userMessage.role !== "string"
+  )
+    throw new Error("后端返回的重新生成锚点消息无效");
   return {
     msgCount: result.msgCount,
     deletedIds: result.deletedIds as string[],
+    userMessage,
   };
 }
 
-function handleRegenerationMessage(
-  deps: RegenerationDeps,
-  identity: ConversationIdentity,
-  message: ChatMessage,
-  topicId: string,
-  ownerId: string,
-  ownerType: ConversationOwnerType,
-  generation: number,
-): void {
-  const eventIdentity = makeConversationIdentity(ownerId, ownerType, topicId);
-  if (
-    !eventIdentity ||
-    !sameConversationIdentity(eventIdentity, identity) ||
-    !deps.isCurrentIdentity(identity)
-  )
-    return;
-  message.generation = generation;
-  const targetIndex = deps.currentChatHistory.value.findIndex(
-    (item) => item.id === message.id,
-  );
-  if (targetIndex === -1) deps.currentChatHistory.value.push(message);
-  else {
-    const existing = deps.currentChatHistory.value[targetIndex];
-    if (existing.role !== message.role) return;
-    if (existing.generation !== undefined && existing.generation > generation)
-      return;
-    if (existing !== message)
-      deps.currentChatHistory.value[targetIndex] = message;
-  }
-  deps.currentChatHistory.value.sort(
-    (left, right) => left.timestamp - right.timestamp,
-  );
-}
-
-function handleRegenerationFinished(
-  deps: RegenerationDeps,
-  identity: ConversationIdentity,
-  topicId: string,
-  ownerId: string,
-  ownerType: ConversationOwnerType,
-  messageId: string,
-  generation: number,
-): void {
-  const eventIdentity = makeConversationIdentity(ownerId, ownerType, topicId);
-  if (
-    eventIdentity &&
-    sameConversationIdentity(eventIdentity, identity) &&
-    deps.isCurrentIdentity(identity) &&
-    deps.currentChatHistory.value.some(
-      (message) =>
-        message.id === messageId && message.generation === generation,
-    )
-  ) {
-    void deps.summarizeTopic();
-  }
-}
-
-function createRegenerationChannel(
-  deps: RegenerationDeps,
-  identity: ConversationIdentity,
-): { channel: Channel<any>; commit: () => void } {
-  const streamChannel = new Channel<any>();
-  const bufferedEvents: any[] = [];
-  let committed = false;
-  const processEvent = (event: any) =>
-    deps.streamStore.processStreamEvent(event, {
-      onMessageCreated: (
-        message: ChatMessage,
-        topicId: string,
-        ownerId: string,
-        ownerType: ConversationOwnerType,
-        generation: number,
-      ) =>
-        handleRegenerationMessage(
-          deps,
-          identity,
-          message,
-          topicId,
-          ownerId,
-          ownerType,
-          generation,
-        ),
-      onStreamFinished: (
-        messageId: string,
-        topicId: string,
-        ownerId: string,
-        ownerType: ConversationOwnerType,
-        generation: number,
-      ) =>
-        handleRegenerationFinished(
-          deps,
-          identity,
-          topicId,
-          ownerId,
-          ownerType,
-          messageId,
-          generation,
-        ),
-    });
-  streamChannel.onmessage = (event) => {
-    if (!committed) {
-      bufferedEvents.push(event);
-      return;
-    }
-    processEvent(event);
-  };
-  return {
-    channel: streamChannel,
-    commit: () => {
-      committed = true;
-      const pendingEvents = bufferedEvents;
-      bufferedEvents.length = 0;
-      pendingEvents.forEach(processEvent);
-    },
-  };
-}
-
+/**
+ * 两阶段重新生成：
+ * 1. `prepare_topic_regeneration` 只做截断与旧请求取消，立即返回 deletedIds / msgCount / userMessage；
+ * 2. 立刻淘汰旧气泡，再复用标准生成管道启动新一轮 SSE，思考态与流式吐字即时可见。
+ *
+ * 旧实现把整轮生成塞在同一个 IPC 里同步 await，前端拿不到 deletedIds，
+ * 气泡会一直卡在已回复状态；这里彻底切断该耦合。
+ */
 async function regenerateResponse(
   deps: RegenerationDeps,
   targetMessageId: string,
@@ -179,27 +83,31 @@ async function regenerateResponse(
     pendingRequestId,
   );
   try {
-    const regenerationChannel = createRegenerationChannel(deps, identity);
-    const result = readRegenerationResult(
-      await invoke("regenerate_topic_response", {
+    const prepared = readPreparationResult(
+      await invoke("prepare_topic_regeneration", {
         ownerId: identity.ownerId,
         ownerType: identity.ownerType,
         topicId: identity.topicId,
         targetResponseMsgId: targetMessageId,
-        streamChannel: regenerationChannel.channel,
       }),
     );
-    for (const messageId of result.deletedIds) {
+    for (const messageId of prepared.deletedIds) {
       deps.streamStore.cancelUnreadReceipt?.(identity, messageId);
     }
-    if (deps.isCurrentIdentity(identity)) {
-      const deleted = new Set(result.deletedIds);
-      deps.currentChatHistory.value = deps.currentChatHistory.value.filter(
-        (message) => !deleted.has(message.id),
-      );
-      deps.topicStore.setTopicMsgCount?.(identity, result.msgCount);
-    }
-    regenerationChannel.commit();
+    if (!deps.isCurrentIdentity(identity)) return;
+    const deleted = new Set(prepared.deletedIds);
+    deps.currentChatHistory.value = deps.currentChatHistory.value.filter(
+      (message) => !deleted.has(message.id),
+    );
+    deps.topicStore.setTopicMsgCount?.(identity, prepared.msgCount);
+    await deps.triggerGeneration(prepared.userMessage, {
+      requestId: pendingRequestId,
+      registered: true,
+      userMessagePersisted: true,
+      ownerId: identity.ownerId,
+      ownerType: identity.ownerType,
+      topicId: identity.topicId,
+    });
   } catch (error) {
     console.error("[ChatHistoryStore] 重新生成失败：", error);
     if (deps.isCurrentIdentity(identity) && deps.reloadCurrentHistory) {

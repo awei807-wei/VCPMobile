@@ -75,8 +75,8 @@ use vcp_modules::sync_service::{
 use vcp_modules::topic_service::{
     archive_assistant_chat, create_topic, delete_topic, get_owner_unread_count, get_topics,
     get_topics_streamed, get_unread_counts, increment_topic_unread_count,
-    regenerate_topic_response, set_topic_unread, summarize_topic, toggle_topic_lock,
-    update_topic_title,
+    prepare_topic_regeneration, regenerate_topic_response, set_topic_unread, summarize_topic,
+    toggle_topic_lock, update_topic_title,
 };
 use vcp_modules::update_manager::{check_for_update, download_update, install_update};
 use vcp_modules::vcp_client::{
@@ -137,6 +137,7 @@ macro_rules! build_invoke_handler {
                 update_topic_title,
                 toggle_topic_lock,
                 set_topic_unread,
+                prepare_topic_regeneration,
                 regenerate_topic_response,
                 get_agents,
                 get_assistants_snapshot,

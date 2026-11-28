@@ -5,7 +5,7 @@ import { createHistoryMutations } from "../../core/stores/chatHistoryMutations";
 import { createHistoryRegeneration } from "../../core/stores/chatHistoryRegeneration";
 import type { ChatMessage } from "../../core/types/chat";
 import type { ConversationIdentity } from "../../core/stores/chatStoreIdentity";
-import { invokeMock, mockInvoke } from "../mocks/tauri";
+import { channelInstances, invokeMock, mockInvoke } from "../mocks/tauri";
 
 const identity: ConversationIdentity = {
   ownerId: "shared-owner",
@@ -110,19 +110,49 @@ function createRegenerationFixture() {
     removePendingGeneration: vi.fn(),
     cancelUnreadReceipt: vi.fn(),
     processStreamEvent: vi.fn(),
+    computeShell: vi.fn(() => undefined),
   };
-  const deps = {
+  const topicStore = {
+    topics: [],
+    setTopicMsgCount: vi.fn(),
+    incrementTopicMsgCount: vi.fn(),
+    updateTopicTitle: vi.fn(),
+  };
+  const sessionStore = {
+    currentSelectedItem: { id: identity.ownerId, type: identity.ownerType },
+    currentTopicId: identity.topicId,
+  };
+  const generation = createHistoryGeneration({
     currentChatHistory,
-    sessionStore: {},
+    editingOriginalMessageId: ref<string | null>(null),
+    sessionStore,
     streamStore,
-    topicStore: { setTopicMsgCount: vi.fn() },
+    attachmentStore: {
+      stagedAttachments: [],
+      clearStaged: vi.fn(),
+      preProcessDocuments: vi.fn(),
+    },
+    assistantStore: { agents: [] },
+    settingsStore: {
+      settings: { userName: "User", vcpServerUrl: "", vcpApiKey: "" },
+    },
+    topicStore,
+    switchGuardStore: { switching: false },
     currentIdentity: () => identity,
     isCurrentIdentity: () => true,
-    summarizeTopic: vi.fn(async () => undefined),
-  };
+  });
   return {
+    currentChatHistory,
     streamStore,
-    regeneration: createHistoryRegeneration(deps),
+    topicStore,
+    regeneration: createHistoryRegeneration({
+      currentChatHistory,
+      streamStore,
+      topicStore,
+      currentIdentity: () => identity,
+      isCurrentIdentity: () => true,
+      triggerGeneration: generation.triggerGeneration,
+    }),
   };
 }
 
@@ -387,18 +417,69 @@ describe("编辑重生成的锚点 mutation", () => {
     );
   });
 
-  it("重新生成返回 deletedIds 后取消对应的未读收据", async () => {
+  it("重新生成先淘汰旧气泡，再复用标准生成通道接收 thinking → aurora → end", async () => {
     const fixture = createRegenerationFixture();
-    mockInvoke("regenerate_topic_response", () => ({
+    mockInvoke("prepare_topic_regeneration", () => ({
       deletedIds: ["response"],
       msgCount: 1,
+      userMessage: message("target", 1, "user"),
     }));
+    mockInvoke("handle_group_chat_message", () => {
+      const channel = channelInstances[channelInstances.length - 1];
+      channel?.emit({ type: "thinking", messageId: "reply" });
+      channel?.emit({ type: "aurora", messageId: "reply" });
+      channel?.emit({ type: "end", messageId: "reply" });
+      return { status: "sent" };
+    });
 
     await fixture.regeneration("target");
 
+    expect(invokeMock).toHaveBeenCalledWith(
+      "prepare_topic_regeneration",
+      {
+        ownerId: identity.ownerId,
+        ownerType: identity.ownerType,
+        topicId: identity.topicId,
+        targetResponseMsgId: "target",
+      },
+    );
     expect(fixture.streamStore.cancelUnreadReceipt).toHaveBeenCalledWith(
       identity,
       "response",
+    );
+    // 旧气泡在 prepare 返回后立刻消失，且不会重复追加 user 锚点
+    expect(fixture.currentChatHistory.value.map(({ id }) => id)).toEqual([
+      "target",
+    ]);
+    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(identity, 1);
+    expect(
+      fixture.streamStore.processStreamEvent.mock.calls.map(
+        (call: any[]) => call[0].type,
+      ),
+    ).toEqual(["thinking", "aurora", "end"]);
+  });
+
+  it("prepare 失败时重载历史并清理 pending，不进入生成阶段", async () => {
+    const fixture = createRegenerationFixture();
+    mockInvoke("prepare_topic_regeneration", () => {
+      throw new Error("prepare rejected");
+    });
+
+    await fixture.regeneration("target");
+
+    expect(fixture.currentChatHistory.value.map(({ id }) => id)).toEqual([
+      "target",
+      "response",
+    ]);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "handle_group_chat_message",
+      expect.anything(),
+    );
+    expect(fixture.streamStore.removePendingGeneration).toHaveBeenCalledWith(
+      identity.ownerId,
+      identity.ownerType,
+      identity.topicId,
+      "regen_target",
     );
   });
 });

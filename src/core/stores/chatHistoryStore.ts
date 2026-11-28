@@ -125,12 +125,11 @@ function createHistoryStoreRegeneration(
 ) {
   return createHistoryRegeneration({
     currentChatHistory: context.currentChatHistory,
-    sessionStore: context.sessionStore,
     streamStore: context.streamStore,
     topicStore: context.topicStore,
     currentIdentity: context.currentIdentity,
     isCurrentIdentity: context.isCurrentIdentity,
-    summarizeTopic: generation.summarizeTopic,
+    triggerGeneration: generation.triggerGeneration,
     reloadCurrentHistory: (identity) =>
       loader.loadHistory(
         identity.ownerId,

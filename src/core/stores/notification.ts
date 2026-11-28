@@ -124,8 +124,12 @@ export const useNotificationStore = defineStore("notification", () => {
       id,
     } as VcpNotification;
 
-    // 1. 如果不是纯 Toast，则入历史列表（置顶）并增加未读数
+    // 1. 如果不是纯 Toast，则入历史列表（置顶）并增加未读数。
+    //    抽屉打开期间到达的通知对用户立即可见：RightSidebar 只在 isOpen 变 true 时
+    //    调用一次 markAllRead()，若这里继续累加未读数，关闭抽屉后角标会残留。
     if (!payload.toastOnly) {
+      const drawerOpen = isDrawerOpen.value;
+      if (drawerOpen) notification.read = true;
       // 历史列表也进行 ID 查重，防止列表膨胀
       const historyIndex = historyList.value.findIndex((n) => n.id === id);
       if (historyIndex !== -1) {
@@ -133,7 +137,7 @@ export const useNotificationStore = defineStore("notification", () => {
       } else {
         historyList.value.unshift(notification);
         if (historyList.value.length > 100) historyList.value.pop();
-        unreadCount.value++;
+        if (!drawerOpen) unreadCount.value++;
       }
     }
 

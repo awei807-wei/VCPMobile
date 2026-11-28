@@ -284,10 +284,11 @@ onUnmounted(() => {
             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
             <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
           </svg>
-          <!-- 当有未读通知时显示绿色指示点 -->
-          <div v-if="notificationStore.unreadCount > 0" 
-            class="absolute top-1.5 right-1.5 w-2 h-2 bg-emerald-500 rounded-full border-2 border-[var(--secondary-bg)] shadow-[0_0_8px_rgba(16,185,129,0.5)]">
-          </div>
+          <!-- 未读通知角标：右下角数字，超过 99 收敛为 99+ -->
+          <span v-if="notificationStore.unreadCount > 0"
+            class="absolute -bottom-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-emerald-500 text-white text-[10px] font-bold leading-none tabular-nums border-2 border-[var(--secondary-bg)] shadow-[0_0_8px_rgba(16,185,129,0.5)] pointer-events-none">
+            {{ notificationStore.unreadCount > 99 ? '99+' : notificationStore.unreadCount }}
+          </span>
         </button>
       </div>
     </header>

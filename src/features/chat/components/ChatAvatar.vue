@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import VcpAvatar from "../../../components/ui/VcpAvatar.vue";
 import { computed } from "vue";
+import { useThemeStore } from "../../../core/stores/theme";
 
 const props = defineProps<{
   ownerType?: "user" | "agent" | "group";
@@ -10,6 +11,8 @@ const props = defineProps<{
   isUser: boolean;
   dominantColor?: string;
 }>();
+
+const themeStore = useThemeStore();
 
 const ownerInfo = computed(() => {
   // 1. 优先使用显式参数
@@ -45,12 +48,15 @@ const ownerInfo = computed(() => {
     />
     <div
       v-else
-      class="w-full h-full rounded-full overflow-hidden border transition-all duration-500 shadow-sm flex items-center justify-center text-xs font-bold text-white"
-      :class="
-        isUser ? 'bg-primary border-primary' : 'bg-white dark:bg-gray-800'
-      "
+      class="w-full h-full overflow-hidden border transition-all duration-500 shadow-sm flex items-center justify-center text-xs font-bold text-white"
+      :class="[
+        themeStore.isWechatLayout ? 'rounded-[6px]' : 'rounded-full',
+        isUser ? 'bg-primary border-primary' : 'bg-white dark:bg-gray-800',
+      ]"
       :style="[
-        !isUser && dominantColor ? { borderColor: dominantColor } : {},
+        !isUser && dominantColor && !themeStore.isWechatLayout
+          ? { borderColor: dominantColor }
+          : {},
         {
           backgroundColor: isUser ? 'var(--primary)' : '#374151',
         },

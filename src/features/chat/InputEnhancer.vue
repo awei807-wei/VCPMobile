@@ -5,6 +5,7 @@ import { useChatSessionStore } from "../../core/stores/chatSessionStore";
 import { useChatStreamStore } from "../../core/stores/chatStreamStore";
 import { useAttachmentStore } from "../../core/stores/attachmentStore";
 import { useNotificationStore } from "../../core/stores/notification";
+import { useThemeStore } from "../../core/stores/theme";
 import { canSendStagedAttachments } from "../../core/stores/attachmentSendGate";
 import { useLongTextPaste } from "./composables/useLongTextPaste";
 import { useInputEnhancerVoice } from "./composables/useInputEnhancerVoice";
@@ -28,6 +29,7 @@ const sessionStore = useChatSessionStore();
 const streamStore = useChatStreamStore();
 const attachmentStore = useAttachmentStore();
 const notificationStore = useNotificationStore();
+const themeStore = useThemeStore();
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const rootRef = ref<HTMLElement | null>(null);
 
@@ -182,12 +184,17 @@ onUnmounted(() =>
 
     <div class="flex items-end gap-2 px-1">
       <div
-        class="flex-1 flex items-end gap-1.5 bg-[var(--secondary-bg)] border border-[var(--border-color)] rounded-2xl px-2 py-1 shadow-sm relative overflow-visible transition-all duration-300"
-        :class="{
-          'ring-1 ring-blue-500/30 border-blue-500/50':
-            isSTTActive || isLongPressRecording,
-          'ring-1 ring-red-500/30 border-red-500/50': isSwipeCancel,
-        }"
+        class="flex-1 flex items-end gap-1.5 border border-[var(--border-color)] px-2 py-1 relative overflow-visible transition-all duration-300"
+        :class="[
+          themeStore.isWechatLayout
+            ? 'rounded-[6px] bg-[var(--input-bg)] shadow-none'
+            : 'rounded-2xl bg-[var(--secondary-bg)] shadow-sm',
+          {
+            'ring-1 ring-blue-500/30 border-blue-500/50':
+              isSTTActive || isLongPressRecording,
+            'ring-1 ring-red-500/30 border-red-500/50': isSwipeCancel,
+          },
+        ]"
       >
         <button
           :disabled="disabled"
@@ -275,7 +282,13 @@ onUnmounted(() =>
             rows="1"
             class="w-full bg-transparent border-none focus:outline-none focus:ring-0 text-[var(--primary-text)] text-[15px] placeholder-opacity-40 resize-none leading-[1.25] py-[8px] scrollbar-hide vcp-textarea"
             style="max-height: 114px"
-            :placeholder="disabled ? '请先选择话题以开启对话' : '说点什么...'"
+            :placeholder="
+              disabled
+                ? '请先选择话题以开启对话'
+                : themeStore.isWechatLayout
+                  ? ''
+                  : '说点什么...'
+            "
             :disabled="disabled"
           ></textarea>
 
@@ -350,7 +363,12 @@ onUnmounted(() =>
           </div>
 
           <div
-            class="absolute top-0 left-0 right-0 h-4 pointer-events-none bg-[var(--secondary-bg)] opacity-90"
+            class="absolute top-0 left-0 right-0 h-4 pointer-events-none opacity-90"
+            :class="
+              themeStore.isWechatLayout
+                ? 'bg-[var(--input-bg)]'
+                : 'bg-[var(--secondary-bg)]'
+            "
             style="
               mask-image: linear-gradient(to bottom, black, transparent);
               -webkit-mask-image: linear-gradient(

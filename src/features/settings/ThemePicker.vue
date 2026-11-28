@@ -24,7 +24,15 @@ onMounted(async () => {
 });
 
 const selectTheme = (theme: ThemeInfo) => {
-  themeStore.applyThemeFile(theme.fileName);
+  // fromUserPicker 让主题可以声明首选明暗模式（如「微信摸鱼」默认浅色），
+  // 冷启动与后端推送不会带该标记，因此不会覆盖用户手动切换的记忆。
+  themeStore.applyThemeFile(theme.fileName, { fromUserPicker: true });
+};
+
+/** 无壁纸主题的缩略图回退：从主题变量里取色，画一张迷你聊天预览。 */
+const previewVar = (theme: ThemeInfo, key: string, fallback: string) => {
+  const vars = theme.variables.light || theme.variables.dark || {};
+  return vars[key] || fallback;
 };
 </script>
 
@@ -57,11 +65,42 @@ const selectTheme = (theme: ThemeInfo) => {
             : 'none',
         }"
       >
+        <!-- 无壁纸主题：用主题变量画迷你聊天预览，避免只剩一片灰底 -->
         <div
           v-if="!thumbnails[theme.fileName]"
-          class="w-full h-full flex items-center justify-center bg-gray-200 dark:bg-gray-800"
+          class="w-full h-full flex flex-col"
+          :style="{
+            backgroundColor: previewVar(theme, '--primary-bg', '#ededed'),
+          }"
         >
-          <span class="text-xs text-gray-400">{{ theme.name }}</span>
+          <div
+            class="h-4 shrink-0"
+            :style="{
+              backgroundColor: previewVar(theme, '--secondary-bg', '#f7f7f7'),
+            }"
+          ></div>
+          <div class="flex-1 flex flex-col justify-center gap-1.5 px-2">
+            <div
+              class="h-2.5 w-3/5 rounded-sm"
+              :style="{
+                backgroundColor: previewVar(
+                  theme,
+                  '--assistant-bubble-bg',
+                  '#ffffff',
+                ),
+              }"
+            ></div>
+            <div
+              class="h-2.5 w-2/5 rounded-sm self-end"
+              :style="{
+                backgroundColor: previewVar(
+                  theme,
+                  '--user-bubble-bg',
+                  '#95ec69',
+                ),
+              }"
+            ></div>
+          </div>
         </div>
       </div>
 

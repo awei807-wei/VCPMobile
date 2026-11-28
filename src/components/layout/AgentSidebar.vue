@@ -4,6 +4,7 @@ import { useSidebarSwipe } from "../../core/composables/useSidebarSwipe";
 import { useLayoutStore } from "../../core/stores/layout";
 import { useOverlayStore } from "../../core/stores/overlay";
 import { useChatSessionStore } from "../../core/stores/chatSessionStore";
+import { useThemeStore } from "../../core/stores/theme";
 import SidebarTabs from "../../features/agent/SidebarTabs.vue";
 import SidebarSearch from "../../features/agent/SidebarSearch.vue";
 import AgentList from "../../features/agent/AgentList.vue";
@@ -15,6 +16,7 @@ import { Search } from "lucide-vue-next";
 const layoutStore = useLayoutStore();
 const overlayStore = useOverlayStore();
 const sessionStore = useChatSessionStore();
+const themeStore = useThemeStore();
 
 const activeTab = ref<"agents" | "topics">("agents");
 const searchQuery = ref("");
@@ -71,9 +73,14 @@ const openGlobalSearch = () => {
     >
       <div class="flex items-center justify-between mb-4 px-2">
         <h2
-          class="text-xl font-black opacity-90 tracking-tighter text-blue-500 dark:text-blue-400"
+          class="transition-colors duration-500"
+          :class="
+            themeStore.isWechatLayout
+              ? 'text-base font-semibold text-[var(--primary-text)] tracking-normal'
+              : 'text-xl font-black opacity-90 tracking-tighter text-blue-500 dark:text-blue-400'
+          "
         >
-          VCP MOBILE
+          {{ themeStore.isWechatLayout ? "微信" : "VCP MOBILE" }}
         </h2>
         <button
           type="button"

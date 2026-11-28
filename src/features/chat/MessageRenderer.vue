@@ -6,6 +6,7 @@ import { useChatHistoryStore } from "../../core/stores/chatHistoryStore";
 import { useChatSessionStore } from "../../core/stores/chatSessionStore";
 import { useChatStreamStore } from "../../core/stores/chatStreamStore";
 import { useNotificationStore } from "../../core/stores/notification";
+import { useThemeStore } from "../../core/stores/theme";
 import { useMessageEvents } from "../../core/composables/useMessageEvents";
 import { useEmoticonFixer } from "../../core/composables/useEmoticonFixer";
 import { renderMarkdownNodes } from "../../core/utils/astRenderer";
@@ -39,6 +40,7 @@ let mermaidInitialized = false;
 
 // UI Components
 import ChatBubble from "./components/ChatBubble.vue";
+import ChatAvatar from "./components/ChatAvatar.vue";
 import MessageHeader from "./components/MessageHeader.vue";
 import ThinkingIndicator from "./components/ThinkingIndicator.vue";
 import StreamingTag from "./components/StreamingTag.vue";
@@ -62,6 +64,7 @@ const notificationStore = useNotificationStore();
 const historyStore = useChatHistoryStore();
 const sessionStore = useChatSessionStore();
 const streamStore = useChatStreamStore();
+const themeStore = useThemeStore();
 
 function isAstDebugEnabled(): boolean {
   return Boolean(import.meta.env.DEV && (window as any).__VCP_AST_DEBUG__);
@@ -136,14 +139,17 @@ const isMessageInAnyActiveStream = computed(() =>
 const isMessageInActiveStream = isMessageInAnyActiveStream;
 
 // UI 层面：消息是否在当前视口中显示流式状态
+const isGroupChat = computed(
+  () =>
+    !!props.message.isGroupMessage ||
+    !!props.message.groupId ||
+    sessionStore.currentSelectedItem?.type === "group",
+);
+
 const isStreaming = computed(() => {
   if (shell.value?.isUser) return false;
 
-  const isGroup =
-    !!props.message.isGroupMessage ||
-    !!props.message.groupId ||
-    sessionStore.currentSelectedItem?.type === "group";
-  const itemId = isGroup
+  const itemId = isGroupChat.value
     ? props.message.groupId || sessionStore.currentSelectedItem?.id
     : props.message.agentId || props.agentId;
 
@@ -950,6 +956,27 @@ function formatTime(ts: number) {
   return `${year}-${month}-${day} ${hours}:${minutes}`;
 }
 
+/** 微信布局只显示 HH:mm，去掉年份日期这类「技术感」信息。 */
+function formatClock(ts: number) {
+  const date = new Date(ts);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+/**
+ * 微信布局的昵称规则：单聊与自己的消息都不显示昵称，
+ * 只有群聊里对方的第一条子气泡上方带一行小字。
+ */
+function showWechatNickname(bubbleIndex: number): boolean {
+  return (
+    themeStore.isWechatLayout &&
+    isGroupChat.value &&
+    !shell.value?.isUser &&
+    bubbleIndex === 0
+  );
+}
+
 // === Style Block CSS Injection ===
 const { injectScopedCss, removeScopedCss } = useMessageStyleInjector();
 
@@ -1165,184 +1192,249 @@ onUnmounted(() => {
   <div
     ref="messageContentRef"
     v-longpress="showMessageContextMenu"
-    class="vcp-message-item flex flex-col w-full mb-6 animate-fade-in px-1 min-w-0"
+    class="vcp-message-item flex flex-col w-full animate-fade-in px-1 min-w-0"
+    :class="themeStore.isWechatLayout ? 'mb-3.5' : 'mb-6'"
     :data-message-id="message.id"
     :data-role="message.role"
   >
     <!-- 统一的气泡循环渲染列表 -->
     <template v-for="(bubble, bubbleIndex) in messageBubbles" :key="bubble.id">
       <template v-if="shell">
-        <MessageHeader
-          :is-user="shell.isUser"
-          :display-name="shell.displayName"
-          :name-style="{ color: shell.avatarColor }"
-          :owner-type="shell.isUser ? 'user' : 'agent'"
-          :owner-id="shell.isUser ? 'user_avatar' : message.agentId || agentId"
-          :avatar-dominant-color="shell.avatarColor"
-        />
-
-        <ChatBubble
-          :is-user="shell.isUser"
-          :is-streaming="
-            isStreaming && bubbleIndex === messageBubbles.length - 1
+        <!-- 微信伪装布局：外层横向行（自己的消息反向排列） -->
+        <div
+          class="w-full"
+          :class="
+            themeStore.isWechatLayout
+              ? [
+                  'flex items-start gap-2.5 px-2',
+                  shell.isUser ? 'flex-row-reverse' : 'flex-row',
+                ]
+              : 'flex flex-col'
           "
-          :bubble-style="{
-            '--dynamic-color': shell.avatarColor,
-          }"
-          :class="bubbleIndex > 0 ? 'mt-2' : ''"
         >
-          <!-- 初始思考指示灯：仅在活跃气泡没有任何已确认 blocks，且仍在流式并未吐出 tail 时显示 -->
-          <ThinkingIndicator
-            v-if="
-              isStreaming &&
-              bubbleIndex === messageBubbles.length - 1 &&
-              (!message.blocks || message.blocks.length === 0) &&
-              !message.tailBlock
+          <ChatAvatar
+            v-if="themeStore.isWechatLayout"
+            class="w-9 shrink-0"
+            :owner-type="shell.isUser ? 'user' : 'agent'"
+            :owner-id="
+              shell.isUser ? 'user_avatar' : message.agentId || agentId
             "
+            :fallback-text="shell.displayName"
+            :is-user="shell.isUser"
+            :dominant-color="shell.avatarColor"
           />
 
+          <!-- 默认布局用 display:contents 透传子节点，保持原有纵向堆叠零改动 -->
           <div
-            class="vcp-content-blocks space-y-2 min-w-0 w-full overflow-hidden"
+            :class="
+              themeStore.isWechatLayout
+                ? [
+                    'flex-1 min-w-0 flex flex-col',
+                    shell.isUser ? 'items-end' : 'items-start',
+                  ]
+                : 'contents'
+            "
           >
-            <template v-if="bubble.blocks && bubble.blocks.length > 0">
-              <template
-                v-for="(block, index) in bubble.blocks"
-                :key="getBlockKey(block, index)"
+            <MessageHeader
+              v-if="!themeStore.isWechatLayout"
+              :is-user="shell.isUser"
+              :display-name="shell.displayName"
+              :name-style="{ color: shell.avatarColor }"
+              :owner-type="shell.isUser ? 'user' : 'agent'"
+              :owner-id="
+                shell.isUser ? 'user_avatar' : message.agentId || agentId
+              "
+              :avatar-dominant-color="shell.avatarColor"
+            />
+
+            <!-- 群聊对方消息才显示昵称，单聊与自己一律不显示 -->
+            <div
+              v-if="showWechatNickname(bubbleIndex)"
+              class="text-[11px] text-[var(--secondary-text)] mb-1 px-0.5 leading-none"
+            >
+              {{ shell.displayName }}
+            </div>
+
+            <ChatBubble
+              :is-user="shell.isUser"
+              :is-streaming="
+                isStreaming && bubbleIndex === messageBubbles.length - 1
+              "
+              :bubble-style="{
+                '--dynamic-color': shell.avatarColor,
+              }"
+              :class="bubbleIndex > 0 ? 'mt-2' : ''"
+            >
+              <!-- 初始思考指示灯：仅在活跃气泡没有任何已确认 blocks，且仍在流式并未吐出 tail 时显示 -->
+              <ThinkingIndicator
+                v-if="
+                  isStreaming &&
+                  bubbleIndex === messageBubbles.length - 1 &&
+                  (!message.blocks || message.blocks.length === 0) &&
+                  !message.tailBlock
+                "
+              />
+
+              <div
+                class="vcp-content-blocks space-y-2 min-w-0 w-full overflow-hidden"
               >
-                <!-- v-memo=[index] 保证已稳定块零开销：Vue 缓存 VNode 子树，不重渲染、不触碰 DOM -->
-                <div v-memo="[getBlockKey(block, index)]">
+                <template v-if="bubble.blocks && bubble.blocks.length > 0">
+                  <template
+                    v-for="(block, index) in bubble.blocks"
+                    :key="getBlockKey(block, index)"
+                  >
+                    <!-- v-memo=[index] 保证已稳定块零开销：Vue 缓存 VNode 子树，不重渲染、不触碰 DOM -->
+                    <div v-memo="[getBlockKey(block, index)]">
+                      <div
+                        v-if="isPlainBlock(block.type)"
+                        v-html="renderBlockHtml(block)"
+                      />
+
+                      <ToolBlock
+                        v-else-if="
+                          block.type === 'tool-use' ||
+                          block.type === 'tool-result'
+                        "
+                        :type="block.type"
+                        :content="block.content"
+                        :block="block"
+                        :default-expanded="isMessageInActiveStream"
+                        :tool-result-ordinal="
+                          toolResultOrdinalByBlock.get(block) ?? -1
+                        "
+                        :streaming="isMessageInActiveStream"
+                        @toggle-hidden="handleToggleToolResultHidden(block)"
+                      />
+
+                      <ThoughtBlock
+                        v-else-if="block.type === 'thought'"
+                        :block="block"
+                        :message-id="message.id"
+                        :default-expanded="isMessageInActiveStream"
+                      />
+
+                      <HtmlPreviewBlock
+                        v-else-if="block.type === 'html-preview'"
+                        :content="block.content || ''"
+                        :highlighted-content="block.highlighted_content"
+                        :message-id="message.id"
+                        :is-streaming="isStreaming"
+                        :is-active-stream="isMessageInActiveStream"
+                      />
+
+                      <ToolSummaryBlock
+                        v-else-if="block.type === 'tool-call-summary'"
+                        :block="block"
+                      />
+                    </div>
+                  </template>
+                </template>
+                <template
+                  v-else-if="
+                    bubbleIndex === 0 &&
+                    message.content &&
+                    (!isStreaming || !message.tailBlock)
+                  "
+                >
+                  <div class="vcp-markdown-block select-text">
+                    <p>{{ message.content }}</p>
+                  </div>
+                </template>
+
+                <!-- 尾部流式推测渲染（只对最后一个活跃气泡生效） -->
+                <div
+                  v-if="
+                    isStreaming &&
+                    bubbleIndex === messageBubbles.length - 1 &&
+                    message.tailBlock
+                  "
+                  class="streaming-tail opacity-90"
+                >
                   <div
-                    v-if="isPlainBlock(block.type)"
-                    v-html="renderBlockHtml(block)"
-                  />
-
-                  <ToolBlock
+                    v-if="
+                      useAstForCurrentTail &&
+                      isPlainBlock(message.tailBlock.type)
+                    "
+                  >
+                    <div
+                      :ref="
+                        (el) => {
+                          tailSandboxRef = el as HTMLElement | null;
+                        }
+                      "
+                      class="vcp-markdown-block vcp-ast-sandbox"
+                    />
+                  </div>
+                  <div
                     v-else-if="
-                      block.type === 'tool-use' || block.type === 'tool-result'
+                      !useAstForCurrentTail &&
+                      isPlainBlock(message.tailBlock.type)
                     "
-                    :type="block.type"
-                    :content="block.content"
-                    :block="block"
-                    :default-expanded="isMessageInActiveStream"
-                    :tool-result-ordinal="
-                      toolResultOrdinalByBlock.get(block) ?? -1
+                    :ref="
+                      (el) => {
+                        tailRootRef = el as HTMLElement | null;
+                      }
                     "
-                    :streaming="isMessageInActiveStream"
-                    @toggle-hidden="handleToggleToolResultHidden(block)"
-                  />
-
-                  <ThoughtBlock
-                    v-else-if="block.type === 'thought'"
-                    :block="block"
-                    :message-id="message.id"
-                    :default-expanded="isMessageInActiveStream"
-                  />
-
-                  <HtmlPreviewBlock
-                    v-else-if="block.type === 'html-preview'"
-                    :content="block.content || ''"
-                    :highlighted-content="block.highlighted_content"
-                    :message-id="message.id"
-                    :is-streaming="isStreaming"
-                    :is-active-stream="isMessageInActiveStream"
-                  />
-
-                  <ToolSummaryBlock
-                    v-else-if="block.type === 'tool-call-summary'"
-                    :block="block"
+                    class="vcp-markdown-block"
                   />
                 </div>
-              </template>
-            </template>
-            <template
-              v-else-if="
-                bubbleIndex === 0 &&
-                message.content &&
-                (!isStreaming || !message.tailBlock)
-              "
-            >
-              <div class="vcp-markdown-block select-text">
-                <p>{{ message.content }}</p>
-              </div>
-            </template>
-
-            <!-- 尾部流式推测渲染（只对最后一个活跃气泡生效） -->
-            <div
-              v-if="
-                isStreaming &&
-                bubbleIndex === messageBubbles.length - 1 &&
-                message.tailBlock
-              "
-              class="streaming-tail opacity-90"
-            >
-              <div
-                v-if="
-                  useAstForCurrentTail && isPlainBlock(message.tailBlock.type)
-                "
-              >
                 <div
-                  :ref="
-                    (el) => {
-                      tailSandboxRef = el as HTMLElement | null;
-                    }
+                  v-if="
+                    isStreaming &&
+                    bubbleIndex === messageBubbles.length - 1 &&
+                    message.tailContent &&
+                    message.blocks &&
+                    message.blocks.length > 0 &&
+                    (!message.tailBlock ||
+                      !isPlainBlock(message.tailBlock.type))
                   "
-                  class="vcp-markdown-block vcp-ast-sandbox"
-                />
+                  class="opacity-70 italic animate-pulse"
+                >
+                  {{ message.tailContent }}
+                </div>
               </div>
-              <div
-                v-else-if="
-                  !useAstForCurrentTail && isPlainBlock(message.tailBlock.type)
+
+              <AttachmentPreview
+                v-if="
+                  bubbleIndex === 0 &&
+                  message.attachments &&
+                  message.attachments.length > 0
                 "
-                :ref="
-                  (el) => {
-                    tailRootRef = el as HTMLElement | null;
-                  }
+                :attachments="message.attachments"
+                :message-id="message.id"
+                :topic-id="
+                  message.topicId || sessionStore.currentTopicId || undefined
                 "
-                class="vcp-markdown-block"
+                class="pt-3 border-t border-black/5 dark:border-white/5"
               />
-            </div>
-            <div
-              v-if="
-                isStreaming &&
-                bubbleIndex === messageBubbles.length - 1 &&
-                message.tailContent &&
-                message.blocks &&
-                message.blocks.length > 0 &&
-                (!message.tailBlock || !isPlainBlock(message.tailBlock.type))
-              "
-              class="opacity-70 italic animate-pulse"
-            >
-              {{ message.tailContent }}
-            </div>
+
+              <StreamingTag
+                v-if="
+                  !themeStore.isWechatLayout &&
+                  isStreaming &&
+                  bubbleIndex === messageBubbles.length - 1
+                "
+              />
+
+              <template #footer>
+                <div
+                  v-if="themeStore.isWechatLayout"
+                  class="text-[10px] mt-1 px-0.5 opacity-60 text-[var(--secondary-text)] w-full"
+                  :class="shell.isUser ? 'text-right' : 'text-left'"
+                >
+                  {{ formatClock(message.timestamp) }}
+                </div>
+                <div
+                  v-else
+                  class="text-[9px] mt-1.5 px-1 opacity-50 font-mono tracking-tighter w-full"
+                  :class="shell.isUser ? 'text-right' : 'text-left'"
+                >
+                  {{ formatTime(message.timestamp) }}
+                </div>
+              </template>
+            </ChatBubble>
           </div>
-
-          <AttachmentPreview
-            v-if="
-              bubbleIndex === 0 &&
-              message.attachments &&
-              message.attachments.length > 0
-            "
-            :attachments="message.attachments"
-            :message-id="message.id"
-            :topic-id="
-              message.topicId || sessionStore.currentTopicId || undefined
-            "
-            class="pt-3 border-t border-black/5 dark:border-white/5"
-          />
-
-          <StreamingTag
-            v-if="isStreaming && bubbleIndex === messageBubbles.length - 1"
-          />
-
-          <template #footer>
-            <div
-              class="text-[9px] mt-1.5 px-1 opacity-50 font-mono tracking-tighter w-full"
-              :class="shell.isUser ? 'text-right' : 'text-left'"
-            >
-              {{ formatTime(message.timestamp) }}
-            </div>
-          </template>
-        </ChatBubble>
+        </div>
       </template>
     </template>
 

@@ -5,6 +5,7 @@ import { useChatSessionStore } from "../../core/stores/chatSessionStore";
 import { useLayoutStore } from "../../core/stores/layout";
 import { useSettingsStore } from "../../core/stores/settings";
 import { useOverlayStore } from "../../core/stores/overlay";
+import { useThemeStore } from "../../core/stores/theme";
 import AgentSwipeItem from "./AgentSwipeItem.vue";
 import { ownerSwipeKey, useAgentSwipe } from "./useAgentSwipe";
 import { useAgentSorting } from "./useAgentSorting";
@@ -23,6 +24,8 @@ const sessionStore = useChatSessionStore();
 const layoutStore = useLayoutStore();
 const settingsStore = useSettingsStore();
 const overlayStore = useOverlayStore();
+const themeStore = useThemeStore();
+const isWechatLayout = computed(() => themeStore.isWechatLayout);
 
 const compareOrder = (order: string[], leftId: string, rightId: string) => {
   const leftIndex = order.indexOf(leftId);
@@ -130,9 +133,14 @@ const filteredCombinedItems = computed(() => {
   <div v-else class="space-y-4">
     <div v-if="assistantStore.groups.length > 0" class="space-y-2">
       <h3
-        class="px-2 text-[10px] font-black uppercase tracking-widest opacity-30"
+        class="px-2 opacity-30"
+        :class="
+          isWechatLayout
+            ? 'text-[11px] font-medium tracking-normal'
+            : 'text-[10px] font-black uppercase tracking-widest'
+        "
       >
-        Agent Groups
+        {{ isWechatLayout ? "群聊" : "Agent Groups" }}
       </h3>
       <div
         ref="groupListRef"
@@ -174,9 +182,14 @@ const filteredCombinedItems = computed(() => {
 
     <div v-if="assistantStore.agents.length > 0" class="space-y-2">
       <h3
-        class="px-2 text-[10px] font-black uppercase tracking-widest opacity-30"
+        class="px-2 opacity-30"
+        :class="
+          isWechatLayout
+            ? 'text-[11px] font-medium tracking-normal'
+            : 'text-[10px] font-black uppercase tracking-widest'
+        "
       >
-        Individual Agents
+        {{ isWechatLayout ? "联系人" : "Individual Agents" }}
       </h3>
       <div
         ref="agentListRef"

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useThemeStore } from "../../../core/stores/theme";
 
 const props = defineProps<{
   isUser: boolean;
@@ -7,8 +8,26 @@ const props = defineProps<{
   bubbleStyle?: Record<string, string>;
 }>();
 
+const themeStore = useThemeStore();
+const isWechat = computed(() => themeStore.isWechatLayout);
+
 const mergedStyle = computed(() => {
   return props.bubbleStyle || {};
+});
+
+/**
+ * 微信布局下统一 `p-2.5 / max-w-[78%]`：
+ * 既给左右留出微信式呼吸位，也避免 Agent 气泡撑满整行。
+ */
+const bubbleClass = computed(() => {
+  if (isWechat.value) {
+    return props.isUser
+      ? "p-2.5 w-fit max-w-[78%] vcp-bubble-user"
+      : "p-2.5 w-fit max-w-[78%] min-w-[1rem] vcp-bubble-agent";
+  }
+  return props.isUser
+    ? "p-3 w-fit max-w-[85%] vcp-bubble-user"
+    : "p-1.5 w-fit max-w-[100%] min-w-[1rem] vcp-bubble-agent";
 });
 </script>
 
@@ -22,13 +41,16 @@ const mergedStyle = computed(() => {
   >
     <div
       class="vcp-bubble-container message-bubble rounded-2xl transition-all duration-300 relative min-w-[60px] min-h-[36px]"
-      :class="[
-        isUser
-          ? 'p-3 w-fit max-w-[85%] vcp-bubble-user'
-          : 'p-1.5 w-fit max-w-[100%] min-w-[1rem] vcp-bubble-agent',
-      ]"
+      :class="bubbleClass"
       :style="mergedStyle"
     >
+      <!-- 微信气泡小尖角：独立元素绘制，避开被禁用的原生伪元素，也不会被内层 overflow 裁切 -->
+      <span
+        v-if="isWechat"
+        class="vcp-wechat-tail"
+        :class="isUser ? 'is-user' : 'is-agent'"
+        aria-hidden="true"
+      />
       <slot />
     </div>
 

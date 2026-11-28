@@ -249,7 +249,12 @@ onUnmounted(() => {
         <!-- 侧边栏按钮 (使用内联 SVG 确保 100% 可见) -->
         <button
           @click="layoutStore.toggleLeftDrawer()"
-          class="w-10 h-10 shrink-0 flex items-center justify-center rounded-xl bg-black/5 dark:bg-white/10 active:scale-90 transition-all border border-black/5 dark:border-white/5"
+          class="w-10 h-10 shrink-0 flex items-center justify-center active:scale-90 transition-all"
+          :class="
+            themeStore.isWechatLayout
+              ? 'text-[var(--primary-text)] opacity-70 hover:opacity-100'
+              : 'rounded-xl bg-black/5 dark:bg-white/10 border border-black/5 dark:border-white/5'
+          "
         >
           <svg
             width="20"
@@ -282,11 +287,17 @@ onUnmounted(() => {
 
         <div class="flex flex-col min-w-0 flex-1">
           <span
-            class="font-bold text-sm truncate transition-colors duration-500"
+            class="truncate transition-colors duration-500"
+            :class="
+              themeStore.isWechatLayout
+                ? 'text-base font-medium text-[var(--primary-text)]'
+                : 'font-bold text-sm'
+            "
             :style="{
-              color:
-                sessionStore.currentSelectedItem?.avatarCalculatedColor ||
-                'var(--primary-text)',
+              color: themeStore.isWechatLayout
+                ? 'var(--primary-text)'
+                : sessionStore.currentSelectedItem?.avatarCalculatedColor ||
+                  'var(--primary-text)',
             }"
           >
             {{ sessionStore.currentSelectedItem?.name || "VCP Mobile" }}
@@ -304,9 +315,16 @@ onUnmounted(() => {
         <!-- 黑白模式切换 (内联 SVG) -->
         <button
           @click="themeStore.toggleTheme()"
-          class="w-10 h-10 flex items-center justify-center rounded-xl bg-black/5 dark:bg-white/10 active:scale-90 transition-all border border-black/5 dark:border-white/5"
+          class="w-10 h-10 flex items-center justify-center active:scale-90 transition-all"
           :class="
-            themeStore.isDarkResolved ? 'text-blue-300/80' : 'text-yellow-500'
+            themeStore.isWechatLayout
+              ? 'text-[var(--primary-text)] opacity-70 hover:opacity-100'
+              : [
+                  'rounded-xl bg-black/5 dark:bg-white/10 border border-black/5 dark:border-white/5',
+                  themeStore.isDarkResolved
+                    ? 'text-blue-300/80'
+                    : 'text-yellow-500',
+                ]
           "
         >
           <svg
@@ -347,7 +365,12 @@ onUnmounted(() => {
         <!-- 通知中心按钮 -->
         <button
           @click="layoutStore.toggleRightDrawer()"
-          class="w-10 h-10 flex items-center justify-center rounded-xl bg-black/5 dark:bg-white/10 active:scale-90 transition-all border border-black/5 dark:border-white/5 relative"
+          class="w-10 h-10 flex items-center justify-center active:scale-90 transition-all relative"
+          :class="
+            themeStore.isWechatLayout
+              ? 'text-[var(--primary-text)] opacity-70 hover:opacity-100'
+              : 'rounded-xl bg-black/5 dark:bg-white/10 border border-black/5 dark:border-white/5'
+          "
         >
           <svg
             width="18"
@@ -387,38 +410,68 @@ onUnmounted(() => {
         v-if="historyStore.currentChatHistory.length === 0"
         class="absolute inset-0 flex flex-col items-center justify-center text-center px-10"
       >
-        <div
-          class="w-24 h-24 rounded-[2.5rem] bg-gradient-to-br from-primary/20 to-blue-500/20 flex-center mb-8 border border-white/10 shadow-2xl rotate-3"
-        >
-          <svg
-            width="48"
-            height="48"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            class="text-primary opacity-60"
+        <!-- 微信伪装布局：只留一个浅灰气泡剪影 + 一句人话 -->
+        <template v-if="themeStore.isWechatLayout">
+          <div
+            class="w-16 h-16 rounded-[6px] bg-[var(--accent-bg)] flex-center mb-4 opacity-60"
           >
-            <path
-              d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
-            ></path>
-          </svg>
-        </div>
-        <h3 class="text-xl font-bold text-primary-text mb-3">开启智能对话</h3>
-        <p class="text-sm opacity-50 leading-relaxed max-w-[260px]">
-          {{
-            sessionStore.currentSelectedItem
-              ? "当前话题暂无消息，开始发送第一条吧！"
-              : "请从左侧列表选择一个助手，或前往助手市场发现更多可能。"
-          }}
-        </p>
-        <button
-          v-if="!sessionStore.currentSelectedItem"
-          @click="layoutStore.toggleLeftDrawer()"
-          class="mt-10 px-8 py-4 bg-primary text-white rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 active:scale-95 transition-all"
-        >
-          立即开始
-        </button>
+            <svg
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              class="text-[var(--secondary-text)]"
+            >
+              <path
+                d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+              ></path>
+            </svg>
+          </div>
+          <p class="text-[13px] text-[var(--secondary-text)]">
+            {{
+              sessionStore.currentSelectedItem
+                ? "暂无聊天记录"
+                : "请从左侧选择联系人"
+            }}
+          </p>
+        </template>
+
+        <template v-else>
+          <div
+            class="w-24 h-24 rounded-[2.5rem] bg-gradient-to-br from-primary/20 to-blue-500/20 flex-center mb-8 border border-white/10 shadow-2xl rotate-3"
+          >
+            <svg
+              width="48"
+              height="48"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              class="text-primary opacity-60"
+            >
+              <path
+                d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+              ></path>
+            </svg>
+          </div>
+          <h3 class="text-xl font-bold text-primary-text mb-3">开启智能对话</h3>
+          <p class="text-sm opacity-50 leading-relaxed max-w-[260px]">
+            {{
+              sessionStore.currentSelectedItem
+                ? "当前话题暂无消息，开始发送第一条吧！"
+                : "请从左侧列表选择一个助手，或前往助手市场发现更多可能。"
+            }}
+          </p>
+          <button
+            v-if="!sessionStore.currentSelectedItem"
+            @click="layoutStore.toggleLeftDrawer()"
+            class="mt-10 px-8 py-4 bg-primary text-white rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 active:scale-95 transition-all"
+          >
+            立即开始
+          </button>
+        </template>
       </div>
 
       <div

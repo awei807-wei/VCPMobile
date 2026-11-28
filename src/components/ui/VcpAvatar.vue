@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watchEffect, computed } from "vue";
 import { useAvatarStore } from "../../core/stores/avatar";
+import { useThemeStore } from "../../core/stores/theme";
 
 const props = defineProps<{
   ownerType: "user" | "agent" | "group";
@@ -13,11 +14,19 @@ const props = defineProps<{
 }>();
 
 const avatarStore = useAvatarStore();
+const themeStore = useThemeStore();
 const avatarUrl = ref("");
 const imgExists = ref(false);
 
+/** 微信伪装布局下头像统一收成小圆角矩形，其余主题保持调用方传入的圆角。 */
+const effectiveRounded = computed(() =>
+  themeStore.isWechatLayout ? "rounded-[6px]" : props.rounded || "rounded-xl",
+);
+
 // 处理主色调边框
 const borderStyle = computed(() => {
+  // 微信布局不渲染彩色光圈与发光阴影，只保留极淡描边
+  if (themeStore.isWechatLayout) return {};
   const color = props.dominantColor;
   if (!color) return {};
   // 使用 color-mix 混合出 80% 不透明度的边框，使其更自然地融入背景
@@ -26,6 +35,15 @@ const borderStyle = computed(() => {
     borderColor: mixedColor,
     boxShadow: `0 0 8px ${color}33`, // 减弱发光
   };
+});
+
+const borderClass = computed(() => {
+  if (themeStore.isWechatLayout) {
+    return "border border-black/5 dark:border-white/5";
+  }
+  return props.dominantColor
+    ? "border"
+    : "border border-black/15 dark:border-white/20";
 });
 
 // 提取首字母用于 Fallback
@@ -92,9 +110,9 @@ const handleImgError = () => {
   <div
     :class="[
       size || 'w-10 h-10',
-      rounded || 'rounded-xl',
+      effectiveRounded,
       'relative overflow-hidden flex-shrink-0 flex items-center justify-center shadow-inner transition-all duration-500',
-      dominantColor ? 'border' : 'border border-black/15 dark:border-white/20',
+      borderClass,
     ]"
     :style="borderStyle"
   >

@@ -1,8 +1,25 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useNotificationStore } from "../../core/stores/notification";
+import { useChatStreamStore } from "../../core/stores/chatStreamStore";
+import { useThemeStore } from "../../core/stores/theme";
 
 const notificationStore = useNotificationStore();
+const streamStore = useChatStreamStore();
+const themeStore = useThemeStore();
+
+const isWechat = computed(() => themeStore.isWechatLayout);
+
+/**
+ * 微信伪装布局的副标题：只保留「对方正在输入...」与「未连接」两种人话，
+ * 空闲时返回空串，让顶栏像原生微信单聊一样只显示联系人名字。
+ */
+const wechatText = computed(() => {
+  if (streamStore.activeStreamingIds.size > 0) return "对方正在输入...";
+  if (notificationStore.vcpStatus.status !== "connected") return "未连接";
+  if (notificationStore.vcpCoreStatus.status === "error") return "未连接";
+  return "";
+});
 
 const statusConfig = computed(() => {
   // P0 优先级：VCPLog 未连接时，覆盖 Core 状态显示红灯
@@ -54,19 +71,27 @@ const statusConfig = computed(() => {
 
 <template>
   <div
+    v-if="!isWechat || wechatText"
     class="flex items-center gap-1.5 transition-all duration-300 select-none"
     :title="notificationStore.vcpCoreStatus.message"
   >
-    <!-- 呼吸灯 -->
-    <div
-      class="w-1.5 h-1.5 rounded-full transition-colors duration-500"
-      :class="[statusConfig.color, statusConfig.shadow, statusConfig.animate]"
-    ></div>
+    <template v-if="isWechat">
+      <span class="text-[11px] text-[var(--secondary-text)]">{{
+        wechatText
+      }}</span>
+    </template>
+    <template v-else>
+      <!-- 呼吸灯 -->
+      <div
+        class="w-1.5 h-1.5 rounded-full transition-colors duration-500"
+        :class="[statusConfig.color, statusConfig.shadow, statusConfig.animate]"
+      ></div>
 
-    <!-- 状态文字 -->
-    <span class="text-[9px] opacity-40 uppercase font-mono tracking-tighter">
-      {{ statusConfig.text }}
-    </span>
+      <!-- 状态文字 -->
+      <span class="text-[9px] opacity-40 uppercase font-mono tracking-tighter">
+        {{ statusConfig.text }}
+      </span>
+    </template>
   </div>
 </template>
 

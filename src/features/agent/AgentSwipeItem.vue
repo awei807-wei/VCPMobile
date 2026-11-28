@@ -1,7 +1,12 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import VcpAvatar from "../../components/ui/VcpAvatar.vue";
+import { useThemeStore } from "../../core/stores/theme";
 
 type OwnerType = "agent" | "group";
+
+const themeStore = useThemeStore();
+const isWechatLayout = computed(() => themeStore.isWechatLayout);
 
 defineProps<{
   ownerType: OwnerType;
@@ -25,9 +30,13 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="relative w-full drag-handle mb-2">
+  <div
+    class="relative w-full drag-handle"
+    :class="isWechatLayout ? 'mb-0' : 'mb-2'"
+  >
     <div
-      class="absolute inset-0 rounded-xl overflow-hidden z-0 pointer-events-none"
+      class="absolute inset-0 overflow-hidden z-0 pointer-events-none"
+      :class="isWechatLayout ? 'rounded-none' : 'rounded-xl'"
     >
       <div
         class="absolute inset-0 bg-black/10 dark:bg-white/10 flex items-center justify-start"
@@ -62,11 +71,21 @@ const emit = defineEmits<{
     </div>
 
     <div
-      class="relative p-3 glass-panel rounded-xl flex items-center gap-3 border shadow-sm cursor-pointer z-10 w-full active:opacity-75 origin-center transition-all duration-300"
+      class="relative flex items-center gap-3 cursor-pointer z-10 w-full origin-center transition-all duration-300"
       :class="[
-        selected
-          ? 'glass-panel-active'
-          : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5',
+        isWechatLayout
+          ? [
+              'px-3 py-2.5 border-b border-[var(--border-color)]',
+              selected
+                ? 'bg-[var(--accent-bg)]'
+                : 'active:bg-black/5 dark:active:bg-white/5',
+            ]
+          : [
+              'p-3 glass-panel rounded-xl border shadow-sm active:opacity-75',
+              selected
+                ? 'glass-panel-active'
+                : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5',
+            ],
         swipeActive && isDragging ? 'transition-none' : '',
       ]"
       :style="{ transform: `translateX(${swipeActive ? swipeX : 0}px)` }"
@@ -77,8 +96,13 @@ const emit = defineEmits<{
     >
       <div
         v-if="showUnread"
-        class="absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white dark:border-gray-900 z-10 shadow-sm shrink-0"
-        style="background: #ff6b6b"
+        class="absolute rounded-full border-2 border-white dark:border-gray-900 z-10 shadow-sm shrink-0"
+        :class="
+          isWechatLayout
+            ? '-top-0.5 -right-0.5 w-2.5 h-2.5'
+            : '-top-1 -right-1 w-3 h-3'
+        "
+        :style="{ background: isWechatLayout ? '#FA5151' : '#ff6b6b' }"
       ></div>
 
       <VcpAvatar
@@ -94,7 +118,9 @@ const emit = defineEmits<{
         <span class="font-bold text-sm truncate text-primary-text">{{
           name
         }}</span>
+        <!-- 微信布局不暴露模型名 / 群组运行模式这类技术信息 -->
         <span
+          v-if="!isWechatLayout"
           class="text-secondary-text opacity-80 truncate"
           :class="
             ownerType === 'group'

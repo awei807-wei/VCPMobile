@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useTarvenStore } from "../../../core/stores/tarvenStore";
+import { useThemeStore } from "../../../core/stores/theme";
 
 defineProps<{
   visible: boolean;
@@ -15,6 +17,8 @@ const emit = defineEmits<{
 }>();
 
 const tarvenStore = useTarvenStore();
+const themeStore = useThemeStore();
+const isWechatLayout = computed(() => themeStore.isWechatLayout);
 
 const openTarvenSelector = () => {
   if (tarvenStore.rules.some((rule) => rule.isEnabled)) {
@@ -44,21 +48,40 @@ const openTarvenSelector = () => {
     </button>
 
     <Transition name="pop-slide">
+      <!-- 微信布局：空闲且无内容时整颗按钮不渲染，只留左侧「+」 -->
       <button
+        v-if="!isWechatLayout || isGenerating || hasContent"
         :disabled="!isGenerating && (!hasContent || sendDisabled)"
         @click="emit('action')"
-        class="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-full shadow-sm active:scale-95 transition-all bg-blue-500 text-white disabled:opacity-40"
-        :class="{ 'bg-red-500': isGenerating }"
+        class="flex items-center justify-center active:scale-95 transition-all disabled:opacity-40"
+        :class="
+          isWechatLayout
+            ? [
+                'h-[34px] rounded-[4px] whitespace-nowrap',
+                isGenerating
+                  ? 'px-2.5 bg-black/10 dark:bg-white/10 text-[var(--primary-text)] text-[12px]'
+                  : 'px-3 bg-[#07C160] hover:bg-[#06AD56] text-white text-[13px] font-medium',
+              ]
+            : [
+                'min-w-[44px] min-h-[44px] rounded-full shadow-sm text-white',
+                isGenerating ? 'bg-red-500' : 'bg-blue-500',
+              ]
+        "
         :aria-label="isGenerating ? '停止生成' : '发送消息'"
       >
-        <div
-          v-if="isGenerating"
-          class="i-heroicons-stop-16-solid text-lg"
-        ></div>
-        <div
-          v-else
-          class="i-heroicons-paper-airplane text-[15px] -rotate-45 translate-x-0.2 -translate-y-0.2"
-        ></div>
+        <template v-if="isWechatLayout">
+          <span class="leading-none">{{ isGenerating ? "停止" : "发送" }}</span>
+        </template>
+        <template v-else>
+          <div
+            v-if="isGenerating"
+            class="i-heroicons-stop-16-solid text-lg"
+          ></div>
+          <div
+            v-else
+            class="i-heroicons-paper-airplane text-[15px] -rotate-45 translate-x-0.2 -translate-y-0.2"
+          ></div>
+        </template>
       </button>
     </Transition>
   </div>

@@ -1,3 +1,11 @@
+<script setup lang="ts">
+import { computed } from "vue";
+import { useThemeStore } from "../../../core/stores/theme";
+
+const themeStore = useThemeStore();
+const isWechat = computed(() => themeStore.isWechatLayout);
+</script>
+
 <template>
   <div class="flex items-center gap-2 py-1 px-2.5">
     <div class="thinking-dots flex gap-1">
@@ -5,7 +13,7 @@
       <span></span>
       <span></span>
     </div>
-    <span class="text-xs italic opacity-70">正在思考...</span>
+    <span v-if="!isWechat" class="text-xs italic opacity-70">正在思考...</span>
   </div>
 </template>
 

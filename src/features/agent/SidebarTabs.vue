@@ -1,7 +1,13 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { useThemeStore } from "../../core/stores/theme";
+
 defineProps<{
   activeTab: "agents" | "topics";
 }>();
+
+const themeStore = useThemeStore();
+const isWechatLayout = computed(() => themeStore.isWechatLayout);
 
 const emit = defineEmits<{
   (e: "update:activeTab", value: "agents" | "topics"): void;
@@ -21,7 +27,7 @@ const emit = defineEmits<{
           : 'text-secondary-text hover:text-primary-text hover:bg-black/5 dark:hover:bg-white/5'
       "
     >
-      助手
+      {{ isWechatLayout ? "联系人" : "助手" }}
     </button>
     <button
       @click="emit('update:activeTab', 'topics')"
@@ -32,7 +38,7 @@ const emit = defineEmits<{
           : 'text-secondary-text hover:text-primary-text hover:bg-black/5 dark:hover:bg-white/5'
       "
     >
-      话题
+      {{ isWechatLayout ? "记录" : "话题" }}
     </button>
   </div>
 </template>

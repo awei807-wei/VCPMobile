@@ -7,6 +7,7 @@ import { useChatSessionStore } from "../../core/stores/chatSessionStore";
 import { useLayoutStore } from "../../core/stores/layout";
 import { useOverlayStore } from "../../core/stores/overlay";
 import { useNotificationStore } from "../../core/stores/notification";
+import { useThemeStore } from "../../core/stores/theme";
 import {
   createTopicContextMenuItems,
   type TopicViewModel,
@@ -21,6 +22,8 @@ const sessionStore = useChatSessionStore();
 const layoutStore = useLayoutStore();
 const overlayStore = useOverlayStore();
 const notificationStore = useNotificationStore();
+const themeStore = useThemeStore();
+const isWechatLayout = computed(() => themeStore.isWechatLayout);
 const router = useRouter();
 
 const currentTopics = computed<TopicViewModel[]>(() => {
@@ -162,16 +165,26 @@ onUnmounted(() => {
       <div
         v-for="item in list"
         :key="`${item.data.ownerType}:${item.data.ownerId}:${item.data.id}`"
-        class="pb-2"
+        :class="isWechatLayout ? 'pb-0' : 'pb-2'"
         @click="selectTopic(item.data)"
         v-longpress="() => showTopicContextMenu(item.data)"
       >
         <div
-          class="relative p-3 glass-panel rounded-xl flex items-center gap-3 border shadow-sm cursor-pointer transition-[background-color,border-color,transform,box-shadow] duration-300 z-10 w-full active:scale-[0.98] origin-center"
+          class="relative flex items-center gap-3 cursor-pointer transition-[background-color,border-color,transform,box-shadow] duration-300 z-10 w-full origin-center"
           :class="[
-            isCurrentTopic(item.data)
-              ? 'glass-panel-active'
-              : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5',
+            isWechatLayout
+              ? [
+                  'px-3 py-2.5 border-b border-[var(--border-color)]',
+                  isCurrentTopic(item.data)
+                    ? 'bg-[var(--accent-bg)]'
+                    : 'active:bg-black/5 dark:active:bg-white/5',
+                ]
+              : [
+                  'p-3 glass-panel rounded-xl border shadow-sm active:scale-[0.98]',
+                  isCurrentTopic(item.data)
+                    ? 'glass-panel-active'
+                    : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5',
+                ],
           ]"
         >
           <!-- 未读小红点 / 计数角标 (基于桌面端主题同步) -->
@@ -233,7 +246,9 @@ onUnmounted(() => {
                 {{ item.data.msgCount }}
               </span>
             </div>
+            <!-- 微信布局不暴露内部 UUID -->
             <span
+              v-if="!isWechatLayout"
               class="text-[9px] text-secondary-text opacity-70 truncate font-mono tracking-tighter"
               >{{ item.data.id }}</span
             >
@@ -241,7 +256,7 @@ onUnmounted(() => {
 
           <!-- 解锁状态标签 (桌面端还原) -->
           <div
-            v-if="!item.data.locked"
+            v-if="!item.data.locked && !isWechatLayout"
             class="absolute bottom-1 right-2 flex items-center gap-[2px] bg-black/5 dark:bg-white/10 px-1 py-[1px] rounded text-[9px] text-yellow-600 dark:text-yellow-400 border border-yellow-600/20 dark:border-yellow-400/20"
           >
             <LockOpen :size="8" />

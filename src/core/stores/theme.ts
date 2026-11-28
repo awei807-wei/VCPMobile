@@ -1,12 +1,25 @@
 import { defineStore, acceptHMRUpdate } from "pinia";
-import { onScopeDispose, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type ThemeMode = "light" | "dark" | "system";
 
+/**
+ * 主题附带的布局变体。
+ *
+ * - `default`：原有布局（头像在气泡上方、圆角气泡、流光边框、壁纸背景）
+ * - `wechat`：微信伪装布局（头像与气泡左右并排、小尖角、去壁纸去流光）
+ *
+ * 变体会同步写入 `document.documentElement.dataset.vcpLayout`，
+ * 供主题 `extraCss` 用 `:root[data-vcp-layout="wechat"]` 精确作用域覆盖。
+ */
+export type ThemeLayoutVariant = "default" | "wechat";
+
 export interface ThemeInfo {
   fileName: string;
   name: string;
+  layoutVariant?: ThemeLayoutVariant;
+  defaultMode?: ThemeMode;
   variables: {
     dark: Record<string, string>;
     light: Record<string, string>;
@@ -32,7 +45,12 @@ const LEGACY_THEME_MAP: Record<string, string> = {
 };
 
 interface ThemeModule {
-  meta: { fileName: string; name: string };
+  meta: {
+    fileName: string;
+    name: string;
+    layoutVariant?: ThemeLayoutVariant;
+    defaultMode?: ThemeMode;
+  };
   variables: { dark: Record<string, string>; light: Record<string, string> };
   extraCss?: string;
 }
@@ -73,9 +91,17 @@ export const useThemeStore = defineStore("theme", () => {
   const availableThemes = ref<ThemeInfo[]>([]);
   const themeThumbnails = ref<Record<string, string>>({});
   const currentThemeInfo = ref<ThemeInfo | null>(null);
+  /** 当前主题声明的布局变体，驱动微信伪装布局的条件渲染。 */
+  const layoutVariant = ref<ThemeLayoutVariant>("default");
+  const isWechatLayout = computed(() => layoutVariant.value === "wechat");
   const lastAppliedVarKeys = ref<string[]>([]);
   let currentThemeModule: ThemeModule | null = null;
   let isInitializing = true;
+
+  const resolveIsDark = (targetMode: ThemeMode): boolean =>
+    targetMode === "dark" ||
+    (targetMode === "system" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches);
 
   const triggerThemeSwitchTransition = () => {
     if (isInitializing) return;
@@ -106,6 +132,8 @@ export const useThemeStore = defineStore("theme", () => {
         themes.push({
           fileName,
           name: mod.meta.name,
+          layoutVariant: mod.meta.layoutVariant,
+          defaultMode: mod.meta.defaultMode,
           variables: mod.variables,
         });
       } catch (e) {
@@ -140,7 +168,10 @@ export const useThemeStore = defineStore("theme", () => {
     themeThumbnails.value = thumbs;
   };
 
-  const applyThemeFile = async (fileName: string) => {
+  const applyThemeFile = async (
+    fileName: string,
+    options?: { fromUserPicker?: boolean },
+  ) => {
     try {
       triggerThemeSwitchTransition();
       currentTheme.value = fileName;
@@ -157,10 +188,31 @@ export const useThemeStore = defineStore("theme", () => {
       currentThemeInfo.value = {
         fileName,
         name: mod.meta.name,
+        layoutVariant: mod.meta.layoutVariant,
+        defaultMode: mod.meta.defaultMode,
         variables: mod.variables,
       };
 
-      const vars = isDarkResolved.value
+      // 布局变体写回根节点，作为 extraCss 与组件条件渲染的唯一真源。
+      const nextLayout: ThemeLayoutVariant =
+        mod.meta.layoutVariant || "default";
+      layoutVariant.value = nextLayout;
+      document.documentElement.dataset.vcpLayout = nextLayout;
+
+      // 仅「用户主动在主题选择器中选中」时才应用主题声明的默认明暗模式。
+      // 冷启动 initTheme 与后端推送都不带该标记，从而保留用户手动切换后的记忆。
+      if (
+        options?.fromUserPicker &&
+        mod.meta.defaultMode &&
+        mode.value !== mod.meta.defaultMode
+      ) {
+        mode.value = mod.meta.defaultMode;
+        // 直接抬高防抖水位，避免快速连续切主题时被 MODE_SWITCH_DEBOUNCE_MS 吞掉
+        lastModeSwitchAt.value = Date.now();
+      }
+
+      // 用目标模式重新解析明暗，避免刚切换模式时沿用上一套变量出现闪色
+      const vars = resolveIsDark(mode.value)
         ? mod.variables.dark
         : mod.variables.light;
       console.log(
@@ -201,10 +253,7 @@ export const useThemeStore = defineStore("theme", () => {
 
   const applyTheme = (newMode: ThemeMode) => {
     triggerThemeSwitchTransition();
-    const isDark =
-      newMode === "dark" ||
-      (newMode === "system" &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const isDark = resolveIsDark(newMode);
 
     isDarkResolved.value = isDark;
     document.documentElement.classList.toggle("dark", isDark);
@@ -277,7 +326,9 @@ export const useThemeStore = defineStore("theme", () => {
   // 我们通过拦截更新并重新执行 applyThemeFile 来实现样式的实时无刷新生效。
   // 通过 import.meta.hot.data.isHMR 区分首次初始化与后续热重载，防止在普通启动时与生命周期并行竞争
   if (import.meta.hot) {
-    if (import.meta.hot.data.isHMR) {
+    // 测试环境（vitest）与部分 SSR 场景下 hot.data 可能为 undefined，这里补一次兜底
+    const hotData = (import.meta.hot.data ?? {}) as Record<string, unknown>;
+    if (hotData.isHMR) {
       setTimeout(() => {
         console.log(
           "[themeStore] HMR reload triggered, re-applying theme:",
@@ -288,7 +339,7 @@ export const useThemeStore = defineStore("theme", () => {
         }
       }, 100);
     }
-    import.meta.hot.data.isHMR = true;
+    hotData.isHMR = true;
   }
 
   return {
@@ -298,6 +349,8 @@ export const useThemeStore = defineStore("theme", () => {
     currentThemeInfo,
     availableThemes,
     themeThumbnails,
+    layoutVariant,
+    isWechatLayout,
     fetchThemes,
     applyThemeFile,
     initTheme,

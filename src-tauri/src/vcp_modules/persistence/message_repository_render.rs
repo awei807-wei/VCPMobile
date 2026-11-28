@@ -7,7 +7,14 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
-pub const RENDERER_SCHEMA_VERSION: i64 = 2;
+/// 渲染缓存结构版本。
+///
+/// 任何会改变 `ContentBlock` 结构或解析语义的改动都必须 +1：缓存命中判定
+/// 同时比对 `content_hash` 与该版本号，版本不变则旧缓存会被直接复用，
+/// 历史消息永远不会按新解析器重渲染。
+///
+/// - v3：新增 `HostedToolCall`（服务端转发的原生 Function Call 展示块）。
+pub const RENDERER_SCHEMA_VERSION: i64 = 3;
 
 pub struct MessageRenderCompiler;
 

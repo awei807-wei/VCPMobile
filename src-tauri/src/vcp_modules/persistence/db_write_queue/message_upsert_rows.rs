@@ -1,3 +1,4 @@
+use crate::vcp_modules::message_repository::RENDERER_SCHEMA_VERSION;
 use crate::vcp_modules::sync_dto::MessageSyncDTO;
 use crate::vcp_modules::topic_types::TopicKey;
 use rusqlite::ToSql;
@@ -93,7 +94,7 @@ fn write_render_rows(
             "INSERT INTO render_cache (
                 owner_type, owner_id, topic_id, msg_id, render_content, updated_at,
                 content_hash, renderer_schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_type, owner_id, topic_id, msg_id) DO UPDATE SET
                 render_content = excluded.render_content, updated_at = excluded.updated_at,
                 content_hash = excluded.content_hash,
@@ -105,7 +106,8 @@ fn write_render_rows(
                 &message.id,
                 render,
                 updated_at,
-                content_hash
+                content_hash,
+                RENDERER_SCHEMA_VERSION
             ],
         )?;
     }

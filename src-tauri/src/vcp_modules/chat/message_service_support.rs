@@ -320,6 +320,7 @@ pub(crate) fn resolve_render_blocks(
 #[cfg(test)]
 mod tests {
     use super::{resolve_render_blocks, topic_key};
+    use crate::vcp_modules::content_parser::ContentBlock;
     use crate::vcp_modules::message_repository::{MessageRenderCompiler, RENDERER_SCHEMA_VERSION};
 
     #[test]
@@ -369,5 +370,35 @@ mod tests {
                 .contains("fresh body"));
             assert!(refresh.is_some());
         }
+    }
+
+    #[test]
+    fn stale_render_schema_reparses_hosted_tool_calls() {
+        // 旧缓存 schema 落后时必须失效重解析，否则历史消息永远拿不到 Function Call 卡片块。
+        let content = concat!(
+            "提问\n\n",
+            "<<<[HOSTED_TOOL_CALL]>>>\n",
+            r#"{"id":"call_1","type":"function","function":{"name":"vcptools","arguments":"{\"tool_name\":\"GitSearch\"}"}}"#,
+            "\n<<<[END_HOSTED_TOOL_CALL]>>>"
+        );
+        let stale = MessageRenderCompiler::serialize(&MessageRenderCompiler::compile("旧正文"))
+            .expect("serialize stale blocks");
+        let (blocks, refresh) = resolve_render_blocks(
+            content,
+            "hash-b",
+            Some(stale),
+            Some("hash-b"),
+            Some(RENDERER_SCHEMA_VERSION - 1),
+        );
+        let blocks: Vec<ContentBlock> =
+            serde_json::from_value(blocks.expect("resolved blocks")).expect("decode blocks");
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ContentBlock::ToolUse {
+                is_hosted_fc: true,
+                ..
+            }
+        )));
+        assert!(refresh.is_some());
     }
 }

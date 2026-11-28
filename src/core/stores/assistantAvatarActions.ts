@@ -21,7 +21,12 @@ async function saveAvatar(
       mimeType,
       imageData,
     });
-    const label = ownerType === "agent" ? "Agent" : ownerType === "group" ? "Group" : "用户";
+    const label =
+      ownerType === "agent"
+        ? "Agent"
+        : ownerType === "group"
+          ? "Group"
+          : "用户";
     context.notificationStore.addNotification({
       type: "success",
       title: `${label} 头像更新成功`,
@@ -30,7 +35,10 @@ async function saveAvatar(
     });
     return hash;
   } catch (error: any) {
-    console.error(`[AssistantStore] Failed to save avatar for ${ownerType}:`, error);
+    console.error(
+      `[AssistantStore] Failed to save avatar for ${ownerType}:`,
+      error,
+    );
     throw error;
   }
 }

@@ -1,14 +1,18 @@
 "use strict";
 
 const { removePreciseReverse } = require("./helper-stream-e2e-support.cjs");
-const { cleanupHarnessStateExpression } = require("./helper-stream-e2e-channel.cjs");
+const {
+  cleanupHarnessStateExpression,
+} = require("./helper-stream-e2e-channel.cjs");
 
 async function cleanupResources(context, dependencies = {}) {
   const issues = [];
   if (context.cdp && context.callbacksInstalled) {
     try {
       const cdp = context.cdp.cdp;
-      context.callbacksRemoved = await cdp.evaluate(cleanupHarnessStateExpression());
+      context.callbacksRemoved = await cdp.evaluate(
+        cleanupHarnessStateExpression(),
+      );
     } catch {
       issues.push("cdp_callbacks");
     }
@@ -20,7 +24,10 @@ async function cleanupResources(context, dependencies = {}) {
   }
   if (context.reverse) {
     try {
-      context.reverseRemoved = removePreciseReverse(context.reverse, dependencies);
+      context.reverseRemoved = removePreciseReverse(
+        context.reverse,
+        dependencies,
+      );
     } catch {
       issues.push("adb_reverse");
     }

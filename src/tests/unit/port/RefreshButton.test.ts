@@ -10,7 +10,9 @@ afterEach(() => {
   wrappers.splice(0).forEach((wrapper) => wrapper.unmount());
 });
 
-function mountRefreshButton(props: InstanceType<typeof RefreshButton>["$props"] = { label: "刷新" }) {
+function mountRefreshButton(
+  props: InstanceType<typeof RefreshButton>["$props"] = { label: "刷新" },
+) {
   const wrapper = mount(RefreshButton, { props });
   wrappers.push(wrapper);
   return wrapper;

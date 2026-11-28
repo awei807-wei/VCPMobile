@@ -22,7 +22,10 @@ let pendingReports = 0;
 function sanitizeText(value: string): string {
   const redacted = value
     .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi, "$1[REDACTED]")
-    .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]");
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)[^\s,;]+/gi,
+      "$1[REDACTED]",
+    );
   return redacted.length > MAX_TEXT_CHARS
     ? `${redacted.slice(0, MAX_TEXT_CHARS)}\n…[已截断]`
     : redacted;
@@ -60,7 +63,8 @@ function stackFromUnknown(value: unknown): string | undefined {
 }
 
 function describeConsoleArgument(value: unknown): string {
-  if (value instanceof Error) return sanitizeText(`${value.name}: ${value.message}`);
+  if (value instanceof Error)
+    return sanitizeText(`${value.name}: ${value.message}`);
   if (typeof value === "string") return sanitizeText(value);
   if (value === null || value === undefined) return String(value);
   return Object.prototype.toString.call(value);
@@ -124,7 +128,8 @@ export function installRuntimeDiagnostics(
     submitDiagnostic({
       level: "error",
       source: "console",
-      message: args.map(describeConsoleArgument).join(" ") || "空 console.error",
+      message:
+        args.map(describeConsoleArgument).join(" ") || "空 console.error",
       stack: stackFromUnknown(firstError),
       location: currentLocation(),
       windowLabel,

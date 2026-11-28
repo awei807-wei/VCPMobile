@@ -1,69 +1,100 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import SettingsActionWithStatus from '../../../components/settings/SettingsActionWithStatus.vue';
-import { useOverlayStore } from '../../../core/stores/overlay';
-import { withScreenKeep } from '../../../core/composables/useScreenKeeper';
+import { ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import SettingsActionWithStatus from "../../../components/settings/SettingsActionWithStatus.vue";
+import { useOverlayStore } from "../../../core/stores/overlay";
+import { withScreenKeep } from "../../../core/composables/useScreenKeeper";
 
 const overlayStore = useOverlayStore();
 
-const gcStatus = ref<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' });
-const cacheStatus = ref<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' });
-const diagnosticStatus = ref<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' });
+const gcStatus = ref<{
+  type: "success" | "error" | "loading" | null;
+  message: string;
+}>({ type: null, message: "" });
+const cacheStatus = ref<{
+  type: "success" | "error" | "loading" | null;
+  message: string;
+}>({ type: null, message: "" });
+const diagnosticStatus = ref<{
+  type: "success" | "error" | "loading" | null;
+  message: string;
+}>({ type: null, message: "" });
 
 const cleanupAttachments = async () => {
-  gcStatus.value = { type: 'loading', message: '正在深度扫描孤儿附件...' };
+  gcStatus.value = { type: "loading", message: "正在深度扫描孤儿附件..." };
   try {
-    const result = await withScreenKeep(() => invoke<string>('cleanup_orphaned_attachments'));
-    gcStatus.value = { type: 'success', message: result };
-    setTimeout(() => { gcStatus.value = { type: null, message: '' }; }, 5000);
+    const result = await withScreenKeep(() =>
+      invoke<string>("cleanup_orphaned_attachments"),
+    );
+    gcStatus.value = { type: "success", message: result };
+    setTimeout(() => {
+      gcStatus.value = { type: null, message: "" };
+    }, 5000);
   } catch (e: any) {
-    console.error('[Maintenance] cleanup_orphaned_attachments failed:', e);
-    const msg = typeof e === 'string' ? e : (e?.message ?? String(e));
-    gcStatus.value = { type: 'error', message: `清理失败: ${msg}` };
+    console.error("[Maintenance] cleanup_orphaned_attachments failed:", e);
+    const msg = typeof e === "string" ? e : (e?.message ?? String(e));
+    gcStatus.value = { type: "error", message: `清理失败: ${msg}` };
   }
 };
 
 const clearSystemCache = async () => {
-  cacheStatus.value = { type: 'loading', message: '正在清理系统与 WebView 缓存...' };
+  cacheStatus.value = {
+    type: "loading",
+    message: "正在清理系统与 WebView 缓存...",
+  };
   try {
-    const result = await withScreenKeep(() => invoke<string>('clear_webview_cache'));
-    cacheStatus.value = { type: 'success', message: result };
-    setTimeout(() => { cacheStatus.value = { type: null, message: '' }; }, 5000);
+    const result = await withScreenKeep(() =>
+      invoke<string>("clear_webview_cache"),
+    );
+    cacheStatus.value = { type: "success", message: result };
+    setTimeout(() => {
+      cacheStatus.value = { type: null, message: "" };
+    }, 5000);
   } catch (e: any) {
-    console.error('[Maintenance] clear_webview_cache failed:', e);
-    const msg = typeof e === 'string' ? e : (e?.message ?? String(e));
-    cacheStatus.value = { type: 'error', message: `清理失败: ${msg}` };
+    console.error("[Maintenance] clear_webview_cache failed:", e);
+    const msg = typeof e === "string" ? e : (e?.message ?? String(e));
+    cacheStatus.value = { type: "error", message: `清理失败: ${msg}` };
   }
 };
 
 const openRebuildSession = () => {
-  overlayStore.openRebuildSession('preRender');
+  overlayStore.openRebuildSession("preRender");
 };
 
 const exportDiagnostics = async () => {
-  diagnosticStatus.value = { type: 'loading', message: '正在收集崩溃、内存与运行日志...' };
+  diagnosticStatus.value = {
+    type: "loading",
+    message: "正在收集崩溃、内存与运行日志...",
+  };
   try {
-    const path = await invoke<string>('export_runtime_diagnostics');
+    const path = await invoke<string>("export_runtime_diagnostics");
     if (/Android/i.test(navigator.userAgent)) {
       try {
-        await invoke('plugin:vcp-mobile|share_file_native', {
+        await invoke("plugin:vcp-mobile|share_file_native", {
           path,
-          title: '分享 VCP Mobile 诊断包',
+          title: "分享 VCP Mobile 诊断包",
         });
       } catch (shareError) {
-        console.warn('[Maintenance] Native diagnostic sharing failed, falling back to open_file:', shareError);
-        await invoke('open_file', { path });
+        console.warn(
+          "[Maintenance] Native diagnostic sharing failed, falling back to open_file:",
+          shareError,
+        );
+        await invoke("open_file", { path });
       }
     } else {
-      await invoke('open_file', { path });
+      await invoke("open_file", { path });
     }
-    diagnosticStatus.value = { type: 'success', message: '诊断包已生成，可通过系统面板保存或分享。' };
-    setTimeout(() => { diagnosticStatus.value = { type: null, message: '' }; }, 8000);
+    diagnosticStatus.value = {
+      type: "success",
+      message: "诊断包已生成，可通过系统面板保存或分享。",
+    };
+    setTimeout(() => {
+      diagnosticStatus.value = { type: null, message: "" };
+    }, 8000);
   } catch (e: any) {
-    console.error('[Maintenance] export_runtime_diagnostics failed:', e);
-    const msg = typeof e === 'string' ? e : (e?.message ?? String(e));
-    diagnosticStatus.value = { type: 'error', message: `导出失败: ${msg}` };
+    console.error("[Maintenance] export_runtime_diagnostics failed:", e);
+    const msg = typeof e === "string" ? e : (e?.message ?? String(e));
+    diagnosticStatus.value = { type: "error", message: `导出失败: ${msg}` };
   }
 };
 </script>

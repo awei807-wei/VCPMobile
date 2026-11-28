@@ -25,18 +25,33 @@ function normalizeRuntimeStatus(status) {
   return {
     available: runtimeField(status, "available") === true,
     schemaValid: runtimeField(status, "schemaValid", "schema_valid") === true,
-    tokenizerValid: runtimeField(status, "tokenizerValid", "tokenizer_valid") === true,
+    tokenizerValid:
+      runtimeField(status, "tokenizerValid", "tokenizer_valid") === true,
     healthy: runtimeField(status, "healthy") === true,
     topicCount: safeInteger(runtimeField(status, "topicCount", "topic_count")),
-    liveTopicRowCount: safeInteger(runtimeField(status, "liveTopicRowCount", "live_topic_row_count")),
+    liveTopicRowCount: safeInteger(
+      runtimeField(status, "liveTopicRowCount", "live_topic_row_count"),
+    ),
     liveCount: safeInteger(runtimeField(status, "liveCount", "live_count")),
-    indexedCount: safeInteger(runtimeField(status, "indexedCount", "indexed_count")),
-    missingCount: safeInteger(runtimeField(status, "missingCount", "missing_count")),
-    orphanCount: safeInteger(runtimeField(status, "orphanCount", "orphan_count")),
-    duplicateCount: safeInteger(runtimeField(status, "duplicateCount", "duplicate_count")),
+    indexedCount: safeInteger(
+      runtimeField(status, "indexedCount", "indexed_count"),
+    ),
+    missingCount: safeInteger(
+      runtimeField(status, "missingCount", "missing_count"),
+    ),
+    orphanCount: safeInteger(
+      runtimeField(status, "orphanCount", "orphan_count"),
+    ),
+    duplicateCount: safeInteger(
+      runtimeField(status, "duplicateCount", "duplicate_count"),
+    ),
     staleCount: safeInteger(runtimeField(status, "staleCount", "stale_count")),
-    decodeErrorCount: safeInteger(runtimeField(status, "decodeErrorCount", "decode_error_count")),
-    decodedContentBytes: safeInteger(runtimeField(status, "decodedContentBytes", "decoded_content_bytes")),
+    decodeErrorCount: safeInteger(
+      runtimeField(status, "decodeErrorCount", "decode_error_count"),
+    ),
+    decodedContentBytes: safeInteger(
+      runtimeField(status, "decodedContentBytes", "decoded_content_bytes"),
+    ),
   };
 }
 
@@ -68,7 +83,8 @@ function runtimeFixtureChecks(status, semanticChecks) {
     messagesExact: dto.liveCount === 50_000,
     indexedExact: dto.indexedCount === 50_000,
     decodedContentMinimum:
-      dto.decodedContentBytes !== null && dto.decodedContentBytes >= 100 * 1024 * 1024,
+      dto.decodedContentBytes !== null &&
+      dto.decodedContentBytes >= 100 * 1024 * 1024,
     zeroIntegrityErrors: [
       dto.missingCount,
       dto.orphanCount,
@@ -90,7 +106,8 @@ async function runSemanticQueries(cdp) {
       const response = await cdp.invoke("search_messages_fts", {
         filter: { query, limit: 50, sort: "time" },
       });
-      const nonEmpty = Array.isArray(response?.results) && response.results.length > 0;
+      const nonEmpty =
+        Array.isArray(response?.results) && response.results.length > 0;
       checks.push({
         caseId,
         category,
@@ -99,7 +116,13 @@ async function runSemanticQueries(cdp) {
         passed: expectation === "empty" ? !nonEmpty : nonEmpty,
       });
     } catch {
-      checks.push({ caseId, category, expectation, nonEmpty: false, passed: false });
+      checks.push({
+        caseId,
+        category,
+        expectation,
+        nonEmpty: false,
+        passed: false,
+      });
     }
   }
   return checks;
@@ -133,7 +156,9 @@ async function readRustRuntimeStatus(options = {}) {
     closeError = error;
   }
   if (primary && closeError) {
-    throw new Error(`${primary.message || primary}；CDP cleanup 失败：${closeError.message}`);
+    throw new Error(
+      `${primary.message || primary}；CDP cleanup 失败：${closeError.message}`,
+    );
   }
   if (primary) throw primary;
   if (closeError) throw closeError;

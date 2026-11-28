@@ -12,19 +12,23 @@ export function useDocumentProcessor() {
    * Note: Word/PDF/Excel/PPT text extraction has been fully offloaded to the Rust backend for robust security and memory efficiency.
    */
   const processAttachment = async (
-    att: Attachment
+    att: Attachment,
   ): Promise<DocumentProcessResult | null> => {
     try {
       // For mobile, the file is already selected and its path is in internalPath or src
       const sourcePath = att.internalPath || att.src;
       if (!sourcePath) return null;
 
-      const ext = att.name.split(".").pop()?.toLowerCase() || '';
+      const ext = att.name.split(".").pop()?.toLowerCase() || "";
 
       // Only handle basic text types on the frontend if needed immediately
       if (["txt", "md", "csv", "json"].includes(ext)) {
         let fetchUrl = sourcePath;
-        if (!sourcePath.startsWith("http") && !sourcePath.startsWith("blob:") && !sourcePath.startsWith("data:")) {
+        if (
+          !sourcePath.startsWith("http") &&
+          !sourcePath.startsWith("blob:") &&
+          !sourcePath.startsWith("data:")
+        ) {
           fetchUrl = convertFileSrc(sourcePath.replace("file://", ""));
         }
 

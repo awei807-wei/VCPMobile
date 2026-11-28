@@ -15,8 +15,14 @@ function redactText(value, queries) {
   );
   return redactedQueries
     .replace(/\bemulator-\d+\b/gi, "[已脱敏设备标识]")
-    .replace(/(["']?serial["']?\s*[:=]\s*)(["'][^"']*["']|[^\s,;}]+)/gi, "$1[已脱敏设备标识]")
-    .replace(/(["']?query["']?\s*[:=]\s*)(["'][^"']*["']|[^\s,;}]+)/gi, "$1[已脱敏搜索词]")
+    .replace(
+      /(["']?serial["']?\s*[:=]\s*)(["'][^"']*["']|[^\s,;}]+)/gi,
+      "$1[已脱敏设备标识]",
+    )
+    .replace(
+      /(["']?query["']?\s*[:=]\s*)(["'][^"']*["']|[^\s,;}]+)/gi,
+      "$1[已脱敏搜索词]",
+    )
     .replace(/(ANDROID_SERIAL\s*[=:]\s*)[^\s,;}]+/gi, "$1[已脱敏设备标识]")
     .replace(/(^|\s)-s\s+[^\s]+/gi, "$1-s [已脱敏设备标识]")
     .replace(/\b[^\s"'`,;]*serial[^\s"'`,;]*\b/gi, "[已脱敏设备标识]")
@@ -86,10 +92,8 @@ const RULES = {
   boolean: (value) => (typeof value === "boolean" ? value : undefined),
   integer: (value) =>
     Number.isSafeInteger(value) && value >= 0 ? value : undefined,
-  signedInteger: (value) =>
-    Number.isSafeInteger(value) ? value : undefined,
-  number: (value) =>
-    Number.isFinite(value) && value >= 0 ? value : undefined,
+  signedInteger: (value) => (Number.isSafeInteger(value) ? value : undefined),
+  number: (value) => (Number.isFinite(value) && value >= 0 ? value : undefined),
   pid: (value) =>
     Number.isSafeInteger(value) && value > 0 ? value : undefined,
   text: (value, queries) =>

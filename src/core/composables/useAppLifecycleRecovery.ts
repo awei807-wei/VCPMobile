@@ -62,7 +62,9 @@ export function readHelperGeneration(recovery: RecoveryStatus): number | null {
 }
 
 /** 兼容 0010 之前的字段名；返回值只允许进入 helper resume 契约。 */
-export function readRecoveryGeneration(recovery: RecoveryStatus): number | null {
+export function readRecoveryGeneration(
+  recovery: RecoveryStatus,
+): number | null {
   return readHelperGeneration(recovery);
 }
 
@@ -77,10 +79,12 @@ export class SharedStreamEventTail {
     isActive: () => boolean,
     process: StreamEventProcessor,
   ): Promise<void> {
-    const run = this.tail.catch(() => undefined).then(async () => {
-      if (!isActive()) return;
-      await process(event);
-    });
+    const run = this.tail
+      .catch(() => undefined)
+      .then(async () => {
+        if (!isActive()) return;
+        await process(event);
+      });
     this.tail = run.catch(() => undefined);
     return run;
   }
@@ -90,13 +94,15 @@ export class SharedStreamEventTail {
     isActive: () => boolean,
     process: StreamEventProcessor,
   ): Promise<void> {
-    const run = this.tail.catch(() => undefined).then(async () => {
-      if (!isActive()) return;
-      for (const event of events) {
+    const run = this.tail
+      .catch(() => undefined)
+      .then(async () => {
         if (!isActive()) return;
-        await process(event);
-      }
-    });
+        for (const event of events) {
+          if (!isActive()) return;
+          await process(event);
+        }
+      });
     this.tail = run.catch(() => undefined);
     return run;
   }
@@ -116,7 +122,11 @@ export class RecoveryChannelController {
       const eventEpoch = this.epoch;
       if (this.disposed) return;
       void this.tail
-        .enqueue(event, () => !this.disposed && eventEpoch === this.epoch, process)
+        .enqueue(
+          event,
+          () => !this.disposed && eventEpoch === this.epoch,
+          process,
+        )
         .catch((error) => {
           console.error("[useAppLifecycle] 恢复流事件处理失败：", error);
         });
@@ -292,7 +302,13 @@ function buildHydrationEvents(
       recoveryGeneration,
     ),
   ];
-  appendRecoverySnapshot(events, generation, recovery, recoveryGeneration, context);
+  appendRecoverySnapshot(
+    events,
+    generation,
+    recovery,
+    recoveryGeneration,
+    context,
+  );
   const status = recovery.status?.toLowerCase();
   events.push(
     addRecoveryGeneration(
@@ -301,9 +317,12 @@ function buildHydrationEvents(
         messageId: generation.msgId,
         context,
         error:
-          status === "failed" ? recovery.error || "恢复记录标记为失败" : undefined,
+          status === "failed"
+            ? recovery.error || "恢复记录标记为失败"
+            : undefined,
         finishReason:
-          recovery.finishReason || (status === "failed" ? "error" : "completed"),
+          recovery.finishReason ||
+          (status === "failed" ? "error" : "completed"),
       },
       recoveryGeneration,
     ),

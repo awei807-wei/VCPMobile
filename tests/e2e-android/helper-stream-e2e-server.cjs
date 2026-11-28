@@ -1,7 +1,11 @@
 "use strict";
 
 const http = require("node:http");
-const { SSE_PATHS, codedError, validatePort } = require("./helper-stream-e2e-support.cjs");
+const {
+  SSE_PATHS,
+  codedError,
+  validatePort,
+} = require("./helper-stream-e2e-support.cjs");
 
 function endpointPath(url) {
   return SSE_PATHS.includes(url) ? url : null;
@@ -19,19 +23,25 @@ function safeRequestContract(request, url, body) {
     method: request.method === "POST" ? "POST" : "other",
     path: endpointPath(url) || "other",
     headers: {
-      authorizationPresent: typeof request.headers.authorization === "string" &&
+      authorizationPresent:
+        typeof request.headers.authorization === "string" &&
         request.headers.authorization.length > 0,
-      contentTypePresent: typeof request.headers["content-type"] === "string" &&
+      contentTypePresent:
+        typeof request.headers["content-type"] === "string" &&
         request.headers["content-type"].length > 0,
-      acceptSsePresent: typeof request.headers.accept === "string" &&
+      acceptSsePresent:
+        typeof request.headers.accept === "string" &&
         request.headers.accept.includes("text/event-stream"),
     },
     body: {
-      validJson: parsed !== null && typeof parsed === "object" && !Array.isArray(parsed),
+      validJson:
+        parsed !== null && typeof parsed === "object" && !Array.isArray(parsed),
       stream,
       requestIdPresent: typeof parsed?.requestId === "string",
       messagesArray: Array.isArray(parsed?.messages),
-      messageCount: Array.isArray(parsed?.messages) ? parsed.messages.length : null,
+      messageCount: Array.isArray(parsed?.messages)
+        ? parsed.messages.length
+        : null,
       modelPresent: typeof parsed?.model === "string",
     },
   };
@@ -39,11 +49,15 @@ function safeRequestContract(request, url, body) {
 
 function waitForEvent(waiters, values, name, timeoutMs) {
   if (values.has(name)) return Promise.resolve(values.get(name));
-  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15_000;
+  const timeout =
+    Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15_000;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       const list = waiters.get(name) || [];
-      waiters.set(name, list.filter((item) => item !== settle));
+      waiters.set(
+        name,
+        list.filter((item) => item !== settle),
+      );
       reject(codedError("SSE_EVENT_TIMEOUT", "SSE 事件等待超时"));
     }, timeout);
     const settle = (value) => {
@@ -85,7 +99,9 @@ function readRequestBody(request, maxBytes) {
       chunks.push(chunk);
     });
     request.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    request.once("error", () => reject(codedError("SSE_REQUEST_ERROR", "SSE 请求读取失败")));
+    request.once("error", () =>
+      reject(codedError("SSE_REQUEST_ERROR", "SSE 请求读取失败")),
+    );
   });
 }
 
@@ -98,7 +114,8 @@ function createSessionController(waiters, eventValues) {
     emitEvent(waiters, eventValues, "cancelled", true);
   }
   function sendB(session) {
-    if (!session || session.ended || session.cancelled || session.bSent) return false;
+    if (!session || session.ended || session.cancelled || session.bSent)
+      return false;
     session.response.write(sseChunk("B"));
     session.bSent = true;
     emitEvent(waiters, eventValues, "b", true);
@@ -125,9 +142,16 @@ function createSessionController(waiters, eventValues) {
   };
 }
 
-function createRequestHandler(maxBytes, contracts, waiters, eventValues, controller) {
+function createRequestHandler(
+  maxBytes,
+  contracts,
+  waiters,
+  eventValues,
+  controller,
+) {
   async function handleRequest(request, response) {
-    const url = typeof request.url === "string" ? request.url.split("?", 1)[0] : "";
+    const url =
+      typeof request.url === "string" ? request.url.split("?", 1)[0] : "";
     const body = await readRequestBody(request, maxBytes);
     const contract = safeRequestContract(request, url, body);
     contracts.push(contract);
@@ -189,11 +213,13 @@ function startLoopbackSseServer(options = {}) {
       port,
       baseUrl: `http://127.0.0.1:${port}`,
       contracts,
-      waitFor: (name, timeoutMs) => waitForEvent(waiters, eventValues, name, timeoutMs),
+      waitFor: (name, timeoutMs) =>
+        waitForEvent(waiters, eventValues, name, timeoutMs),
       releaseB: controller.releaseB,
       finish: () => controller.sendDone(controller.state.active),
       isCancelled: () => !controller.state.active && contracts.length > 0,
-      snapshotContracts: () => contracts.map((contract) => structuredClone(contract)),
+      snapshotContracts: () =>
+        contracts.map((contract) => structuredClone(contract)),
       async close() {
         if (closed) return;
         closed = true;

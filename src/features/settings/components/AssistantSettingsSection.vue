@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { useSettingsStore, type AppSettings } from "../../../core/stores/settings";
+import {
+  useSettingsStore,
+  type AppSettings,
+} from "../../../core/stores/settings";
 import { useAssistantStore } from "../../../core/stores/assistant";
 import SettingsSwitch from "../../../components/settings/SettingsSwitch.vue";
 import SettingsRow from "../../../components/settings/SettingsRow.vue";
@@ -20,9 +23,11 @@ const hasOverlayPermission = ref(false);
 
 const checkPermission = async () => {
   try {
-    const status = await invoke<{ overlay: boolean }>("plugin:vcp-mobile|check_all_permissions");
+    const status = await invoke<{ overlay: boolean }>(
+      "plugin:vcp-mobile|check_all_permissions",
+    );
     hasOverlayPermission.value = status.overlay;
-    
+
     // 如果没有系统权限，但设置里是开启的，则重置设置状态并隐藏悬浮球
     if (!status.overlay && props.settings.enableAssistant) {
       props.settings.enableAssistant = false;
@@ -41,7 +46,10 @@ const handleToggle = async (val: boolean) => {
       try {
         await invoke("plugin:vcp-mobile|request_overlay_permission");
       } catch (e) {
-        console.error("[AssistantSettings] Failed to request overlay permission:", e);
+        console.error(
+          "[AssistantSettings] Failed to request overlay permission:",
+          e,
+        );
       }
       props.settings.enableAssistant = false;
       return;
@@ -72,7 +80,7 @@ watch(
   () => props.settings.assistantAgentId,
   () => {
     emit("save-request");
-  }
+  },
 );
 
 const handleLifecycleEvent = async (e: any) => {
@@ -82,13 +90,19 @@ const handleLifecycleEvent = async (e: any) => {
       try {
         await assistantStore.fetchAgents();
       } catch (error) {
-        console.warn("[AssistantSettings] Failed to refresh agents on resume:", error);
+        console.warn(
+          "[AssistantSettings] Failed to refresh agents on resume:",
+          error,
+        );
       }
       try {
         await invoke("plugin:vcp-mobile|toggle_floating_ball", { show: true });
         await invoke("reconcile_local_server_cmd", { enable: true });
       } catch (error) {
-        console.error("[AssistantSettings] Failed to restore assistant services:", error);
+        console.error(
+          "[AssistantSettings] Failed to restore assistant services:",
+          error,
+        );
       }
     }
   }
@@ -96,19 +110,25 @@ const handleLifecycleEvent = async (e: any) => {
 
 onMounted(async () => {
   await checkPermission();
-  
+
   // 若用户手动设置了开启且有权限，则在 mounted 时确保拉起悬浮球并懒加载 Agent 列表
   if (props.settings.enableAssistant && hasOverlayPermission.value) {
     try {
       await assistantStore.fetchAgents();
     } catch (error) {
-      console.warn("[AssistantSettings] Failed to preload agents on mount:", error);
+      console.warn(
+        "[AssistantSettings] Failed to preload agents on mount:",
+        error,
+      );
     }
     try {
       await invoke("plugin:vcp-mobile|toggle_floating_ball", { show: true });
       await invoke("reconcile_local_server_cmd", { enable: true });
     } catch (error) {
-      console.error("[AssistantSettings] Failed to start assistant services:", error);
+      console.error(
+        "[AssistantSettings] Failed to start assistant services:",
+        error,
+      );
     }
   }
 
@@ -129,7 +149,10 @@ onUnmounted(() => {
       description="在其他应用上方显示悬浮球，随时唤起划词助手"
     >
       <template #title-suffix>
-        <span class="ml-2 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/25 select-none">Beta</span>
+        <span
+          class="ml-2 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/25 select-none"
+          >Beta</span
+        >
       </template>
       <template #action>
         <SettingsSwitch

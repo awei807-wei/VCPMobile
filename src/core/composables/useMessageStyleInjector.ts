@@ -1,5 +1,3 @@
-
-
 const injectedStyles = new Map<string, string>();
 const rawCssCache = new Map<string, string>();
 

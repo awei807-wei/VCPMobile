@@ -149,10 +149,7 @@ test("完整报告只保留字符串 query validation failure，并按查询上�
       `查询校验失败：${secret}`,
     ],
   };
-  const report = buildReport(
-    parseArgs(["--query", secret]),
-    state,
-  );
+  const report = buildReport(parseArgs(["--query", secret]), state);
 
   assert.deepEqual(report.warm.queryValidation.failures, [
     "查询校验失败：[已脱敏搜索词]",
@@ -246,7 +243,12 @@ function collisionState(query) {
         maxMs: 2,
         meanMs: 2,
       },
-      queryValidation: { applicable: false, valid: true, cases: [], failures: [] },
+      queryValidation: {
+        applicable: false,
+        valid: true,
+        cases: [],
+        failures: [],
+      },
     },
     cold: { samples: [sample], stats: { sampleCount: 1, p95Ms: 3 } },
     rebuild: {

@@ -1,4 +1,7 @@
-import type { ParsedStreamEvent, StreamState } from "./chatStreamProcessorSupport";
+import type {
+  ParsedStreamEvent,
+  StreamState,
+} from "./chatStreamProcessorSupport";
 import {
   getMessageTombstones,
   getTopicTombstones,
@@ -20,7 +23,10 @@ function sameConversation(
   );
 }
 
-function hasActiveReceiptForTopic(state: StreamState, topicKey: string): boolean {
+function hasActiveReceiptForTopic(
+  state: StreamState,
+  topicKey: string,
+): boolean {
   const records = state.unreadMessageReceiptRecords;
   if (!records) return false;
   for (const messageKey of state.streamGenerations.keys()) {
@@ -71,10 +77,7 @@ export function cancelUnreadReceipt(
   identity: ConversationIdentity,
   messageId: string,
 ): void {
-  cancelUnreadReceiptKey(
-    state,
-    messageIdentityKey({ ...identity, messageId }),
-  );
+  cancelUnreadReceiptKey(state, messageIdentityKey({ ...identity, messageId }));
 }
 
 export function cancelUnreadReceiptsForTopic(

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { VcpNotification } from '../../core/stores/notification';
-import { format } from 'date-fns';
-import { useNotificationStore } from '../../core/stores/notification';
-import { useNotificationPresentation } from './composables/useNotificationPresentation';
-import { ref } from 'vue';
+import type { VcpNotification } from "../../core/stores/notification";
+import { format } from "date-fns";
+import { useNotificationStore } from "../../core/stores/notification";
+import { useNotificationPresentation } from "./composables/useNotificationPresentation";
+import { ref } from "vue";
 
 const props = defineProps<{
   item: VcpNotification;
@@ -16,11 +16,16 @@ const emit = defineEmits<{
 }>();
 
 const store = useNotificationStore();
-const { getIcon, getTypeColor, getActionButtonClass } = useNotificationPresentation();
+const { getIcon, getTypeColor, getActionButtonClass } =
+  useNotificationPresentation();
 
-const reasonText = ref('');
+const reasonText = ref("");
 
-const handleAction = (action: { label: string; value: boolean; color: string }) => {
+const handleAction = (action: {
+  label: string;
+  value: boolean;
+  color: string;
+}) => {
   store.executeAction(props.item.id, action, reasonText.value);
 };
 
@@ -55,7 +60,8 @@ const onTouchMove = (e: TouchEvent) => {
   if (!hasDeterminedDirection) {
     const absX = Math.abs(deltaX);
     const absY = Math.abs(deltaY);
-    if (absX > 15 || absY > 15) { // 提高手势判定阈值，防止在滑动浏览历史时出现过敏性误触移位
+    if (absX > 15 || absY > 15) {
+      // 提高手势判定阈值，防止在滑动浏览历史时出现过敏性误触移位
       hasDeterminedDirection = true;
       if (absY / absX > 0.577) {
         isVerticalScroll = true;
@@ -80,7 +86,7 @@ const onTouchEnd = () => {
 
   if (swipeX.value > SWIPE_THRESHOLD) {
     if (navigator.vibrate) navigator.vibrate(40);
-    emit('remove');
+    emit("remove");
   } else {
     swipeX.value = 0;
   }

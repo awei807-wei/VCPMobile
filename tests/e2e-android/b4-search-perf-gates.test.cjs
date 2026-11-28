@@ -212,7 +212,9 @@ test("报告只输出查询 case evidence，不泄露默认或自定义原词", 
     sampleWith({ query: secret }),
     {
       warm: {
-        warmups: [{ query: secret, ok: false, resultCount: null, error: secret }],
+        warmups: [
+          { query: secret, ok: false, resultCount: null, error: secret },
+        ],
         samples: [{ query: secret, index: 1, ok: true, durationMs: 1 }],
         queryValidation: {
           valid: true,
@@ -249,7 +251,9 @@ test("报告只输出查询 case evidence，不泄露默认或自定义原词", 
     assert.equal(defaultJson.includes(`\"query\":\"${spec}\"`), false);
   }
   assert.deepEqual(
-    defaults.configuration.querySemanticExpectations.map((item) => item.category),
+    defaults.configuration.querySemanticExpectations.map(
+      (item) => item.category,
+    ),
     ["中文1字", "中文2字", "中文3+字", "英文", "特殊字符", "确定空结果"],
   );
 });
@@ -306,17 +310,25 @@ test("多样本中单个坏样本也不能被其他正常样本掩盖", () => {
   const report = buildReport(REPORT_OPTIONS, {
     ...reportFor(sampleWith()),
     cold: {
-      samples: [sampleWith(), sampleWith({ index: 2, processRestarted: false })],
+      samples: [
+        sampleWith(),
+        sampleWith({ index: 2, processRestarted: false }),
+      ],
       stats: reportFor(sampleWith()).cold.stats,
     },
   });
   assert.equal(report.ok, false);
   assert.equal(report.checks.coldSamplesProcessRestarted, false);
   assert.ok(
-    report.failures.some((failure) => failure.message.includes("样本 #1")) === false,
+    report.failures.some((failure) => failure.message.includes("样本 #1")) ===
+      false,
   );
   assert.ok(
-    report.failures.some((failure) => failure.message.includes("样本 #2") && failure.message.includes("processRestarted")),
+    report.failures.some(
+      (failure) =>
+        failure.message.includes("样本 #2") &&
+        failure.message.includes("processRestarted"),
+    ),
   );
 });
 
@@ -357,7 +369,10 @@ test("最终报告 checks 对所有矛盾 RSS 标志均 fail-closed", () => {
     ["metric 非 rss", (reading) => (reading.metric = "pss")],
     ["bytes 非有限", (reading) => (reading.bytes = Infinity)],
     ["bytes 为小数", (reading) => (reading.bytes = 0.5)],
-    ["bytes 超出安全整数", (reading) => (reading.bytes = Number.MAX_SAFE_INTEGER + 1)],
+    [
+      "bytes 超出安全整数",
+      (reading) => (reading.bytes = Number.MAX_SAFE_INTEGER + 1),
+    ],
     ["PID 缺失", (reading) => delete reading.pid],
   ];
   for (const [label, mutate] of invalidCases) {

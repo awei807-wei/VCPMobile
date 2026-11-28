@@ -14,7 +14,11 @@ export function getAttachmentType(attachment: Attachment): AttachmentType {
 export function canPreviewAttachment(attachment: Attachment): boolean {
   if (isDesktopOnlyAttachment(attachment)) return false;
   const type = getAttachmentType(attachment);
-  if ([AttachmentType.IMAGE, AttachmentType.VIDEO, AttachmentType.TEXT].includes(type)) {
+  if (
+    [AttachmentType.IMAGE, AttachmentType.VIDEO, AttachmentType.TEXT].includes(
+      type,
+    )
+  ) {
     return true;
   }
   if (type === AttachmentType.AUDIO && attachment.src) return true;
@@ -23,7 +27,9 @@ export function canPreviewAttachment(attachment: Attachment): boolean {
   return false;
 }
 
-export function getPreviewComponentFor(attachment: Attachment): Component | null {
+export function getPreviewComponentFor(
+  attachment: Attachment,
+): Component | null {
   if (isDesktopOnlyAttachment(attachment)) return null;
   return AttachmentRegistry.getComponent(getAttachmentType(attachment));
 }
@@ -44,20 +50,27 @@ export function getFileExtension(attachment: Attachment): string {
 }
 
 function safePreviewLength(maxLength: number): number {
-  if (Number.isNaN(maxLength) || maxLength === Number.NEGATIVE_INFINITY) return 0;
+  if (Number.isNaN(maxLength) || maxLength === Number.NEGATIVE_INFINITY)
+    return 0;
   if (maxLength === Number.POSITIVE_INFINITY) return MAX_PREVIEW_TEXT_LENGTH;
   return Math.min(MAX_PREVIEW_TEXT_LENGTH, Math.max(0, Math.floor(maxLength)));
 }
 
-export function getPreviewText(attachment: Attachment, maxLength = 100): string {
-  if (!attachment.extractedText || isDesktopOnlyAttachment(attachment)) return "";
+export function getPreviewText(
+  attachment: Attachment,
+  maxLength = 100,
+): string {
+  if (!attachment.extractedText || isDesktopOnlyAttachment(attachment))
+    return "";
   const length = safePreviewLength(maxLength);
   if (length === 0) return "";
   const text = attachment.extractedText;
   if (text.length <= length) return text;
   const truncated = text.substring(0, length);
   const lastSpace = truncated.lastIndexOf(" ");
-  return lastSpace > 0 ? `${truncated.substring(0, lastSpace)}...` : `${truncated}...`;
+  return lastSpace > 0
+    ? `${truncated.substring(0, lastSpace)}...`
+    : `${truncated}...`;
 }
 
 export function hasThumbnail(attachment: Attachment): boolean {

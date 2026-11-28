@@ -1,10 +1,6 @@
 import { ref } from "vue";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  channelInstances,
-  invokeMock,
-  mockInvoke,
-} from "@/tests/mocks/tauri";
+import { channelInstances, invokeMock, mockInvoke } from "@/tests/mocks/tauri";
 import {
   createTopicListActions,
   type TopicStoreContext,
@@ -19,7 +15,11 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function makeTopic(id: string, ownerId: string, ownerType: "agent" | "group"): Topic {
+function makeTopic(
+  id: string,
+  ownerId: string,
+  ownerType: "agent" | "group",
+): Topic {
   return {
     id,
     ownerId,

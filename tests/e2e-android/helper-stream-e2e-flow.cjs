@@ -16,10 +16,17 @@ const {
   readHarnessState,
   waitForState,
 } = require("./helper-stream-e2e-channel.cjs");
-const { sanitizeEvidence, sanitizeResult, writeEvidence } = require("./helper-stream-e2e-evidence.cjs");
+const {
+  sanitizeEvidence,
+  sanitizeResult,
+  writeEvidence,
+} = require("./helper-stream-e2e-evidence.cjs");
 const { startLoopbackSseServer } = require("./helper-stream-e2e-server.cjs");
 const { cleanupResources } = require("./helper-stream-e2e-cleanup.cjs");
-const { connectAndroidCdp, DEFAULT_CDP_TIMEOUT_MS } = require("./wire14/android-cdp.cjs");
+const {
+  connectAndroidCdp,
+  DEFAULT_CDP_TIMEOUT_MS,
+} = require("./wire14/android-cdp.cjs");
 const { ensureSingleDevice, runAdb } = require("./scripts/adb-env.cjs");
 
 function buildContext(identity) {
@@ -52,16 +59,21 @@ function summarizeRecovery(value, identity) {
     indexPresent: Number.isSafeInteger(index) && index >= 0,
     helperGenerationPresent: Number.isSafeInteger(generation) && generation > 0,
     helperGeneration: generation,
-    identityMatches: context === undefined || (
-      context?.ownerType === identity.ownerType &&
-      context?.ownerId === identity.ownerId && context?.topicId === identity.topicId
-    ),
+    identityMatches:
+      context === undefined ||
+      (context?.ownerType === identity.ownerType &&
+        context?.ownerId === identity.ownerId &&
+        context?.topicId === identity.topicId),
   };
 }
 
 function assertRecovery(value, summary) {
-  if (summary.status !== "streaming" || !summary.contentMatchesA ||
-      !summary.indexPresent || !summary.helperGenerationPresent) {
+  if (
+    summary.status !== "streaming" ||
+    !summary.contentMatchesA ||
+    !summary.indexPresent ||
+    !summary.helperGenerationPresent
+  ) {
     throw codedError("RECOVERY_CONTRACT_FAILED", "恢复响应契约失败");
   }
   if (value?.helperGeneration !== summary.helperGeneration) {
@@ -70,9 +82,13 @@ function assertRecovery(value, summary) {
 }
 
 function matchingActiveRow(rows, identity, messageId) {
-  return (Array.isArray(rows) ? rows : []).some((row) =>
-    row?.msgId === messageId && row?.ownerType === identity.ownerType &&
-    row?.ownerId === identity.ownerId && row?.topicId === identity.topicId);
+  return (Array.isArray(rows) ? rows : []).some(
+    (row) =>
+      row?.msgId === messageId &&
+      row?.ownerType === identity.ownerType &&
+      row?.ownerId === identity.ownerId &&
+      row?.topicId === identity.topicId,
+  );
 }
 
 async function deleteGeneratedRecord(cdp, identity, messageId) {
@@ -110,9 +126,13 @@ async function prepareRuntime(options, deps, context) {
   assertDebugPackage(DEBUG_PACKAGE);
   deps.ensureDevice();
   context.server = await deps.server();
-  context.reverse = addPreciseReverse(context.server.port, { runAdb: deps.runAdb });
+  context.reverse = addPreciseReverse(context.server.port, {
+    runAdb: deps.runAdb,
+  });
   if (options.launch) {
-    deps.runAdb(["shell", "monkey", "-p", DEBUG_PACKAGE, "1"], { allowFailure: false });
+    deps.runAdb(["shell", "monkey", "-p", DEBUG_PACKAGE, "1"], {
+      allowFailure: false,
+    });
   }
   context.cdp = await deps.connect(DEFAULT_CDP_TIMEOUT_MS);
   await installHarnessState(context.cdp.cdp);
@@ -130,51 +150,87 @@ function buildStreamPayload(server, identity, messageId) {
   };
 }
 
-async function startOriginalStream(options, context, identity, messageId, expected) {
+async function startOriginalStream(
+  options,
+  context,
+  identity,
+  messageId,
+  expected,
+) {
   const payload = buildStreamPayload(context.server, identity, messageId);
-  await invokeChannel(context.cdp.cdp, "original", "sendToVCP", { payload }, expected);
+  await invokeChannel(
+    context.cdp.cdp,
+    "original",
+    "sendToVCP",
+    { payload },
+    expected,
+  );
   await context.server.waitFor("accepted", options.timeoutMs);
   await context.server.waitFor("a", options.timeoutMs);
   await waitForState(
     context.cdp.cdp,
-    (state) => state.channels.original?.some((event) => event.type === "aurora"),
+    (state) =>
+      state.channels.original?.some((event) => event.type === "aurora"),
     options.timeoutMs,
     "START_STREAM_TIMEOUT",
   );
 }
 
-async function recoverAndResume(options, context, identity, messageId, expected) {
-  const recoveryValue = await context.cdp.cdp.invoke("recover_active_generation", {
-    msgId: messageId,
-    ownerId: identity.ownerId,
-    ownerType: identity.ownerType,
-    topicId: identity.topicId,
-  });
+async function recoverAndResume(
+  options,
+  context,
+  identity,
+  messageId,
+  expected,
+) {
+  const recoveryValue = await context.cdp.cdp.invoke(
+    "recover_active_generation",
+    {
+      msgId: messageId,
+      ownerId: identity.ownerId,
+      ownerType: identity.ownerType,
+      topicId: identity.topicId,
+    },
+  );
   const recovery = summarizeRecovery(recoveryValue, identity);
   assertRecovery(recoveryValue, recovery);
-  await invokeChannel(context.cdp.cdp, "resume", "resume_stream", {
-    msgId: messageId,
-    topicId: identity.topicId,
-    ownerId: identity.ownerId,
-    ownerType: identity.ownerType,
-    expectedGeneration: recovery.helperGeneration,
-    lastEventIndex: -1,
-  }, expected);
+  await invokeChannel(
+    context.cdp.cdp,
+    "resume",
+    "resume_stream",
+    {
+      msgId: messageId,
+      topicId: identity.topicId,
+      ownerId: identity.ownerId,
+      ownerType: identity.ownerType,
+      expectedGeneration: recovery.helperGeneration,
+      lastEventIndex: -1,
+    },
+    expected,
+  );
   await waitForState(
     context.cdp.cdp,
-    (state) => (state.channels.resume || []).some((event) => event.type === "aurora"),
+    (state) =>
+      (state.channels.resume || []).some((event) => event.type === "aurora"),
     options.timeoutMs,
     "RESUME_REPLAY_TIMEOUT",
   );
   return recovery;
 }
 
-async function observeResumeAndInterrupt(options, context, identity, messageId) {
+async function observeResumeAndInterrupt(
+  options,
+  context,
+  identity,
+  messageId,
+) {
   context.server.releaseB();
   await context.server.waitFor("b", options.timeoutMs);
   const resumedState = await waitForState(
     context.cdp.cdp,
-    (state) => (state.channels.resume || []).filter((event) => event.type === "aurora").length > 1,
+    (state) =>
+      (state.channels.resume || []).filter((event) => event.type === "aurora")
+        .length > 1,
     options.timeoutMs,
     "RESUME_STREAM_TIMEOUT",
   );
@@ -187,7 +243,9 @@ async function observeResumeAndInterrupt(options, context, identity, messageId) 
   await context.server.waitFor("cancelled", options.timeoutMs);
   await waitForState(
     context.cdp.cdp,
-    (state) => state.results.original?.settled === true && state.results.resume?.settled === true,
+    (state) =>
+      state.results.original?.settled === true &&
+      state.results.resume?.settled === true,
     options.timeoutMs,
     "INTERRUPT_SETTLEMENT_TIMEOUT",
   );
@@ -200,12 +258,21 @@ async function observeResumeAndInterrupt(options, context, identity, messageId) 
 
 function recordInterruptResults(raw, observation) {
   const resumeEvents = observation.resumeEvents;
-  const originalResult = sanitizeResult(observation.settled.results.original?.result || {});
-  const resumeResult = sanitizeResult(observation.settled.results.resume?.result || {});
+  const originalResult = sanitizeResult(
+    observation.settled.results.original?.result || {},
+  );
+  const resumeResult = sanitizeResult(
+    observation.settled.results.resume?.result || {},
+  );
   raw.phases.resume = {
-    replayObserved: resumeEvents.some((event) => event.type === "aurora" && event.hasChunk),
-    laterEventObserved: resumeEvents.filter((event) => event.type === "aurora").length > 1,
-    identityMatches: resumeEvents.length > 0 && resumeEvents.every((event) => event.identityMatches),
+    replayObserved: resumeEvents.some(
+      (event) => event.type === "aurora" && event.hasChunk,
+    ),
+    laterEventObserved:
+      resumeEvents.filter((event) => event.type === "aurora").length > 1,
+    identityMatches:
+      resumeEvents.length > 0 &&
+      resumeEvents.every((event) => event.identityMatches),
     result: resumeResult,
   };
   raw.phases.interrupt = {
@@ -217,12 +284,14 @@ function recordInterruptResults(raw, observation) {
 }
 
 async function finalizeRun(context, identity, messageId, raw) {
-  const finalValue = await context.cdp.cdp.invoke("recover_active_generation", {
-    msgId: messageId,
-    ownerId: identity.ownerId,
-    ownerType: identity.ownerType,
-    topicId: identity.topicId,
-  }).catch(() => ({ status: "failed" }));
+  const finalValue = await context.cdp.cdp
+    .invoke("recover_active_generation", {
+      msgId: messageId,
+      ownerId: identity.ownerId,
+      ownerType: identity.ownerType,
+      topicId: identity.topicId,
+    })
+    .catch(() => ({ status: "failed" }));
   const activeRows = await context.cdp.cdp.invoke("get_active_generations");
   const recoveryStatus = finalValue?.status || null;
   raw.phases.final = {
@@ -230,9 +299,14 @@ async function finalizeRun(context, identity, messageId, raw) {
     nonStreaming: recoveryStatus !== "streaming",
     activeRowAbsent: !matchingActiveRow(activeRows, identity, messageId),
   };
-  if (!raw.phases.interrupt.success || !raw.phases.interrupt.originalSkipped ||
-      !raw.phases.interrupt.resumeCancelled || !raw.phases.final.nonStreaming ||
-      !raw.phases.final.activeRowAbsent || !raw.phases.resume.identityMatches) {
+  if (
+    !raw.phases.interrupt.success ||
+    !raw.phases.interrupt.originalSkipped ||
+    !raw.phases.interrupt.resumeCancelled ||
+    !raw.phases.final.nonStreaming ||
+    !raw.phases.final.activeRowAbsent ||
+    !raw.phases.resume.identityMatches
+  ) {
     throw codedError("INTERRUPT_CONTRACT_FAILED", "中断终态契约失败");
   }
 }
@@ -260,7 +334,12 @@ async function cleanupRun(context, deps, identity, messageId, raw) {
 
 async function runE2e(options, dependencies = {}) {
   const deps = createDependencies(dependencies);
-  const context = { cdp: null, reverse: null, server: null, callbacksInstalled: false };
+  const context = {
+    cdp: null,
+    reverse: null,
+    server: null,
+    callbacksInstalled: false,
+  };
   const raw = createRawEvidence();
   let identity = null;
   let messageId = null;
@@ -268,11 +347,27 @@ async function runE2e(options, dependencies = {}) {
     await prepareRuntime(options, deps, context);
     identity = await resolveIdentity(options, context.cdp.cdp);
     messageId = createMessageId();
-    raw.identity = { ownerType: identity.ownerType, ownerIdPresent: true, topicIdPresent: true, allFieldsMatch: true };
+    raw.identity = {
+      ownerType: identity.ownerType,
+      ownerIdPresent: true,
+      topicIdPresent: true,
+      allFieldsMatch: true,
+    };
     const expected = { ...identity, messageId };
     await startOriginalStream(options, context, identity, messageId, expected);
-    raw.phases.recovery = await recoverAndResume(options, context, identity, messageId, expected);
-    const observation = await observeResumeAndInterrupt(options, context, identity, messageId);
+    raw.phases.recovery = await recoverAndResume(
+      options,
+      context,
+      identity,
+      messageId,
+      expected,
+    );
+    const observation = await observeResumeAndInterrupt(
+      options,
+      context,
+      identity,
+      messageId,
+    );
     recordInterruptResults(raw, observation);
     await finalizeRun(context, identity, messageId, raw);
     raw.server.sseCancelled = true;

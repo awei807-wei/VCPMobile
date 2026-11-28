@@ -1,6 +1,13 @@
-const fs = require('fs');
-const path = require('path');
-const { runAdb, getDeviceInfo, DEBUG_PACKAGE, ROOT, timestamp, ensureDir } = require('../../e2e-android/scripts/adb-env.cjs');
+const fs = require("fs");
+const path = require("path");
+const {
+  runAdb,
+  getDeviceInfo,
+  DEBUG_PACKAGE,
+  ROOT,
+  timestamp,
+  ensureDir,
+} = require("../../e2e-android/scripts/adb-env.cjs");
 
 function usage() {
   console.log(`Usage:
@@ -12,12 +19,12 @@ soak-test diagnostics.
 }
 
 function parseArgs(argv) {
-  const args = { outDir: '' };
+  const args = { outDir: "" };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--out-dir') {
+    if (arg === "--out-dir") {
       args.outDir = argv[++i];
-    } else if (arg === '--help' || arg === '-h') {
+    } else if (arg === "--help" || arg === "-h") {
       usage();
       process.exit(0);
     } else {
@@ -30,20 +37,47 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const device = getDeviceInfo();
 const pkg = DEBUG_PACKAGE;
-const outDir = ensureDir(path.resolve(ROOT, args.outDir || path.join('tests', 'perf', 'reports', timestamp())));
+const outDir = ensureDir(
+  path.resolve(
+    ROOT,
+    args.outDir || path.join("tests", "perf", "reports", timestamp()),
+  ),
+);
 
 const files = {
-  'device.json': JSON.stringify({ generated_at: new Date().toISOString(), package: pkg, device }, null, 2),
-  'meminfo.txt': runAdb(['shell', 'dumpsys', 'meminfo', pkg], { allowFailure: true, maxBuffer: 32 * 1024 * 1024 }),
-  'power.txt': runAdb(['shell', 'dumpsys', 'power'], { allowFailure: true, maxBuffer: 32 * 1024 * 1024 }),
-  'wifi.txt': runAdb(['shell', 'dumpsys', 'wifi'], { allowFailure: true, maxBuffer: 32 * 1024 * 1024 }),
-  'dropbox.txt': runAdb(['shell', 'dumpsys', 'dropbox', '--print'], { allowFailure: true, maxBuffer: 32 * 1024 * 1024 }),
-  'activity-top.txt': runAdb(['shell', 'dumpsys', 'activity', 'top'], { allowFailure: true, maxBuffer: 16 * 1024 * 1024 }),
-  'logcat-tail.txt': runAdb(['logcat', '-d', '-v', 'time', '-t', '1000'], { allowFailure: true, maxBuffer: 32 * 1024 * 1024 }),
+  "device.json": JSON.stringify(
+    { generated_at: new Date().toISOString(), package: pkg, device },
+    null,
+    2,
+  ),
+  "meminfo.txt": runAdb(["shell", "dumpsys", "meminfo", pkg], {
+    allowFailure: true,
+    maxBuffer: 32 * 1024 * 1024,
+  }),
+  "power.txt": runAdb(["shell", "dumpsys", "power"], {
+    allowFailure: true,
+    maxBuffer: 32 * 1024 * 1024,
+  }),
+  "wifi.txt": runAdb(["shell", "dumpsys", "wifi"], {
+    allowFailure: true,
+    maxBuffer: 32 * 1024 * 1024,
+  }),
+  "dropbox.txt": runAdb(["shell", "dumpsys", "dropbox", "--print"], {
+    allowFailure: true,
+    maxBuffer: 32 * 1024 * 1024,
+  }),
+  "activity-top.txt": runAdb(["shell", "dumpsys", "activity", "top"], {
+    allowFailure: true,
+    maxBuffer: 16 * 1024 * 1024,
+  }),
+  "logcat-tail.txt": runAdb(["logcat", "-d", "-v", "time", "-t", "1000"], {
+    allowFailure: true,
+    maxBuffer: 32 * 1024 * 1024,
+  }),
 };
 
 for (const [name, content] of Object.entries(files)) {
-  fs.writeFileSync(path.join(outDir, name), content, 'utf8');
+  fs.writeFileSync(path.join(outDir, name), content, "utf8");
 }
 
 console.log(`[collect_android_dumpsys] wrote ${outDir}`);

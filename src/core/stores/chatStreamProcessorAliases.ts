@@ -24,7 +24,9 @@ export function readPresentAliases(
 ): unknown[] {
   return [key, snake]
     .filter((candidate, index, all) => all.indexOf(candidate) === index)
-    .filter((candidate) => Object.prototype.hasOwnProperty.call(source, candidate))
+    .filter((candidate) =>
+      Object.prototype.hasOwnProperty.call(source, candidate),
+    )
     .map((candidate) => source[candidate]);
 }
 

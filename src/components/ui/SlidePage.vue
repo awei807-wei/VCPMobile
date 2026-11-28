@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LAYER_PAGE_BASE } from '../../core/constants/layers';
+import { LAYER_PAGE_BASE } from "../../core/constants/layers";
 
 interface Props {
   isOpen: boolean;

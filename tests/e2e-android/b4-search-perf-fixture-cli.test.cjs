@@ -11,7 +11,9 @@ const device = require("./b4-search-perf-device.cjs");
 const SCHEMA = fixtureCli.FIXTURE_SCHEMA;
 
 function fixturePath() {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "b4-fixture-cli-test-"));
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "b4-fixture-cli-test-"),
+  );
   const pathname = path.join(directory, "fixture.db");
   fs.writeFileSync(pathname, "fixture");
   return pathname;
@@ -158,11 +160,12 @@ test("Python 失败保留结构化 payload 及 residualPaths", () => {
   };
   try {
     assert.throws(
-      () => fixtureCli.runFixturePython(
-        "verify",
-        { fixturePath: pathname },
-        { spawnSync: () => pythonResult(payload, 1) },
-      ),
+      () =>
+        fixtureCli.runFixturePython(
+          "verify",
+          { fixturePath: pathname },
+          { spawnSync: () => pythonResult(payload, 1) },
+        ),
       (error) => {
         assert.deepEqual(error.fixturePayload, payload);
         return true;

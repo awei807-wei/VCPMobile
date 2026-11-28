@@ -1,9 +1,9 @@
-'use strict';
+"use strict";
 
-const os = require('os');
-const path = require('path');
-const { spawnSync } = require('child_process');
-const { ROOT } = require('./adb-env.cjs');
+const os = require("os");
+const path = require("path");
+const { spawnSync } = require("child_process");
+const { ROOT } = require("./adb-env.cjs");
 
 const DEFAULT_LOG_LINES = 80;
 const MAX_LOG_LINES = 200;
@@ -47,7 +47,7 @@ Safety boundary:
 
 function requireValue(tokens, index, option) {
   const value = tokens[index];
-  if (!value || value.startsWith('--')) {
+  if (!value || value.startsWith("--")) {
     throw new Error(`${option} requires a value`);
   }
   return value;
@@ -55,40 +55,54 @@ function requireValue(tokens, index, option) {
 
 function parseArgs(argv) {
   const tokens = [...argv];
-  const command = tokens[0] && !tokens[0].startsWith('-') ? tokens.shift() : 'help';
+  const command =
+    tokens[0] && !tokens[0].startsWith("-") ? tokens.shift() : "help";
   const options = {
-    serial: '',
+    serial: "",
     json: false,
     lines: DEFAULT_LOG_LINES,
-    level: 'i',
+    level: "i",
     screenshot: false,
-    out: '',
-    name: '',
-    apk: '',
+    out: "",
+    name: "",
+    apk: "",
     resetData: false,
   };
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (token === '--') continue;
-    if (token === '--serial') options.serial = requireValue(tokens, ++index, token);
-    else if (token === '--json') options.json = true;
-    else if (token === '--lines') options.lines = Number(requireValue(tokens, ++index, token));
-    else if (token === '--level') options.level = requireValue(tokens, ++index, token).toLowerCase();
-    else if (token === '--screenshot') options.screenshot = true;
-    else if (token === '--out') options.out = requireValue(tokens, ++index, token);
-    else if (token === '--name') options.name = requireValue(tokens, ++index, token);
-    else if (token === '--apk') options.apk = requireValue(tokens, ++index, token);
-    else if (token === '--reset-data') options.resetData = true;
-    else if (token === '--help' || token === '-h') return { command: 'help', options };
+    if (token === "--") continue;
+    if (token === "--serial")
+      options.serial = requireValue(tokens, ++index, token);
+    else if (token === "--json") options.json = true;
+    else if (token === "--lines")
+      options.lines = Number(requireValue(tokens, ++index, token));
+    else if (token === "--level")
+      options.level = requireValue(tokens, ++index, token).toLowerCase();
+    else if (token === "--screenshot") options.screenshot = true;
+    else if (token === "--out")
+      options.out = requireValue(tokens, ++index, token);
+    else if (token === "--name")
+      options.name = requireValue(tokens, ++index, token);
+    else if (token === "--apk")
+      options.apk = requireValue(tokens, ++index, token);
+    else if (token === "--reset-data") options.resetData = true;
+    else if (token === "--help" || token === "-h")
+      return { command: "help", options };
     else throw new Error(`Unknown option: ${token}`);
   }
 
-  if (!Number.isInteger(options.lines) || options.lines < 1 || options.lines > MAX_LOG_LINES) {
-    throw new Error(`--lines must be an integer between 1 and ${MAX_LOG_LINES}`);
+  if (
+    !Number.isInteger(options.lines) ||
+    options.lines < 1 ||
+    options.lines > MAX_LOG_LINES
+  ) {
+    throw new Error(
+      `--lines must be an integer between 1 and ${MAX_LOG_LINES}`,
+    );
   }
-  if (!['v', 'i', 'w', 'e'].includes(options.level)) {
-    throw new Error('--level must be one of v, i, w or e');
+  if (!["v", "i", "w", "e"].includes(options.level)) {
+    throw new Error("--level must be one of v, i, w or e");
   }
   if (options.serial) process.env.ANDROID_SERIAL = options.serial;
   return { command, options };
@@ -96,7 +110,13 @@ function parseArgs(argv) {
 
 function emit(options, event, message, details = undefined) {
   if (options.json) {
-    console.log(JSON.stringify({ event, message, ...(details === undefined ? {} : { details }) }));
+    console.log(
+      JSON.stringify({
+        event,
+        message,
+        ...(details === undefined ? {} : { details }),
+      }),
+    );
     return;
   }
   console.log(`[android-debug:${event}] ${message}`);
@@ -108,35 +128,46 @@ function printPayload(options, payload) {
     return;
   }
   for (const [key, value] of Object.entries(payload)) {
-    const rendered = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
+    const rendered =
+      typeof value === "object" && value !== null
+        ? JSON.stringify(value)
+        : String(value);
     console.log(`${key}=${rendered}`);
   }
 }
 
 function stripAnsi(value) {
   return value
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\r/g, '\n');
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "\n");
 }
 
 function resolveOutputPath(candidate, fallback) {
   const resolved = path.resolve(ROOT, candidate || fallback);
   const repoPrefix = `${ROOT}${path.sep}`;
   const tmpPrefix = `${path.resolve(os.tmpdir())}${path.sep}`;
-  if (resolved !== ROOT && !resolved.startsWith(repoPrefix) && !resolved.startsWith(tmpPrefix)) {
+  if (
+    resolved !== ROOT &&
+    !resolved.startsWith(repoPrefix) &&
+    !resolved.startsWith(tmpPrefix)
+  ) {
     throw new Error(`Output path must stay under ${ROOT} or ${os.tmpdir()}`);
   }
   return resolved;
 }
 
 function packageManagerName() {
-  return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  return process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 }
 
 function commandVersion(command, args) {
-  const result = spawnSync(command, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
-  return result.status === 0 ? (result.stdout || '').trim() : null;
+  const result = spawnSync(command, args, {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  return result.status === 0 ? (result.stdout || "").trim() : null;
 }
 
 module.exports = {

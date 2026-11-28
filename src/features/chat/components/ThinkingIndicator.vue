@@ -31,7 +31,6 @@
 }
 
 @keyframes vcp-dot-pulse {
-
   0%,
   100% {
     transform: scale(0.8) translate3d(0, 0, 0);

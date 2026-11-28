@@ -1,5 +1,5 @@
-import { ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 
 export function useAudioRecorder() {
   const isRecording = ref(false);
@@ -14,32 +14,37 @@ export function useAudioRecorder() {
   // 探测 WebView 支持的音频格式，优先采用 webm
   const getSupportedMimeType = (): string => {
     const types = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-      'audio/ogg',
-      'audio/mp4',
-      'audio/wav',
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
+      "audio/mp4",
+      "audio/wav",
     ];
     for (const type of types) {
       if (MediaRecorder.isTypeSupported(type)) {
         return type;
       }
     }
-    return '';
+    return "";
   };
 
   const startRecording = async (): Promise<void> => {
     if (isRecording.value) return;
 
     try {
-      const isAndroid = navigator.userAgent.toLowerCase().includes('android');
+      const isAndroid = navigator.userAgent.toLowerCase().includes("android");
       if (isAndroid) {
         try {
           // 主动呼起原生 Android 麦克风录音权限弹窗申请
-          await invoke('plugin:vcp-mobile|request_android_permission', { pType: 'microphone' });
+          await invoke("plugin:vcp-mobile|request_android_permission", {
+            pType: "microphone",
+          });
         } catch (pe) {
-          console.warn('[AudioRecorder] Failed to request native microphone permission:', pe);
+          console.warn(
+            "[AudioRecorder] Failed to request native microphone permission:",
+            pe,
+          );
         }
       }
 
@@ -60,9 +65,9 @@ export function useAudioRecorder() {
       };
 
       mediaRecorder.onstop = () => {
-        const mimeTypeUsed = mediaRecorder?.mimeType || 'audio/webm';
+        const mimeTypeUsed = mediaRecorder?.mimeType || "audio/webm";
         audioBlob.value = new Blob(audioChunks, { type: mimeTypeUsed });
-        
+
         // 释放音轨流以关闭物理麦克风占用指示灯
         stream.getTracks().forEach((track) => track.stop());
       };
@@ -74,14 +79,16 @@ export function useAudioRecorder() {
       timerInterval = window.setInterval(() => {
         recordingDuration.value = Math.round((Date.now() - startTime) / 1000);
       }, 1000);
-
     } catch (err) {
-      console.error('[AudioRecorder] Failed to start recording:', err);
+      console.error("[AudioRecorder] Failed to start recording:", err);
       throw err;
     }
   };
 
-  const stopRecording = (): Promise<{ blob: Blob; bytes: Uint8Array } | null> => {
+  const stopRecording = (): Promise<{
+    blob: Blob;
+    bytes: Uint8Array;
+  } | null> => {
     return new Promise((resolve) => {
       if (!isRecording.value || !mediaRecorder) {
         resolve(null);
@@ -97,7 +104,7 @@ export function useAudioRecorder() {
       }
 
       currentRecorder.onstop = async () => {
-        const mimeTypeUsed = currentRecorder.mimeType || 'audio/webm';
+        const mimeTypeUsed = currentRecorder.mimeType || "audio/webm";
         const blob = new Blob(audioChunks, { type: mimeTypeUsed });
         audioBlob.value = blob;
 
@@ -110,11 +117,11 @@ export function useAudioRecorder() {
         try {
           const arrayBuffer = await blob.arrayBuffer();
           const bytes = new Uint8Array(arrayBuffer);
-          
+
           isRecording.value = false;
           resolve({ blob, bytes });
         } catch (e) {
-          console.error('[AudioRecorder] Failed to parse array buffer:', e);
+          console.error("[AudioRecorder] Failed to parse array buffer:", e);
           isRecording.value = false;
           resolve(null);
         }

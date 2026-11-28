@@ -3,9 +3,7 @@ import { computed, ref, shallowRef } from "vue";
 import { useNotificationStore } from "./notification";
 import { createAssistantAvatarActions } from "./assistantAvatarActions";
 import { createAssistantReadActions } from "./assistantReadActions";
-import {
-  createAssistantUnreadActions,
-} from "./assistantUnreadActions";
+import { createAssistantUnreadActions } from "./assistantUnreadActions";
 import { createAssistantWriteActions } from "./assistantWriteActions";
 
 export { ownerUnreadKey } from "./assistantUnreadActions";

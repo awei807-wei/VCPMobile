@@ -73,17 +73,21 @@ function parseNamedArgument(argument) {
 }
 
 function assignOption(options, argument, value) {
-  if (argument === "--samples") options.samples = positiveInteger(value, argument);
+  if (argument === "--samples")
+    options.samples = positiveInteger(value, argument);
   else if (argument === "--query") options.queries.push(queryValue(value));
   else if (argument === "--fixture") {
     if (!FIXTURE_COMMANDS.has(value)) throw new Error("不支持 fixture 命令");
     options.fixture = value;
   } else if (argument === "--fixture-path") options.fixturePath = value;
   else if (argument === "--serial") {
-    if (value !== TARGET_SERIAL) throw new Error(`--serial 仅允许 ${TARGET_SERIAL}`);
+    if (value !== TARGET_SERIAL)
+      throw new Error(`--serial 仅允许 ${TARGET_SERIAL}`);
     options.serial = value;
-  } else if (argument === "--topics") options.topics = positiveInteger(value, argument, 2_000_000);
-  else if (argument === "--messages") options.messages = positiveInteger(value, argument, 5_000_000);
+  } else if (argument === "--topics")
+    options.topics = positiveInteger(value, argument, 2_000_000);
+  else if (argument === "--messages")
+    options.messages = positiveInteger(value, argument, 5_000_000);
   else if (argument === "--min-content-bytes") {
     options.minContentBytes = nonNegativeInteger(value, argument);
   } else throw new Error("未知参数");
@@ -91,7 +95,8 @@ function assignOption(options, argument, value) {
 
 function assignBooleanOption(options, argument) {
   if (argument === "--keep-fixture") options.keepFixture = true;
-  else if (argument === "--allow-small-fixture") options.allowSmallFixture = true;
+  else if (argument === "--allow-small-fixture")
+    options.allowSmallFixture = true;
   else if (argument === "--overwrite") options.overwrite = true;
   else if (argument === "--device") options.device = true;
   else return false;
@@ -123,16 +128,18 @@ function parseArgs(argv) {
       assignOption(options, named[0], named[1]);
       continue;
     }
-    if ([
-      "--samples",
-      "--query",
-      "--fixture",
-      "--fixture-path",
-      "--serial",
-      "--topics",
-      "--messages",
-      "--min-content-bytes",
-    ].includes(argument)) {
+    if (
+      [
+        "--samples",
+        "--query",
+        "--fixture",
+        "--fixture-path",
+        "--serial",
+        "--topics",
+        "--messages",
+        "--min-content-bytes",
+      ].includes(argument)
+    ) {
       assignOption(options, argument, requireValue(argv, index, argument));
       index += 1;
       continue;

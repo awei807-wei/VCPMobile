@@ -1,12 +1,14 @@
 <template>
-  <AttachmentPreviewBase 
-    :file="file" 
-    :index="index" 
+  <AttachmentPreviewBase
+    :file="file"
+    :index="index"
     :show-remove="showRemove"
     size="auto"
     @remove="emit('remove', index)"
   >
-    <div class="flex items-center gap-2.5 px-2.5 py-2 min-w-[120px] max-w-[160px]">
+    <div
+      class="flex items-center gap-2.5 px-2.5 py-2 min-w-[120px] max-w-[160px]"
+    >
       <!-- Pure SVG Icon -->
       <svg
         width="20"
@@ -26,7 +28,9 @@
 
       <!-- File Info -->
       <div class="flex flex-col min-w-0">
-        <div class="text-[12px] font-medium truncate text-[var(--primary-text)] leading-tight mb-0.5">
+        <div
+          class="text-[12px] font-medium truncate text-[var(--primary-text)] leading-tight mb-0.5"
+        >
           {{ displayName }}
         </div>
         <div class="text-[10px] opacity-50 truncate leading-none">
@@ -43,23 +47,28 @@ import AttachmentPreviewBase from "../AttachmentPreviewBase.vue";
 import { truncateFileName } from "../utils/truncateFileName";
 import type { Attachment } from "../../../../core/types/chat";
 
-const props = withDefaults(defineProps<{
-  file: Attachment;
-  index: number;
-  showRemove?: boolean;
-}>(), {
-  showRemove: false
-});
+const props = withDefaults(
+  defineProps<{
+    file: Attachment;
+    index: number;
+    showRemove?: boolean;
+  }>(),
+  {
+    showRemove: false,
+  },
+);
 
 const emit = defineEmits<{ (e: "remove", index: number): void }>();
 
-const displayName = computed(() => truncateFileName(props.file.name || 'Audio'));
+const displayName = computed(() =>
+  truncateFileName(props.file.name || "Audio"),
+);
 
 const formatSize = (bytes: number) => {
-  if (!bytes) return '0 B';
+  if (!bytes) return "0 B";
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 };
 </script>

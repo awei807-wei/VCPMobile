@@ -20,7 +20,9 @@ describe("附件预览边界", () => {
     const preview = useAttachmentPreview();
     expect(preview.canPreview.value(attachment())).toBe(true);
     expect(
-      preview.canPreview.value(attachment({ type: "text/plain", name: "a.txt" })),
+      preview.canPreview.value(
+        attachment({ type: "text/plain", name: "a.txt" }),
+      ),
     ).toBe(true);
     expect(
       preview.canPreview.value(

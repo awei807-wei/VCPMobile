@@ -21,7 +21,11 @@ export function receiptErrorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object") {
-    const value = error as { message?: unknown; error?: unknown; code?: unknown };
+    const value = error as {
+      message?: unknown;
+      error?: unknown;
+      code?: unknown;
+    };
     const parts = [value.message, value.error, value.code].filter(
       (part): part is string => typeof part === "string",
     );
@@ -66,8 +70,7 @@ export function getRetryStates(
 
 export function getFailedKeys(state: StreamState): Set<string> {
   return (
-    state.unreadMessageFailedKeys ||
-    (state.unreadMessageFailedKeys = new Set())
+    state.unreadMessageFailedKeys || (state.unreadMessageFailedKeys = new Set())
   );
 }
 
@@ -191,7 +194,8 @@ export function scheduleUnreadReceiptRetry(
   if (timers.has(parsed.messageKey)) return;
   const backoff = Math.min(
     UNREAD_RECEIPT_RETRY_MAX_DELAY_MS,
-    UNREAD_RECEIPT_RETRY_INITIAL_DELAY_MS * 2 ** Math.max(0, retryState.attempt - 1),
+    UNREAD_RECEIPT_RETRY_INITIAL_DELAY_MS *
+      2 ** Math.max(0, retryState.attempt - 1),
   );
   const delay = Math.min(
     backoff,
@@ -203,7 +207,8 @@ export function scheduleUnreadReceiptRetry(
   }
   const token = retryState.token;
   const timer = setTimeout(() => {
-    if (getRetryStates(deps.state).get(parsed.messageKey)?.token !== token) return;
+    if (getRetryStates(deps.state).get(parsed.messageKey)?.token !== token)
+      return;
     timers.delete(parsed.messageKey);
     submit(deps, parsed);
   }, delay);

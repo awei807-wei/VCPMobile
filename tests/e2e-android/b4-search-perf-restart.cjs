@@ -1,7 +1,10 @@
 "use strict";
 
 const { DEBUG_PACKAGE, runAdb } = require("./scripts/adb-env.cjs");
-const { isForeground, reconnectAndroidCdp } = require("./wire14/android-state.cjs");
+const {
+  isForeground,
+  reconnectAndroidCdp,
+} = require("./wire14/android-state.cjs");
 
 const COLD_RESTART_TIMEOUT_MS = 20_000;
 const COLD_RESTART_POLL_INTERVAL_MS = 100;
@@ -100,7 +103,10 @@ async function restartB4ColdRuntime(runtime, dependencies = {}) {
   const processPid = dependencies.processPid || readProcessPid;
   const previousPid = previousRuntime?.pid || processPid();
   if (!Number.isSafeInteger(previousPid) || previousPid <= 0) {
-    throw codedError("ANDROID_OLD_PROCESS_PID_UNAVAILABLE", "无法确定旧 Android 进程 PID");
+    throw codedError(
+      "ANDROID_OLD_PROCESS_PID_UNAVAILABLE",
+      "无法确定旧 Android 进程 PID",
+    );
   }
 
   runtime.cdp = null;

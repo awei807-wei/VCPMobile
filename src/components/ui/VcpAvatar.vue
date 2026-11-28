@@ -24,7 +24,7 @@ const borderStyle = computed(() => {
   const mixedColor = `color-mix(in srgb, ${color} 80%, transparent)`;
   return {
     borderColor: mixedColor,
-    boxShadow: `0 0 8px ${color}33` // 减弱发光
+    boxShadow: `0 0 8px ${color}33`, // 减弱发光
   };
 });
 
@@ -57,7 +57,7 @@ watchEffect(async () => {
     imgExists.value = false;
     return;
   }
-  
+
   const key = `${props.ownerType}:${props.ownerId}`;
   const reqVersion = props.version || 0;
 
@@ -70,7 +70,11 @@ watchEffect(async () => {
   }
 
   // 缓存未命中或版本过旧，再进入异步获取逻辑
-  const url = await avatarStore.getAvatarUrl(props.ownerType, props.ownerId, reqVersion);
+  const url = await avatarStore.getAvatarUrl(
+    props.ownerType,
+    props.ownerId,
+    reqVersion,
+  );
   if (url) {
     avatarUrl.value = url;
     imgExists.value = true;
@@ -85,14 +89,17 @@ const handleImgError = () => {
 </script>
 
 <template>
-  <div :class="[
-    size || 'w-10 h-10', 
-    rounded || 'rounded-xl',
-    'relative overflow-hidden flex-shrink-0 flex items-center justify-center shadow-inner transition-all duration-500',
-    dominantColor ? 'border' : 'border border-black/15 dark:border-white/20'
-  ]" :style="borderStyle">
+  <div
+    :class="[
+      size || 'w-10 h-10',
+      rounded || 'rounded-xl',
+      'relative overflow-hidden flex-shrink-0 flex items-center justify-center shadow-inner transition-all duration-500',
+      dominantColor ? 'border' : 'border border-black/15 dark:border-white/20',
+    ]"
+    :style="borderStyle"
+  >
     <!-- Fallback 占位 (底层) -->
-    <div 
+    <div
       class="absolute inset-0 flex items-center justify-center text-white font-bold select-none"
       :style="{ backgroundColor: fallbackBg }"
       :class="size?.includes('w-16') ? 'text-xl' : 'text-sm'"
@@ -101,10 +108,10 @@ const handleImgError = () => {
     </div>
 
     <!-- 头像图片 (顶层，靠 DOM 顺序自然覆盖) -->
-    <img 
-      v-if="imgExists && avatarUrl" 
-      :src="avatarUrl" 
-      @error="handleImgError" 
+    <img
+      v-if="imgExists && avatarUrl"
+      :src="avatarUrl"
+      @error="handleImgError"
       class="relative w-full h-full object-cover transition-opacity duration-300"
     />
   </div>

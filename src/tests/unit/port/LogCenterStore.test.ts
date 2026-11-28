@@ -4,10 +4,7 @@ import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { reactive } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useLogCenterStore } from "../../../features/logcenter/logCenterStore";
-import {
-  clearInvokeMocks,
-  mockInvoke,
-} from "../../mocks/tauri";
+import { clearInvokeMocks, mockInvoke } from "../../mocks/tauri";
 
 type TestSettings = {
   activeConnectionProfileId: string;
@@ -66,7 +63,10 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-function settingsFor(id: string, url = `https://${id}.example.test`): TestSettings {
+function settingsFor(
+  id: string,
+  url = `https://${id}.example.test`,
+): TestSettings {
   return {
     activeConnectionProfileId: id,
     vcpServerUrl: url,
@@ -190,17 +190,25 @@ describe("logCenterStore T04 竞态与边界", () => {
     await resolveRequest(0, result("首轮\n", 100));
     await advance(3_000);
 
-    expect(getRequest(1).args).toMatchObject({ incremental: true, offset: 100 });
+    expect(getRequest(1).args).toMatchObject({
+      incremental: true,
+      offset: 100,
+    });
     expect(current.offset).toBe(100);
   });
 
   it("L03 A 未完成切 B 后 B 先成功，A 晚成功不能污染内容和 offset", async () => {
     const current = await openSession();
-    mocks.settingsStore!.settings = settingsFor("wan", "https://b.example.test");
+    mocks.settingsStore!.settings = settingsFor(
+      "wan",
+      "https://b.example.test",
+    );
     await flushMicrotasks();
 
     expect(requests).toHaveLength(2);
-    expect(getRequest(0).args.expectedServerUrl).toBe("https://lan.example.test");
+    expect(getRequest(0).args.expectedServerUrl).toBe(
+      "https://lan.example.test",
+    );
     expect(getRequest(1).args).toMatchObject({
       incremental: false,
       offset: 0,
@@ -217,7 +225,10 @@ describe("logCenterStore T04 竞态与边界", () => {
 
   it("L04 A 未完成切 B 后 A 晚失败不能覆盖 B 的 error", async () => {
     const current = await openSession();
-    mocks.settingsStore!.settings = settingsFor("wan", "https://b.example.test");
+    mocks.settingsStore!.settings = settingsFor(
+      "wan",
+      "https://b.example.test",
+    );
     await flushMicrotasks();
 
     await resolveRequest(1, result("B 内容\n", 20, "/b.log"));
@@ -232,7 +243,10 @@ describe("logCenterStore T04 竞态与边界", () => {
     const current = await openSession();
     await resolveRequest(0, result("旧内容\n", 100));
 
-    mocks.settingsStore!.settings = settingsFor("lan", "https://new.example.test");
+    mocks.settingsStore!.settings = settingsFor(
+      "lan",
+      "https://new.example.test",
+    );
     expect(current.lines).toEqual([]);
     expect(current.offset).toBe(0);
     await flushMicrotasks();
@@ -247,29 +261,47 @@ describe("logCenterStore T04 竞态与边界", () => {
   it.each([
     ["用户名", { adminUsername: "new-admin" }],
     ["密码", { adminPassword: "new-secret" }],
-  ])("L06 同 id 修改%s使旧结果失效且 invoke 不携带凭据", async (_field, update) => {
-    const current = await openSession();
-    mocks.settingsStore!.settings = {
-      ...settingsFor("lan"),
-      ...update,
-    };
-    await flushMicrotasks();
+  ])(
+    "L06 同 id 修改%s使旧结果失效且 invoke 不携带凭据",
+    async (_field, update) => {
+      const current = await openSession();
+      mocks.settingsStore!.settings = {
+        ...settingsFor("lan"),
+        ...update,
+      };
+      await flushMicrotasks();
 
-    const args = getRequest(1).args;
-    expect(args).toMatchObject({ incremental: false, offset: 0 });
-    expect(Object.prototype.hasOwnProperty.call(args, "adminUsername")).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(args, "adminPassword")).toBe(false);
+      const args = getRequest(1).args;
+      expect(args).toMatchObject({ incremental: false, offset: 0 });
+      expect(Object.prototype.hasOwnProperty.call(args, "adminUsername")).toBe(
+        false,
+      );
+      expect(Object.prototype.hasOwnProperty.call(args, "adminPassword")).toBe(
+        false,
+      );
 
-    await resolveRequest(1, result("新内容\n", 200));
-    await resolveRequest(0, result("旧内容\n", 100));
-    expect(current.lines).toEqual(["新内容"]);
-    expect(current.offset).toBe(200);
-  });
+      await resolveRequest(1, result("新内容\n", 200));
+      await resolveRequest(0, result("旧内容\n", 100));
+      expect(current.lines).toEqual(["新内容"]);
+      expect(current.offset).toBe(200);
+    },
+  );
 
   it.each([
-    ["关闭页面", (current: ReturnType<typeof useLogCenterStore>) => current.stopSession()],
-    ["退后台", () => { mocks.lifecycleStore!.isBackground = true; }],
-    ["暂停", (current: ReturnType<typeof useLogCenterStore>) => current.togglePause()],
+    [
+      "关闭页面",
+      (current: ReturnType<typeof useLogCenterStore>) => current.stopSession(),
+    ],
+    [
+      "退后台",
+      () => {
+        mocks.lifecycleStore!.isBackground = true;
+      },
+    ],
+    [
+      "暂停",
+      (current: ReturnType<typeof useLogCenterStore>) => current.togglePause(),
+    ],
   ])("L07 %s 后当前响应完成不写入且不产生下一轮", async (_name, transition) => {
     const current = await openSession();
     transition(current);
@@ -308,7 +340,9 @@ describe("logCenterStore T04 竞态与边界", () => {
     await flushMicrotasks();
 
     expect(requests).toHaveLength(2);
-    expect(requests.filter((request) => request.deferred.promise).length).toBe(2);
+    expect(requests.filter((request) => request.deferred.promise).length).toBe(
+      2,
+    );
   });
 
   it("L10 L09 中旧请求完成只启动最新待执行代际，不补发 20 个旧任务", async () => {
@@ -423,9 +457,30 @@ describe("logCenterStore T04 竞态与边界", () => {
   });
 
   it.each([
-    ["负 offset", { content: "坏数据\n", offset: -1, path: "/bad", fileSize: 4, needFullReload: false }],
-    ["非安全整数 offset", { content: "坏数据\n", offset: Number.MAX_SAFE_INTEGER + 1, path: "/bad", fileSize: 4, needFullReload: false }],
-    ["缺失字段", { content: "坏数据\n", offset: 101, path: "/bad", fileSize: 4 }],
+    [
+      "负 offset",
+      {
+        content: "坏数据\n",
+        offset: -1,
+        path: "/bad",
+        fileSize: 4,
+        needFullReload: false,
+      },
+    ],
+    [
+      "非安全整数 offset",
+      {
+        content: "坏数据\n",
+        offset: Number.MAX_SAFE_INTEGER + 1,
+        path: "/bad",
+        fileSize: 4,
+        needFullReload: false,
+      },
+    ],
+    [
+      "缺失字段",
+      { content: "坏数据\n", offset: 101, path: "/bad", fileSize: 4 },
+    ],
   ])("L16 %s 响应只产生可见错误且不污染已验证缓冲", async (_name, invalid) => {
     const current = await openSession();
     await resolveRequest(0, result("已验证\n", 100));
@@ -443,13 +498,18 @@ describe("logCenterStore T04 竞态与边界", () => {
     const content = `${Array.from({ length: 700 }, () => "x".repeat(3_000)).join("\n")}\n${longLine}\n`;
     await resolveRequest(0, result(content, content.length));
 
-    const totalCharacters = current.lines.reduce((sum, line) => sum + line.length, 0);
+    const totalCharacters = current.lines.reduce(
+      (sum, line) => sum + line.length,
+      0,
+    );
     const retainedLongLine = current.lines[current.lines.length - 1];
     expect(retainedLongLine.startsWith("[前部日志已省略] ")).toBe(true);
     expect(retainedLongLine).toHaveLength(65_536);
     expect(current.lines.length).toBeGreaterThan(300);
     expect(current.lines.length).toBeLessThanOrEqual(current.lineLimit);
-    expect(Math.max(...current.lines.map((line) => line.length))).toBeLessThanOrEqual(65_536);
+    expect(
+      Math.max(...current.lines.map((line) => line.length)),
+    ).toBeLessThanOrEqual(65_536);
     expect(totalCharacters).toBeLessThanOrEqual(1_048_576);
   });
 

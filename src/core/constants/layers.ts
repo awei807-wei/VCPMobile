@@ -47,18 +47,18 @@ export const getPageZIndex = (stackIndex: number): number => {
 
 /** 所有层级的名称类型 */
 export type LayerName =
-  | 'content'
-  | 'local'
-  | 'drawer'
-  | 'overlay'
-  | 'page'
-  | 'toast'
-  | 'dialog'
-  | 'sheet'
-  | 'viewer'
-  | 'editor'
-  | 'boot'
-  | 'gate';
+  | "content"
+  | "local"
+  | "drawer"
+  | "overlay"
+  | "page"
+  | "toast"
+  | "dialog"
+  | "sheet"
+  | "viewer"
+  | "editor"
+  | "boot"
+  | "gate";
 
 /** 层级名称到数值的映射 */
 export const LAYER_MAP: Record<LayerName, number> = {

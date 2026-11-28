@@ -22,7 +22,9 @@ const emit = defineEmits<{
 
 const profiles = computed(() => ensureConnectionProfiles(props.settings));
 
-const activeProfileId = computed(() => props.settings.activeConnectionProfileId ?? "lan");
+const activeProfileId = computed(
+  () => props.settings.activeConnectionProfileId ?? "lan",
+);
 
 const profileTitle = (profile: ConnectionProfile) =>
   profile.name || getDefaultConnectionProfileName(profile.id);
@@ -46,7 +48,9 @@ const updateProfileField = (
 
 <template>
   <div class="space-y-5 px-1">
-    <div class="rounded-2xl bg-black/5 dark:bg-white/5 px-3 py-2 text-[11px] font-bold text-primary-text">
+    <div
+      class="rounded-2xl bg-black/5 dark:bg-white/5 px-3 py-2 text-[11px] font-bold text-primary-text"
+    >
       <span class="opacity-45">当前线路</span>
       <span class="ml-2">
         {{ getDefaultConnectionProfileName(activeProfileId) }}
@@ -91,7 +95,9 @@ const updateProfileField = (
           label="VCP 服务器 URL"
           placeholder="https://vcp-endpoint.com"
           mono
-          @update:model-value="updateProfileField(profile, 'vcpServerUrl', $event)"
+          @update:model-value="
+            updateProfileField(profile, 'vcpServerUrl', $event)
+          "
         />
         <SettingsTextField
           :model-value="profile.vcpApiKey"
@@ -132,14 +138,18 @@ const updateProfileField = (
           label="HTTP 服务 URL"
           placeholder="http://192.168.x.x:5974"
           mono
-          @update:model-value="updateProfileField(profile, 'syncHttpUrl', $event)"
+          @update:model-value="
+            updateProfileField(profile, 'syncHttpUrl', $event)
+          "
         />
         <SettingsTextField
           :model-value="profile.syncServerUrl"
           label="WebSocket 服务 URL"
           placeholder="ws://192.168.x.x:5975"
           mono
-          @update:model-value="updateProfileField(profile, 'syncServerUrl', $event)"
+          @update:model-value="
+            updateProfileField(profile, 'syncServerUrl', $event)
+          "
         />
         <SettingsTextField
           :model-value="profile.syncToken"
@@ -155,9 +165,12 @@ const updateProfileField = (
         <div class="text-[10px] uppercase font-black opacity-35 px-1">
           分布式
         </div>
-        <div class="rounded-2xl bg-black/5 dark:bg-white/5 px-3 py-2 text-[11px] leading-relaxed text-primary-text">
+        <div
+          class="rounded-2xl bg-black/5 dark:bg-white/5 px-3 py-2 text-[11px] leading-relaxed text-primary-text"
+        >
           <div class="opacity-60">
-            分布式节点复用上方 VCPLog 的 WebSocket 基地址和 Key，连接时会自动切换到
+            分布式节点复用上方 VCPLog 的 WebSocket 基地址和
+            Key，连接时会自动切换到
             <span class="font-mono">/vcp-distributed-server</span>
             通道。
           </div>

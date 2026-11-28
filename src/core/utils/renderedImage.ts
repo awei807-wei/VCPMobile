@@ -7,7 +7,9 @@ function absoluteUrl(url: string): string {
   const trimmed = url.trim();
   if (!trimmed) return "";
   try {
-    return sanitizeRenderedImageSrc(new URL(trimmed, window.location.href).href);
+    return sanitizeRenderedImageSrc(
+      new URL(trimmed, window.location.href).href,
+    );
   } catch {
     return sanitizeRenderedImageSrc(trimmed);
   }

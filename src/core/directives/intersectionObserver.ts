@@ -1,5 +1,5 @@
 // intersectionObserver.ts
-import type { Directive } from 'vue';
+import type { Directive } from "vue";
 
 export const vIntersectionObserver: Directive = {
   mounted(el, binding) {
@@ -7,12 +7,12 @@ export const vIntersectionObserver: Directive = {
     const observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (entry.isIntersecting) {
-          el.dispatchEvent(new CustomEvent('intersect', { detail: entry }));
+          el.dispatchEvent(new CustomEvent("intersect", { detail: entry }));
           if (binding.modifiers.once) {
             observer.unobserve(el);
           }
         } else {
-          el.dispatchEvent(new CustomEvent('unintersect', { detail: entry }));
+          el.dispatchEvent(new CustomEvent("unintersect", { detail: entry }));
         }
       });
     }, options);

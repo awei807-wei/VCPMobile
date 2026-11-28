@@ -61,7 +61,7 @@ watch(
       window.removeEventListener("click", closeCopyDropdown);
       isCopyDropdownVisible.value = false;
     }
-  }
+  },
 );
 
 onUnmounted(() => {
@@ -125,7 +125,10 @@ const handlePointerDown = (e: PointerEvent) => {
   try {
     fullscreenViewportRef.value.setPointerCapture(e.pointerId);
   } catch (err) {
-    console.debug("[MermaidFullScreenViewer] Pointer capture unavailable:", err);
+    console.debug(
+      "[MermaidFullScreenViewer] Pointer capture unavailable:",
+      err,
+    );
   }
 
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
@@ -173,7 +176,10 @@ const handlePointerUp = (e: PointerEvent) => {
     try {
       fullscreenViewportRef.value.releasePointerCapture(e.pointerId);
     } catch (err) {
-      console.debug("[MermaidFullScreenViewer] Pointer release unavailable:", err);
+      console.debug(
+        "[MermaidFullScreenViewer] Pointer release unavailable:",
+        err,
+      );
     }
   }
 
@@ -271,7 +277,7 @@ const exportToGallery = () => {
     const canvas = document.createElement("canvas");
     const scaleFactor = Math.min(
       2.5,
-      Math.max(1.0, 2048 / Math.max(svgWidth, svgHeight))
+      Math.max(1.0, 2048 / Math.max(svgWidth, svgHeight)),
     );
 
     canvas.width = svgWidth * scaleFactor;

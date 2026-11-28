@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { ref } from "vue";
 
 /**
  * VCP Mobile Unified Modal History Stack 2.0 (Operation Aegis)
@@ -21,7 +21,7 @@ const modalStack = ref<ModalInstance[]>([]);
 // IDLE: normal state
 // POPSTATE_HANDLING: currently processing a browser popstate event (closing top modal)
 // INTERNAL_BACK: triggered an internal history.back() from unregisterModal
-let state: 'IDLE' | 'POPSTATE_HANDLING' | 'INTERNAL_BACK' = 'IDLE';
+let state: "IDLE" | "POPSTATE_HANDLING" | "INTERNAL_BACK" = "IDLE";
 let internalBackCompletion: (() => void) | null = null;
 
 /**
@@ -29,19 +29,19 @@ let internalBackCompletion: (() => void) | null = null;
  * Should be called once at app startup (App.vue onMounted).
  */
 export const initRootHistory = () => {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
 
   const state = window.history.state;
   // 自校准状态检测：只要当前栈顶没有 vcpMain 标记，就压入 dummy state，确保防护盾始终有效
   if (!state || !state.vcpMain) {
-    window.history.pushState({ vcpRoot: true, vcpMain: true }, '');
+    window.history.pushState({ vcpRoot: true, vcpMain: true }, "");
   }
 };
 
 const handlePopState = (event: PopStateEvent) => {
   // 1. Check if this back was triggered by unregisterModal (UI action)
-  if (state === 'INTERNAL_BACK') {
-    state = 'IDLE';
+  if (state === "INTERNAL_BACK") {
+    state = "IDLE";
     const complete = internalBackCompletion;
     internalBackCompletion = null;
     complete?.();
@@ -52,8 +52,8 @@ const handlePopState = (event: PopStateEvent) => {
   // 对于 /settings、/agents/:id 这类真实路由页，返回手势应该交给 vue-router，
   // 不能误判成“要退出应用”或“要关闭底层侧边栏”。
   // 只有在主界面（/ 或 /chat）时，我们才拦截返回手势用于操作 Overlay。
-  const currentPath = window.location.hash.replace(/^#/, '') || '/';
-  if (currentPath !== '/chat' && currentPath !== '/') {
+  const currentPath = window.location.hash.replace(/^#/, "") || "/";
+  if (currentPath !== "/chat" && currentPath !== "/") {
     return;
   }
 
@@ -61,14 +61,14 @@ const handlePopState = (event: PopStateEvent) => {
   if (modalStack.value.length > 0) {
     const topModal = modalStack.value[modalStack.value.length - 1];
 
-    state = 'POPSTATE_HANDLING';
+    state = "POPSTATE_HANDLING";
     try {
       topModal.close();
     } finally {
       // 主动从栈中移除，不再依赖 close 回调自行调用 unregisterModal
-      const idx = modalStack.value.findIndex(m => m.id === topModal.id);
+      const idx = modalStack.value.findIndex((m) => m.id === topModal.id);
       if (idx !== -1) modalStack.value.splice(idx, 1);
-      state = 'IDLE';
+      state = "IDLE";
     }
     return;
   }
@@ -76,10 +76,10 @@ const handlePopState = (event: PopStateEvent) => {
   // 4. Handle Root Exit — delegate to App.vue via custom event
   // If we hit a state that doesn't have vcpMain, it means we've popped our dummy state
   if (!event.state || !event.state.vcpMain) {
-    window.dispatchEvent(new CustomEvent('vcp-exit-requested'));
+    window.dispatchEvent(new CustomEvent("vcp-exit-requested"));
 
     // THE BOUNCE: Re-inject the dummy state so the next back gesture also triggers popstate
-    window.history.pushState({ vcpRoot: true, vcpMain: true }, '');
+    window.history.pushState({ vcpRoot: true, vcpMain: true }, "");
   }
 };
 
@@ -87,10 +87,10 @@ let popstateHandler: ((e: PopStateEvent) => void) | null = null;
 let listenerRegistered = false;
 
 // Initialize the popstate listener only once
-if (typeof window !== 'undefined' && !listenerRegistered) {
+if (typeof window !== "undefined" && !listenerRegistered) {
   listenerRegistered = true;
   popstateHandler = handlePopState;
-  window.addEventListener('popstate', popstateHandler);
+  window.addEventListener("popstate", popstateHandler);
 
   // Initial check: if we are at root, push the dummy state
   // Note: App.vue will call this again after router is ready to be 100% sure
@@ -98,8 +98,8 @@ if (typeof window !== 'undefined' && !listenerRegistered) {
 }
 
 export function cleanupModalHistory() {
-  if (popstateHandler && typeof window !== 'undefined') {
-    window.removeEventListener('popstate', popstateHandler);
+  if (popstateHandler && typeof window !== "undefined") {
+    window.removeEventListener("popstate", popstateHandler);
     popstateHandler = null;
     listenerRegistered = false;
   }
@@ -113,10 +113,10 @@ export function useModalHistory() {
    */
   const registerModal = (id: string, closeHandler: () => void) => {
     // Avoid double registration
-    if (modalStack.value.some(m => m.id === id)) return;
+    if (modalStack.value.some((m) => m.id === id)) return;
 
     // Push state to history
-    window.history.pushState({ vcpRoot: true, vcpModalId: id }, '');
+    window.history.pushState({ vcpRoot: true, vcpModalId: id }, "");
 
     // Add to our LIFO stack
     modalStack.value.push({ id, close: closeHandler });
@@ -129,7 +129,7 @@ export function useModalHistory() {
    * @param onHistorySynced Runs after the internal back traversal completes
    */
   const unregisterModal = (id: string, onHistorySynced?: () => void) => {
-    const index = modalStack.value.findIndex(m => m.id === id);
+    const index = modalStack.value.findIndex((m) => m.id === id);
     if (index === -1) {
       onHistorySynced?.();
       return;
@@ -138,10 +138,10 @@ export function useModalHistory() {
     // If we're currently handling a popstate event, don't trigger history.back()
     // to avoid recursive popstate. The modal will be removed from stack regardless.
     let waitingForHistory = false;
-    if (state === 'IDLE') {
+    if (state === "IDLE") {
       const currentState = window.history.state;
       if (currentState && currentState.vcpModalId === id) {
-        state = 'INTERNAL_BACK';
+        state = "INTERNAL_BACK";
         internalBackCompletion = onHistorySynced || null;
         window.history.back();
         waitingForHistory = true;
@@ -171,7 +171,9 @@ export function useModalHistory() {
     if (
       !topModal ||
       topModal.id !== currentId ||
-      modalStack.value.some((modal, index) => index !== topIndex && modal.id === nextId) ||
+      modalStack.value.some(
+        (modal, index) => index !== topIndex && modal.id === nextId,
+      ) ||
       currentHistoryState?.vcpModalId !== currentId
     ) {
       return false;
@@ -179,7 +181,7 @@ export function useModalHistory() {
 
     window.history.replaceState(
       { ...currentHistoryState, vcpRoot: true, vcpModalId: nextId },
-      '',
+      "",
     );
     modalStack.value[topIndex] = { id: nextId, close: closeHandler };
     return true;
@@ -189,18 +191,21 @@ export function useModalHistory() {
     if (modalStack.value.length > 0) {
       const topIdx = modalStack.value.length - 1;
       const topModal = modalStack.value[topIdx];
-      
+
       console.log(`[ModalHistory] Closing top modal: ${topModal.id}`);
 
       // 先从栈中移除，再调用 close 回调，确保无论回调是否调用 unregisterModal 都不会残留
       modalStack.value.splice(topIdx, 1);
-      
+
       try {
         topModal.close();
       } catch (err) {
-        console.error(`[ModalHistory] Failed to call close on modal ${topModal.id}:`, err);
+        console.error(
+          `[ModalHistory] Failed to call close on modal ${topModal.id}:`,
+          err,
+        );
       }
-      
+
       return true;
     }
     return false;
@@ -212,6 +217,6 @@ export function useModalHistory() {
     replaceModal,
     modalStackLength: () => modalStack.value.length,
     initRootHistory,
-    closeTopModal
+    closeTopModal,
   };
 }

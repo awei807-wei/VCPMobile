@@ -165,10 +165,7 @@ export function clearStreamMessageRendering(
 }
 
 export { applyAuroraUpdate } from "./chatStreamProcessorRendering";
-export {
-  firstDefined,
-  parseStreamEvent,
-} from "./chatStreamProcessorParsing";
+export { firstDefined, parseStreamEvent } from "./chatStreamProcessorParsing";
 
 export function extractTextChunk(chunk: any): string {
   if (typeof chunk === "string") return chunk;

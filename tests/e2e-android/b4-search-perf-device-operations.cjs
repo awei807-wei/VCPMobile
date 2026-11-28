@@ -10,13 +10,18 @@ function cleanupError(primary, failures) {
   const detail = failures
     .map((failure) => `${failure.phase}: ${failure.message}`)
     .join("；");
-  const error = new Error(`${primary ? compactError(primary) + "；" : ""}清理失败：${detail}`);
+  const error = new Error(
+    `${primary ? compactError(primary) + "；" : ""}清理失败：${detail}`,
+  );
   error.cause = primary || undefined;
   error.cleanupFailures = failures;
   const residualPaths = [
-    ...(Array.isArray(primary?.fixturePayload?.residualPaths) ? primary.fixturePayload.residualPaths : []),
+    ...(Array.isArray(primary?.fixturePayload?.residualPaths)
+      ? primary.fixturePayload.residualPaths
+      : []),
     ...failures.flatMap((failure) =>
-      Array.isArray(failure.residualPaths) ? failure.residualPaths : []),
+      Array.isArray(failure.residualPaths) ? failure.residualPaths : [],
+    ),
   ];
   // Fixture command failures are counted from cleanupFailures by the CLI;
   // attach the aggregate payload only for standalone cleanup commands, whose
@@ -39,7 +44,9 @@ async function runCleanupActions(actions) {
       failures.push({
         phase,
         message: compactError(error),
-        ...(Array.isArray(error?.residualPaths) ? { residualPaths: error.residualPaths } : {}),
+        ...(Array.isArray(error?.residualPaths)
+          ? { residualPaths: error.residualPaths }
+          : {}),
       });
     }
   }

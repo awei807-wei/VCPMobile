@@ -1,8 +1,8 @@
-import { defineStore, acceptHMRUpdate } from 'pinia';
-import { onScopeDispose, ref, watch } from 'vue';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { defineStore, acceptHMRUpdate } from "pinia";
+import { onScopeDispose, ref, watch } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type ThemeMode = 'light' | 'dark' | 'system';
+export type ThemeMode = "light" | "dark" | "system";
 
 export interface ThemeInfo {
   fileName: string;
@@ -13,22 +13,22 @@ export interface ThemeInfo {
   };
 }
 
-const DEFAULT_THEME = 'themes-bear-holiday.css';
+const DEFAULT_THEME = "themes-bear-holiday.css";
 
 const LEGACY_THEME_MAP: Record<string, string> = {
-  'themes冰火魔歌.css': 'themes-ice-fire.css',
-  'themes瓷与锦.css': 'themes-porcelain-brocade.css',
-  'themes绯红天穹.css': 'themes-crimson-sky.css',
-  'themes黑白简约.css': 'themes-simple-bw.css',
-  'themes静谧森岭.css': 'themes-quiet-forest.css',
-  'themes卡提西亚.css': 'themes-cartethyia.css',
-  'themes霓虹咖啡.css': 'themes-neon-coffee.css',
-  'themes童趣梦境.css': 'themes-childhood-dream.css',
-  'themes星咏与狼嗥.css': 'themes-star-wolf.css',
-  'themes星渊雪境.css': 'themes-star-abyss.css',
-  'themes熊熊假日.css': 'themes-bear-holiday.css',
-  'themes雪境晨昏.css': 'themes-snow-morning.css',
-  'themes夜樱猫语.css': 'themes-night-sakura-cat.css'
+  "themes冰火魔歌.css": "themes-ice-fire.css",
+  "themes瓷与锦.css": "themes-porcelain-brocade.css",
+  "themes绯红天穹.css": "themes-crimson-sky.css",
+  "themes黑白简约.css": "themes-simple-bw.css",
+  "themes静谧森岭.css": "themes-quiet-forest.css",
+  "themes卡提西亚.css": "themes-cartethyia.css",
+  "themes霓虹咖啡.css": "themes-neon-coffee.css",
+  "themes童趣梦境.css": "themes-childhood-dream.css",
+  "themes星咏与狼嗥.css": "themes-star-wolf.css",
+  "themes星渊雪境.css": "themes-star-abyss.css",
+  "themes熊熊假日.css": "themes-bear-holiday.css",
+  "themes雪境晨昏.css": "themes-snow-morning.css",
+  "themes夜樱猫语.css": "themes-night-sakura-cat.css",
 };
 
 interface ThemeModule {
@@ -38,13 +38,15 @@ interface ThemeModule {
 }
 
 // Vite dynamic imports for TS theme modules (one per theme, static pre-compiled)
-const themeModules = import.meta.glob('../../assets/themes/*.ts', { eager: true }) as Record<string, ThemeModule>;
+const themeModules = import.meta.glob("../../assets/themes/*.ts", {
+  eager: true,
+}) as Record<string, ThemeModule>;
 
 const findThemeModule = (fileName: string): ThemeModule | undefined => {
-  const tsFileName = fileName.replace('.css', '.ts');
+  const tsFileName = fileName.replace(".css", ".ts");
 
   for (const [path, mod] of Object.entries(themeModules)) {
-    const keyFileName = path.split(/[\\/]/).pop() || '';
+    const keyFileName = path.split(/[\\/]/).pop() || "";
     if (keyFileName === tsFileName) {
       return mod;
     }
@@ -53,16 +55,18 @@ const findThemeModule = (fileName: string): ThemeModule | undefined => {
   return undefined;
 };
 
-export const useThemeStore = defineStore('theme', () => {
-  const mode = ref<ThemeMode>((localStorage.getItem('vcp-theme-mode') as ThemeMode) || 'dark');
+export const useThemeStore = defineStore("theme", () => {
+  const mode = ref<ThemeMode>(
+    (localStorage.getItem("vcp-theme-mode") as ThemeMode) || "dark",
+  );
   const isDarkResolved = ref(true);
   const lastModeSwitchAt = ref(0);
   const MODE_SWITCH_DEBOUNCE_MS = 420;
 
-  let initialTheme = localStorage.getItem('vcp-theme-name');
+  let initialTheme = localStorage.getItem("vcp-theme-name");
   if (initialTheme && LEGACY_THEME_MAP[initialTheme]) {
     initialTheme = LEGACY_THEME_MAP[initialTheme];
-    localStorage.setItem('vcp-theme-name', initialTheme);
+    localStorage.setItem("vcp-theme-name", initialTheme);
   }
   const currentTheme = ref(initialTheme || DEFAULT_THEME);
 
@@ -75,12 +79,11 @@ export const useThemeStore = defineStore('theme', () => {
 
   const triggerThemeSwitchTransition = () => {
     if (isInitializing) return;
-    document.documentElement.classList.add('theme-switching');
+    document.documentElement.classList.add("theme-switching");
     setTimeout(() => {
-      document.documentElement.classList.remove('theme-switching');
+      document.documentElement.classList.remove("theme-switching");
     }, 400);
   };
-
 
   const injectVariables = (vars: Record<string, string>) => {
     // Clear stale variables from previous theme to avoid mixed state
@@ -98,7 +101,7 @@ export const useThemeStore = defineStore('theme', () => {
 
     for (const [path, mod] of Object.entries(themeModules)) {
       try {
-        const fileName = path.split(/[\\/]/).pop() || '';
+        const fileName = path.split(/[\\/]/).pop() || "";
 
         themes.push({
           fileName,
@@ -115,18 +118,22 @@ export const useThemeStore = defineStore('theme', () => {
     // Build thumbnail URL cache once after themes are loaded
     const thumbs: Record<string, string> = {};
     for (const theme of themes) {
-      const darkWp = theme.variables?.dark?.['--chat-wallpaper-dark'];
-      const lightWp = theme.variables?.light?.['--chat-wallpaper-light'];
+      const darkWp = theme.variables?.dark?.["--chat-wallpaper-dark"];
+      const lightWp = theme.variables?.light?.["--chat-wallpaper-light"];
       let rawPath = darkWp || lightWp;
-      if (rawPath && rawPath !== 'none') {
+      if (rawPath && rawPath !== "none") {
         try {
           const match = rawPath.match(/url\(['"]?(.*?)['"]?\)/);
           let filename = match ? match[1] : rawPath;
-          filename = filename.replace(/^.*[\\\/]/, '').replace(/['"]/g, '');
-          filename = filename.split('.')[0] + '.webp';
+          filename = filename.replace(/^.*[\\\/]/, "").replace(/['"]/g, "");
+          filename = filename.split(".")[0] + ".webp";
           thumbs[theme.fileName] = `/wallpaper/${filename}`;
         } catch (e) {
-          console.error('[themeStore] Failed to resolve thumbnail for', theme.fileName, e);
+          console.error(
+            "[themeStore] Failed to resolve thumbnail for",
+            theme.fileName,
+            e,
+          );
         }
       }
     }
@@ -137,14 +144,14 @@ export const useThemeStore = defineStore('theme', () => {
     try {
       triggerThemeSwitchTransition();
       currentTheme.value = fileName;
-      localStorage.setItem('vcp-theme-name', fileName);
+      localStorage.setItem("vcp-theme-name", fileName);
 
       const mod = findThemeModule(fileName);
       if (!mod) {
-        console.warn('Theme module not found:', fileName);
+        console.warn("Theme module not found:", fileName);
         return;
       }
-      console.log('[themeStore] Loaded module for', fileName, mod.meta.name);
+      console.log("[themeStore] Loaded module for", fileName, mod.meta.name);
 
       currentThemeModule = mod;
       currentThemeInfo.value = {
@@ -153,31 +160,38 @@ export const useThemeStore = defineStore('theme', () => {
         variables: mod.variables,
       };
 
-      const vars = isDarkResolved.value ? mod.variables.dark : mod.variables.light;
-      console.log('[themeStore] Injecting variables keys count:', Object.keys(vars).length);
+      const vars = isDarkResolved.value
+        ? mod.variables.dark
+        : mod.variables.light;
+      console.log(
+        "[themeStore] Injecting variables keys count:",
+        Object.keys(vars).length,
+      );
       injectVariables(vars);
 
       // Inject extra CSS rules (non-variable styles like .tool-bubble)
-      let styleTag = document.getElementById('vcp-custom-theme');
+      let styleTag = document.getElementById("vcp-custom-theme");
       if (!styleTag) {
-        styleTag = document.createElement('style');
-        styleTag.id = 'vcp-custom-theme';
+        styleTag = document.createElement("style");
+        styleTag.id = "vcp-custom-theme";
         document.head.appendChild(styleTag);
       }
-      styleTag.textContent = mod.extraCss || '';
+      styleTag.textContent = mod.extraCss || "";
     } catch (error) {
-      console.error('Failed to apply theme file:', error);
+      console.error("Failed to apply theme file:", error);
     }
   };
 
   const initTheme = async () => {
-    const savedTheme = localStorage.getItem('vcp-theme-name') || DEFAULT_THEME;
-    
+    const savedTheme = localStorage.getItem("vcp-theme-name") || DEFAULT_THEME;
+
     // 1. 优先只加载当前主题，确保背景和基础样式瞬间呈现
     await applyThemeFile(savedTheme);
 
     // 2. 优雅地在浏览器空闲时再扫描全量主题元数据
-    const idleCallback = (window as any).requestIdleCallback || ((cb: any) => setTimeout(cb, 1000));
+    const idleCallback =
+      (window as any).requestIdleCallback ||
+      ((cb: any) => setTimeout(cb, 1000));
     idleCallback(() => {
       fetchThemes().catch(console.error);
     });
@@ -188,33 +202,40 @@ export const useThemeStore = defineStore('theme', () => {
   const applyTheme = (newMode: ThemeMode) => {
     triggerThemeSwitchTransition();
     const isDark =
-      newMode === 'dark' ||
-      (newMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      newMode === "dark" ||
+      (newMode === "system" &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
 
     isDarkResolved.value = isDark;
-    document.documentElement.classList.toggle('dark', isDark);
-    document.body.classList.toggle('light-theme', !isDark);
-    localStorage.setItem('vcp-theme-mode', newMode);
+    document.documentElement.classList.toggle("dark", isDark);
+    document.body.classList.toggle("light-theme", !isDark);
+    localStorage.setItem("vcp-theme-mode", newMode);
 
     // Re-inject variables for the new mode if a theme is already loaded
     if (currentThemeModule) {
-      const vars = isDark ? currentThemeModule.variables.dark : currentThemeModule.variables.light;
+      const vars = isDark
+        ? currentThemeModule.variables.dark
+        : currentThemeModule.variables.light;
       injectVariables(vars);
     }
   };
 
-  watch(mode, (newMode) => {
-    applyTheme(newMode);
-  }, { immediate: true });
+  watch(
+    mode,
+    (newMode) => {
+      applyTheme(newMode);
+    },
+    { immediate: true },
+  );
 
   // Listen for system theme changes
-  const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
   const handleMediaChange = () => {
-    if (mode.value === 'system') {
-      applyTheme('system');
+    if (mode.value === "system") {
+      applyTheme("system");
     }
   };
-  mediaQuery.addEventListener('change', handleMediaChange);
+  mediaQuery.addEventListener("change", handleMediaChange);
 
   const setMode = (newMode: ThemeMode) => {
     const now = Date.now();
@@ -234,13 +255,13 @@ export const useThemeStore = defineStore('theme', () => {
     // Use the resolved state to decide the next mode,
     // this ensures that the first click always produces a visual change
     // even if the current mode is 'system'.
-    setMode(isDarkResolved.value ? 'light' : 'dark');
+    setMode(isDarkResolved.value ? "light" : "dark");
   };
 
   // Listen for theme updates from backend
   // Store the promise so onScopeDispose can clean up even if the listener
   // hasn't resolved yet (avoids dangling listeners on hot reload / scope disposal)
-  const unlistenThemePromise = listen('onThemeUpdated', (event) => {
+  const unlistenThemePromise = listen("onThemeUpdated", (event) => {
     const fileName = event.payload as string;
     if (fileName !== currentTheme.value) {
       applyThemeFile(fileName);
@@ -248,7 +269,7 @@ export const useThemeStore = defineStore('theme', () => {
   });
 
   onScopeDispose(() => {
-    mediaQuery.removeEventListener('change', handleMediaChange);
+    mediaQuery.removeEventListener("change", handleMediaChange);
     unlistenThemePromise.then((fn: UnlistenFn) => fn()).catch(() => {});
   });
 
@@ -258,7 +279,10 @@ export const useThemeStore = defineStore('theme', () => {
   if (import.meta.hot) {
     if (import.meta.hot.data.isHMR) {
       setTimeout(() => {
-        console.log('[themeStore] HMR reload triggered, re-applying theme:', currentTheme.value);
+        console.log(
+          "[themeStore] HMR reload triggered, re-applying theme:",
+          currentTheme.value,
+        );
         if (currentTheme.value) {
           applyThemeFile(currentTheme.value);
         }

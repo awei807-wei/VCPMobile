@@ -24,9 +24,8 @@ export function createHistoryStreamSettlement(
   let settled = false;
   let cleanedUp = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let resolveCompletion: (
-    reason: HistoryStreamSettlementReason,
-  ) => void = () => undefined;
+  let resolveCompletion: (reason: HistoryStreamSettlementReason) => void = () =>
+    undefined;
 
   const completion = new Promise<HistoryStreamSettlementReason>((resolve) => {
     resolveCompletion = resolve;

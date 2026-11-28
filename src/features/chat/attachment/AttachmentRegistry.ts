@@ -1,6 +1,6 @@
-import { defineAsyncComponent } from 'vue';
-import { AttachmentType } from './types/AttachmentType';
-import type { Component } from 'vue';
+import { defineAsyncComponent } from "vue";
+import { AttachmentType } from "./types/AttachmentType";
+import type { Component } from "vue";
 
 /**
  * Registry for managing attachment component mappings
@@ -26,7 +26,9 @@ export class AttachmentRegistry {
     Object.entries(mappings).forEach(([type, component]) => {
       this.register(type as AttachmentType, component);
     });
-    console.log(`[AttachmentRegistry] Registered ${this.count} components successfully.`);
+    console.log(
+      `[AttachmentRegistry] Registered ${this.count} components successfully.`,
+    );
   }
 
   /**
@@ -61,7 +63,9 @@ export class AttachmentRegistry {
    */
   static unregister(type: AttachmentType): void {
     this.componentMap.delete(type);
-    console.log(`[AttachmentRegistry] Unregistered component for type: ${type}`);
+    console.log(
+      `[AttachmentRegistry] Unregistered component for type: ${type}`,
+    );
   }
 
   /**
@@ -69,7 +73,7 @@ export class AttachmentRegistry {
    */
   static clear(): void {
     this.componentMap.clear();
-    console.log('[AttachmentRegistry] Cleared all component registrations');
+    console.log("[AttachmentRegistry] Cleared all component registrations");
   }
 
   /**
@@ -82,25 +86,25 @@ export class AttachmentRegistry {
 
 // Register default components on import
 AttachmentRegistry.registerMultiple({
-  [AttachmentType.IMAGE]: defineAsyncComponent(() => 
-    import('./types/ImageAttachment.vue')
+  [AttachmentType.IMAGE]: defineAsyncComponent(
+    () => import("./types/ImageAttachment.vue"),
   ),
-  [AttachmentType.VIDEO]: defineAsyncComponent(() => 
-    import('./types/VideoAttachment.vue')
+  [AttachmentType.VIDEO]: defineAsyncComponent(
+    () => import("./types/VideoAttachment.vue"),
   ),
-  [AttachmentType.AUDIO]: defineAsyncComponent(() => 
-    import('./types/AudioAttachment.vue')
+  [AttachmentType.AUDIO]: defineAsyncComponent(
+    () => import("./types/AudioAttachment.vue"),
   ),
-  [AttachmentType.DOCUMENT]: defineAsyncComponent(() => 
-    import('./types/DocumentAttachment.vue')
+  [AttachmentType.DOCUMENT]: defineAsyncComponent(
+    () => import("./types/DocumentAttachment.vue"),
   ),
-  [AttachmentType.CODE]: defineAsyncComponent(() => 
-    import('./types/CodeAttachment.vue')
+  [AttachmentType.CODE]: defineAsyncComponent(
+    () => import("./types/CodeAttachment.vue"),
   ),
-  [AttachmentType.TEXT]: defineAsyncComponent(() => 
-    import('./types/TextAttachment.vue')
+  [AttachmentType.TEXT]: defineAsyncComponent(
+    () => import("./types/TextAttachment.vue"),
   ),
-  [AttachmentType.OTHER]: defineAsyncComponent(() => 
-    import('./types/OtherAttachment.vue')
+  [AttachmentType.OTHER]: defineAsyncComponent(
+    () => import("./types/OtherAttachment.vue"),
   ),
 });

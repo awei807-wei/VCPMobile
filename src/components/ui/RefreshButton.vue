@@ -11,8 +11,8 @@
  * 实现：CSS keyframes + animationiteration 事件（不用 WAAPI，保老 WebView）。
  * bare 模式不附带按钮外壳，供自带按钮样式的场景（diary-icon-button 等）复用动画。
  */
-import { ref, watch } from 'vue';
-import { RefreshCw } from 'lucide-vue-next';
+import { ref, watch } from "vue";
+import { RefreshCw } from "lucide-vue-next";
 
 const props = withDefaults(
   defineProps<{
@@ -40,7 +40,7 @@ function onClick(): void {
   spinning.value = true;
   // 已在加载中 → 转到加载结束；否则保底一圈即停（除非随后 loading 拉起）
   stopRequested = !props.loading;
-  emit('refresh');
+  emit("refresh");
 }
 
 watch(

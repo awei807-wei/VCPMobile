@@ -1,44 +1,51 @@
-import { defineAsyncComponent } from 'vue';
-import { AttachmentType } from './types/AttachmentType';
-import type { Component } from 'vue';
+import { defineAsyncComponent } from "vue";
+import { AttachmentType } from "./types/AttachmentType";
+import type { Component } from "vue";
 
 // Lazy load all attachment components
 const componentMap = new Map<AttachmentType, Component>();
 
 // Image component
-componentMap.set(AttachmentType.IMAGE, defineAsyncComponent(() => 
-  import('./types/ImageAttachment.vue')
-));
+componentMap.set(
+  AttachmentType.IMAGE,
+  defineAsyncComponent(() => import("./types/ImageAttachment.vue")),
+);
 
 // Video component
-componentMap.set(AttachmentType.VIDEO, defineAsyncComponent(() => 
-  import('./types/VideoAttachment.vue')
-));
+componentMap.set(
+  AttachmentType.VIDEO,
+  defineAsyncComponent(() => import("./types/VideoAttachment.vue")),
+);
 
 // Audio component
-componentMap.set(AttachmentType.AUDIO, defineAsyncComponent(() => 
-  import('./types/AudioAttachment.vue')
-));
+componentMap.set(
+  AttachmentType.AUDIO,
+  defineAsyncComponent(() => import("./types/AudioAttachment.vue")),
+);
 
 // Document component
-componentMap.set(AttachmentType.DOCUMENT, defineAsyncComponent(() => 
-  import('./types/DocumentAttachment.vue')
-));
+componentMap.set(
+  AttachmentType.DOCUMENT,
+  defineAsyncComponent(() => import("./types/DocumentAttachment.vue")),
+);
 
 // Code component
-componentMap.set(AttachmentType.CODE, defineAsyncComponent(() => 
-  import('./types/CodeAttachment.vue')
-));
+componentMap.set(
+  AttachmentType.CODE,
+  defineAsyncComponent(() => import("./types/CodeAttachment.vue")),
+);
 
 // Text component
-componentMap.set(AttachmentType.TEXT, defineAsyncComponent(() => 
-  import('./types/TextAttachment.vue')
-));
+componentMap.set(
+  AttachmentType.TEXT,
+  defineAsyncComponent(() => import("./types/TextAttachment.vue")),
+);
 
 // Other component
-componentMap.set(AttachmentType.OTHER, defineAsyncComponent(() => 
-  import('./types/OtherAttachment.vue')
-));
+componentMap.set(
+  AttachmentType.OTHER,
+  defineAsyncComponent(() => import("./types/OtherAttachment.vue")),
+);
 
 export class AttachmentFactory {
   /**

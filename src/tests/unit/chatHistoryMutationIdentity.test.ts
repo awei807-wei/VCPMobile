@@ -13,8 +13,11 @@ const identity: ConversationIdentity = {
   topicId: "shared-topic",
 };
 
-function message(id: string, timestamp: number, role: ChatMessage["role"] = "user"):
-  ChatMessage {
+function message(
+  id: string,
+  timestamp: number,
+  role: ChatMessage["role"] = "user",
+): ChatMessage {
   return { id, role, timestamp, content: id };
 }
 
@@ -31,7 +34,8 @@ function createMutationFixture() {
     sessionStore: {},
     topicStore,
     currentIdentity: () => identity,
-    isCurrentIdentity: (candidate: ConversationIdentity) => candidate === identity,
+    isCurrentIdentity: (candidate: ConversationIdentity) =>
+      candidate === identity,
     cancelUnreadReceipt,
   };
   return {
@@ -76,11 +80,14 @@ function createGenerationFixture() {
       preProcessDocuments: vi.fn(),
     },
     assistantStore: { agents: [] },
-    settingsStore: { settings: { userName: "User", vcpServerUrl: "", vcpApiKey: "" } },
+    settingsStore: {
+      settings: { userName: "User", vcpServerUrl: "", vcpApiKey: "" },
+    },
     topicStore,
     switchGuardStore: { switching: false },
     currentIdentity: () => identity,
-    isCurrentIdentity: (candidate: ConversationIdentity) => candidate === activeIdentity,
+    isCurrentIdentity: (candidate: ConversationIdentity) =>
+      candidate === activeIdentity,
   };
   return {
     currentChatHistory,
@@ -179,8 +186,14 @@ describe("历史 mutation 的复合身份与权威结果", () => {
     expect(fixture.currentChatHistory.value.map(({ id }) => id)).toEqual([
       "first",
     ]);
-    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(identity, 1);
-    expect(fixture.cancelUnreadReceipt).toHaveBeenCalledWith(identity, "anchor");
+    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(
+      identity,
+      1,
+    );
+    expect(fixture.cancelUnreadReceipt).toHaveBeenCalledWith(
+      identity,
+      "anchor",
+    );
     expect(fixture.cancelUnreadReceipt).toHaveBeenCalledWith(identity, "last");
   });
 
@@ -203,8 +216,14 @@ describe("历史 mutation 的复合身份与权威结果", () => {
       "first",
       "last",
     ]);
-    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(identity, 2);
-    expect(fixture.cancelUnreadReceipt).toHaveBeenCalledWith(identity, "anchor");
+    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(
+      identity,
+      2,
+    );
+    expect(fixture.cancelUnreadReceipt).toHaveBeenCalledWith(
+      identity,
+      "anchor",
+    );
   });
 });
 
@@ -233,7 +252,10 @@ describe("编辑重生成的锚点 mutation", () => {
         }),
       },
     );
-    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(identity, 2);
+    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(
+      identity,
+      2,
+    );
     expect(fixture.streamStore.cancelUnreadReceipt).toHaveBeenCalledWith(
       identity,
       "old-response",
@@ -249,7 +271,10 @@ describe("编辑重生成的锚点 mutation", () => {
       "truncate_history_after_timestamp",
       expect.anything(),
     );
-    expect(invokeMock).not.toHaveBeenCalledWith("append_single_message", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "append_single_message",
+      expect.anything(),
+    );
     expect(invokeMock).toHaveBeenCalledWith(
       "handle_group_chat_message",
       expect.objectContaining({
@@ -282,7 +307,9 @@ describe("编辑重生成的锚点 mutation", () => {
       throw new Error("mutation rejected");
     });
 
-    await expect(fixture.generation.sendMessage("edited content")).rejects.toThrow("mutation rejected");
+    await expect(
+      fixture.generation.sendMessage("edited content"),
+    ).rejects.toThrow("mutation rejected");
 
     expect(fixture.editingOriginalMessageId.value).toBe("anchor");
     expect(fixture.streamStore.removePendingGeneration).toHaveBeenCalledWith(
@@ -305,9 +332,9 @@ describe("编辑重生成的锚点 mutation", () => {
       deletedIds: ["old-response", 3],
     }));
 
-    await expect(fixture.generation.sendMessage("edited content")).rejects.toThrow(
-      "后端返回的消息 mutation 结果无效",
-    );
+    await expect(
+      fixture.generation.sendMessage("edited content"),
+    ).rejects.toThrow("后端返回的消息 mutation 结果无效");
 
     expect(fixture.editingOriginalMessageId.value).toBe("anchor");
     expect(fixture.currentChatHistory.value.map(({ id }) => id)).toEqual([
@@ -356,7 +383,9 @@ describe("编辑重生成的锚点 mutation", () => {
       throw new Error("mutation rejected");
     });
 
-    await expect(fixture.generation.sendMessage("edited content")).rejects.toThrow("mutation rejected");
+    await expect(
+      fixture.generation.sendMessage("edited content"),
+    ).rejects.toThrow("mutation rejected");
 
     expect(fixture.currentChatHistory.value).toEqual([
       expect.objectContaining({ id: "user" }),
@@ -383,9 +412,9 @@ describe("编辑重生成的锚点 mutation", () => {
       (item) => item.id !== "anchor",
     );
 
-    await expect(fixture.generation.sendMessage("edited content")).rejects.toThrow(
-      "编辑目标消息未在当前历史记录中找到",
-    );
+    await expect(
+      fixture.generation.sendMessage("edited content"),
+    ).rejects.toThrow("编辑目标消息未在当前历史记录中找到");
     expect(fixture.editingOriginalMessageId.value).toBe("anchor");
     expect(invokeMock).not.toHaveBeenCalled();
     expect(fixture.streamStore.addPendingGeneration).not.toHaveBeenCalled();
@@ -434,15 +463,12 @@ describe("编辑重生成的锚点 mutation", () => {
 
     await fixture.regeneration("target");
 
-    expect(invokeMock).toHaveBeenCalledWith(
-      "prepare_topic_regeneration",
-      {
-        ownerId: identity.ownerId,
-        ownerType: identity.ownerType,
-        topicId: identity.topicId,
-        targetResponseMsgId: "target",
-      },
-    );
+    expect(invokeMock).toHaveBeenCalledWith("prepare_topic_regeneration", {
+      ownerId: identity.ownerId,
+      ownerType: identity.ownerType,
+      topicId: identity.topicId,
+      targetResponseMsgId: "target",
+    });
     expect(fixture.streamStore.cancelUnreadReceipt).toHaveBeenCalledWith(
       identity,
       "response",
@@ -451,7 +477,10 @@ describe("编辑重生成的锚点 mutation", () => {
     expect(fixture.currentChatHistory.value.map(({ id }) => id)).toEqual([
       "target",
     ]);
-    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(identity, 1);
+    expect(fixture.topicStore.setTopicMsgCount).toHaveBeenCalledWith(
+      identity,
+      1,
+    );
     expect(
       fixture.streamStore.processStreamEvent.mock.calls.map(
         (call: any[]) => call[0].type,

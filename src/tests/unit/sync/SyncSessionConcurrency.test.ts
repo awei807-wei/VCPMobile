@@ -348,7 +348,9 @@ describe("sync session event ownership", () => {
   });
 
   it("shows a recoverable history error without exposing backend details", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
     mockInvoke("list_sync_log_files", () => {
       throw new Error("private-backend-detail");
     });

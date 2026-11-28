@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed } from "vue";
 
 const props = defineProps<{
   isUser: boolean;
@@ -13,15 +13,22 @@ const mergedStyle = computed(() => {
 </script>
 
 <template>
-  <div class="w-full min-w-0 flex flex-col" :class="[
-    isUser ? 'items-end' : 'items-start',
-    isStreaming ? 'streaming' : '',
-  ]">
+  <div
+    class="w-full min-w-0 flex flex-col"
+    :class="[
+      isUser ? 'items-end' : 'items-start',
+      isStreaming ? 'streaming' : '',
+    ]"
+  >
     <div
       class="vcp-bubble-container message-bubble rounded-2xl transition-all duration-300 relative min-w-[60px] min-h-[36px]"
       :class="[
-        isUser ? 'p-3 w-fit max-w-[85%] vcp-bubble-user' : 'p-1.5 w-fit max-w-[100%] min-w-[1rem] vcp-bubble-agent'
-      ]" :style="mergedStyle">
+        isUser
+          ? 'p-3 w-fit max-w-[85%] vcp-bubble-user'
+          : 'p-1.5 w-fit max-w-[100%] min-w-[1rem] vcp-bubble-agent',
+      ]"
+      :style="mergedStyle"
+    >
       <slot />
     </div>
 
@@ -63,10 +70,12 @@ const mergedStyle = computed(() => {
   padding: 1px;
   border-radius: inherit;
   /* 优化：使用更简单的渐变，减少插值计算 */
-  background: linear-gradient(90deg,
-      transparent 25%,
-      var(--highlight-text, #3b82f6) 50%,
-      transparent 75%);
+  background: linear-gradient(
+    90deg,
+    transparent 25%,
+    var(--highlight-text, #3b82f6) 50%,
+    transparent 75%
+  );
   background-size: 200% 100%;
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,

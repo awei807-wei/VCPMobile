@@ -66,7 +66,8 @@ async function stopMessage(
       topicId: identity.topicId,
     });
     // A terminal event or a newer reply can win the race with the IPC ack.
-    if (generation !== deps.runtimeState.streamGenerations.get(messageKey)) return;
+    if (generation !== deps.runtimeState.streamGenerations.get(messageKey))
+      return;
     const wire = deps.runtimeState.wireGenerations?.get(messageKey);
     if (wire && wire.streamGeneration === generation) wire.interrupted = true;
     clearStreamMessageRendering(deps.runtimeState, messageKey, true);

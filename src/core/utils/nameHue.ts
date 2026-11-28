@@ -14,14 +14,14 @@ export function nameHue(name: string): number {
 
 /** 名字 → 头像背景（135° 双色调渐变，辨识度高于单色）。 */
 export function nameAvatarBackground(name: string): string {
-  const hue = nameHue(name || '?');
+  const hue = nameHue(name || "?");
   return `linear-gradient(135deg, hsl(${hue} 58% 52%), hsl(${(hue + 36) % 360} 55% 42%))`;
 }
 
 /** 名字 → 头像首字符（取第一个非空白字符，大写化拉丁字母）。 */
 export function nameInitial(name: string): string {
   const trimmed = name.trim();
-  if (!trimmed) return '?';
-  const first = Array.from(trimmed)[0] ?? '?';
+  if (!trimmed) return "?";
+  const first = Array.from(trimmed)[0] ?? "?";
   return first.toUpperCase();
 }

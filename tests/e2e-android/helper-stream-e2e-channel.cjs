@@ -105,11 +105,13 @@ async function invokeChannel(cdp, name, command, args, expected) {
 }
 
 async function readHarnessState(cdp) {
-  return (await cdp.evaluate(`(() => {
+  return (
+    (await cdp.evaluate(`(() => {
     const state = window.__helperStreamE2E;
     if (!state) return null;
     return { channels: state.channels, results: state.results };
-  })()`)) || { channels: {}, results: {} };
+  })()`)) || { channels: {}, results: {} }
+  );
 }
 
 async function waitForState(cdp, predicate, timeoutMs, code) {

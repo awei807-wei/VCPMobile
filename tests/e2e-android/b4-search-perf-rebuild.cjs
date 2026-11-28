@@ -21,8 +21,7 @@ function getVerifiedCdpPid(runtime) {
   const binding = runtime?.cdp;
   const pid = binding?.pid;
   const boundPid = binding?.boundPid;
-  const socketMatches =
-    binding?.socketName === `${PID_SOCKET_PREFIX}${pid}`;
+  const socketMatches = binding?.socketName === `${PID_SOCKET_PREFIX}${pid}`;
   if (
     binding?.socketBindingVerified !== true ||
     !isPid(pid) ||
@@ -173,7 +172,9 @@ async function rebuildIndex(runtime, dependencies = {}) {
   const setIntervalFn =
     dependencies.setInterval || timer.setInterval || globalThis.setInterval;
   const clearIntervalFn =
-    dependencies.clearInterval || timer.clearInterval || globalThis.clearInterval;
+    dependencies.clearInterval ||
+    timer.clearInterval ||
+    globalThis.clearInterval;
   const intervalMs =
     dependencies.memorySampleIntervalMs ?? MEMORY_SAMPLE_INTERVAL_MS;
   const now = dependencies.now || (() => performance.now());

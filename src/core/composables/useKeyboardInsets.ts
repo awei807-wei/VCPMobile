@@ -71,8 +71,7 @@ export function useKeyboardInsets(): UseKeyboardInsetsReturn {
   const estimateFromScroll = () => {
     // 延迟等待键盘动画完成
     focusTimeout = setTimeout(() => {
-      const diff =
-        document.documentElement.scrollHeight - window.innerHeight;
+      const diff = document.documentElement.scrollHeight - window.innerHeight;
       if (diff > 100) {
         keyboardHeight.value = diff;
         isKeyboardOpen.value = true;

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { getVersion } from '@tauri-apps/api/app';
-import { useUpdateStore } from '../../../core/stores/update';
-import SettingsRow from '../../../components/settings/SettingsRow.vue';
-import SettingsActionButton from '../../../components/settings/SettingsActionButton.vue';
-import SettingsInlineStatus from '../../../components/settings/SettingsInlineStatus.vue';
+import { ref, onMounted, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { useUpdateStore } from "../../../core/stores/update";
+import SettingsRow from "../../../components/settings/SettingsRow.vue";
+import SettingsActionButton from "../../../components/settings/SettingsActionButton.vue";
+import SettingsInlineStatus from "../../../components/settings/SettingsInlineStatus.vue";
 
 interface UpdateInfo {
   hasUpdate: boolean;
@@ -18,18 +18,18 @@ interface UpdateInfo {
 }
 
 type LocalUpdateStatus =
-  | { type: 'idle' }
-  | { type: 'checking' }
-  | { type: 'no-update' }
-  | { type: 'update-available'; info: UpdateInfo };
+  | { type: "idle" }
+  | { type: "checking" }
+  | { type: "no-update" }
+  | { type: "update-available"; info: UpdateInfo };
 
-const currentVersion = ref('');
-const localStatus = ref<LocalUpdateStatus>({ type: 'idle' });
+const currentVersion = ref("");
+const localStatus = ref<LocalUpdateStatus>({ type: "idle" });
 
 const updateStore = useUpdateStore();
 
 const progressPercent = computed(() => {
-  if (updateStore.status !== 'downloading') return 0;
+  if (updateStore.status !== "downloading") return 0;
   const progress = updateStore.downloadProgress;
   const total = updateStore.downloadTotal;
   if (!total || total === 0) return 0;
@@ -37,56 +37,64 @@ const progressPercent = computed(() => {
 });
 
 const rowDescription = computed(() => {
-  if (updateStore.status === 'downloading') {
+  if (updateStore.status === "downloading") {
     return `正在下载: ${progressPercent.value}% (点击查看进度)`;
   }
-  if (updateStore.status === 'installing') {
-    return '正在启动安装器...';
+  if (updateStore.status === "installing") {
+    return "正在启动安装器...";
   }
-  if (updateStore.status === 'error') {
-    return '更新出错 (点击查看详情)';
+  if (updateStore.status === "error") {
+    return "更新出错 (点击查看详情)";
   }
   if (updateStore.latestVersion) {
-    if (updateStore.updateInfo && !updateStore.updateInfo.downloadUrl && updateStore.updateInfo.releasePageUrl) {
+    if (
+      updateStore.updateInfo &&
+      !updateStore.updateInfo.downloadUrl &&
+      updateStore.updateInfo.releasePageUrl
+    ) {
       return `发现新版本: v${updateStore.latestVersion}，需手动下载 (点击查看)`;
     }
     return `发现新版本: v${updateStore.latestVersion} (点击查看)`;
   }
-  return currentVersion.value ? `当前版本: v${currentVersion.value}` : '获取版本中...';
+  return currentVersion.value
+    ? `当前版本: v${currentVersion.value}`
+    : "获取版本中...";
 });
 
 const rowClickable = computed(() => {
-  return !!updateStore.latestVersion ||
-         updateStore.status === 'downloading' ||
-         updateStore.status === 'installing' ||
-         updateStore.status === 'error';
+  return (
+    !!updateStore.latestVersion ||
+    updateStore.status === "downloading" ||
+    updateStore.status === "installing" ||
+    updateStore.status === "error"
+  );
 });
 
 onMounted(async () => {
   try {
     currentVersion.value = await getVersion();
   } catch (e) {
-    console.error('[UpdateSection] Failed to get version:', e);
+    console.error("[UpdateSection] Failed to get version:", e);
   }
 });
 
 const checkUpdate = async () => {
-  localStatus.value = { type: 'checking' };
+  localStatus.value = { type: "checking" };
   try {
-    const info: UpdateInfo = await invoke('check_for_update');
+    const info: UpdateInfo = await invoke("check_for_update");
     if (!info.hasUpdate) {
-      localStatus.value = { type: 'no-update' };
+      localStatus.value = { type: "no-update" };
       setTimeout(() => {
-        if (localStatus.value.type === 'no-update') {
-          localStatus.value = { type: 'idle' };
+        if (localStatus.value.type === "no-update") {
+          localStatus.value = { type: "idle" };
         }
       }, 4000);
       return;
     }
     updateStore.openPrompt(info);
-    localStatus.value = { type: 'idle' };
+    localStatus.value = { type: "idle" };
   } catch (e: any) {
-    localStatus.value = { type: 'idle' };
+    localStatus.value = { type: "idle" };
     updateStore.setError(String(e));
   }
 };
@@ -108,7 +116,11 @@ const openPrompt = () => {
     >
       <template #action>
         <SettingsActionButton
-          v-if="updateStore.status === 'downloading' || updateStore.status === 'installing' || updateStore.status === 'error'"
+          v-if="
+            updateStore.status === 'downloading' ||
+            updateStore.status === 'installing' ||
+            updateStore.status === 'error'
+          "
           variant="secondary"
           size="sm"
           @click.stop="openPrompt"
@@ -131,8 +143,16 @@ const openPrompt = () => {
     <div v-if="localStatus.type === 'checking'" class="mt-2">
       <SettingsInlineStatus type="loading" message="正在检查最新版本..." />
     </div>
-    <div v-else-if="localStatus.type === 'no-update' && updateStore.status === 'idle'" class="mt-2">
-      <SettingsInlineStatus type="success" :message="`当前已是最新版本 (v${currentVersion})`" />
+    <div
+      v-else-if="
+        localStatus.type === 'no-update' && updateStore.status === 'idle'
+      "
+      class="mt-2"
+    >
+      <SettingsInlineStatus
+        type="success"
+        :message="`当前已是最新版本 (v${currentVersion})`"
+      />
     </div>
   </div>
 </template>

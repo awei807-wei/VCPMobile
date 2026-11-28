@@ -29,7 +29,10 @@ const startManualSync = () => {
 
 const rebuildEmoticonLibrary = async () => {
   emit("save-request");
-  emoticonStatus.value = { type: "loading", message: "正在从远程服务器获取..." };
+  emoticonStatus.value = {
+    type: "loading",
+    message: "正在从远程服务器获取...",
+  };
   try {
     const count = await invoke<number>("regenerate_emoticon_library");
     emoticonStatus.value = {

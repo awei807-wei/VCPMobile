@@ -9,7 +9,10 @@ const {
   COLD_RESTART_POLL_INTERVAL_MS,
   COLD_RESTART_TIMEOUT_MS,
 } = require("./b4-search-perf-restart.cjs");
-const { coldRestartChecks, mergeColdRestartGateFailures } = require("./b4-search-perf-gates.cjs");
+const {
+  coldRestartChecks,
+  mergeColdRestartGateFailures,
+} = require("./b4-search-perf-gates.cjs");
 const {
   DEFAULT_QUERY_SPECS,
   DEFAULT_SYNTHETIC_QUERIES,
@@ -102,9 +105,17 @@ function errorText(error) {
 }
 
 function validateIndexStatus(status) {
-  const requiredBooleans = ["available", "schemaValid", "tokenizerValid", "healthy"];
+  const requiredBooleans = [
+    "available",
+    "schemaValid",
+    "tokenizerValid",
+    "healthy",
+  ];
   const booleansValid = requiredBooleans.every((key) => {
-    const fallbackKey = key.replace(/[A-Z]/g, (value) => `_${value.toLowerCase()}`);
+    const fallbackKey = key.replace(
+      /[A-Z]/g,
+      (value) => `_${value.toLowerCase()}`,
+    );
     return readStatusValue(status, key, fallbackKey) === true;
   });
   const countFields = [
@@ -172,7 +183,8 @@ function reportChecks(state, warmStats, coldStats, memory, memoryPeak) {
   const syntheticFixture = state.querySource === "b4-synthetic-fixture";
   const fixtureVerified = fixtureVerificationPassed(state, syntheticFixture);
   const queryValidation = state.warm?.queryValidation;
-  const peak = memoryPeak ||
+  const peak =
+    memoryPeak ||
     memoryPeakDelta(
       state.rebuildMemoryBefore,
       state.rebuildMemoryPeak,
@@ -214,7 +226,8 @@ function fixtureVerificationPassed(state, required) {
     requirements.topics === REQUIRED_CORPUS.topics &&
     requirements.liveTopicRows === REQUIRED_CORPUS.liveTopicRows &&
     requirements.messages === REQUIRED_CORPUS.messages &&
-    requirements.minDecodedContentBytes >= REQUIRED_CORPUS.minDecodedContentBytes;
+    requirements.minDecodedContentBytes >=
+      REQUIRED_CORPUS.minDecodedContentBytes;
   return fixture?.verified === true && fullScale;
 }
 
@@ -225,7 +238,10 @@ function buildReportFailures(state, options, runtimeError, memoryPeak) {
   );
   if (runtimeError) {
     failures.push(
-      makeFailure("runtime", redactText(errorText(runtimeError), options.queries)),
+      makeFailure(
+        "runtime",
+        redactText(errorText(runtimeError), options.queries),
+      ),
     );
   }
   if (!memoryPeak.gatePassed) {
@@ -279,9 +295,22 @@ function buildReport(options, state, runtimeError = null) {
     rebuildMemory,
     memoryPeak,
   );
-  const failures = buildReportFailures(stateWithSource, options, runtimeError, memoryPeak);
-  const reportWarm = sanitizeWarm(state.warm, options.querySource, options.queries);
-  const reportCold = sanitizeCold(state.cold, options.querySource, options.queries);
+  const failures = buildReportFailures(
+    stateWithSource,
+    options,
+    runtimeError,
+    memoryPeak,
+  );
+  const reportWarm = sanitizeWarm(
+    state.warm,
+    options.querySource,
+    options.queries,
+  );
+  const reportCold = sanitizeCold(
+    state.cold,
+    options.querySource,
+    options.queries,
+  );
   const ok = failures.length === 0 && Object.values(checks).every(Boolean);
   return {
     schema: "vcp.android.b4.search-performance.v1",
@@ -309,7 +338,12 @@ function buildReport(options, state, runtimeError = null) {
       "rebuild",
     ),
     memory: sanitizeSafeValue(
-      reportSupport.buildMemoryReport(state, rebuildMemory, memoryPeak, expectedPid),
+      reportSupport.buildMemoryReport(
+        state,
+        rebuildMemory,
+        memoryPeak,
+        expectedPid,
+      ),
       options.queries,
       "memory",
     ),

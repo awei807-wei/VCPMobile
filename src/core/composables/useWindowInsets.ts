@@ -38,7 +38,9 @@ const toCssPx = (physicalPx: unknown): number => {
 const writeRootInsetVars = (detail: NativeWindowInsetsDetail) => {
   const root = document.documentElement;
   const top = toCssPx(detail.statusTop ?? detail.systemTop ?? 0);
-  const navBottom = toCssPx(detail.navigationBottom ?? detail.systemBottom ?? 0);
+  const navBottom = toCssPx(
+    detail.navigationBottom ?? detail.systemBottom ?? 0,
+  );
   const imeBottom = toCssPx(detail.imeBottom ?? 0);
   const bottom = detail.keyboardVisible ? 0 : navBottom;
 
@@ -63,7 +65,9 @@ const writeRootInsetVars = (detail: NativeWindowInsetsDetail) => {
 export function useWindowInsets(): UseWindowInsetsReturn {
   const handleWindowInsets = (e: Event) => {
     receivedWindowInsets = true;
-    writeRootInsetVars((e as CustomEvent<NativeWindowInsetsDetail>).detail ?? {});
+    writeRootInsetVars(
+      (e as CustomEvent<NativeWindowInsetsDetail>).detail ?? {},
+    );
   };
 
   const handleKeyboardInsetsFallback = (e: Event) => {
@@ -85,7 +89,10 @@ export function useWindowInsets(): UseWindowInsetsReturn {
 
   onUnmounted(() => {
     window.removeEventListener("vcp-window-insets", handleWindowInsets);
-    window.removeEventListener("vcp-keyboard-inset", handleKeyboardInsetsFallback);
+    window.removeEventListener(
+      "vcp-keyboard-inset",
+      handleKeyboardInsetsFallback,
+    );
   });
 
   return {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
-import { useThemeStore } from '../../core/stores/theme';
+import { ref, onMounted, onUnmounted, watch } from "vue";
+import { useThemeStore } from "../../core/stores/theme";
 
 const themeStore = useThemeStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -128,13 +128,20 @@ const fsSource = `
   }
 `;
 
-const createShader = (gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null => {
+const createShader = (
+  gl: WebGLRenderingContext,
+  type: number,
+  source: string,
+): WebGLShader | null => {
   const shader = gl.createShader(type);
   if (!shader) return null;
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    console.error('[WebGLShader] Shader compile error:', gl.getShaderInfoLog(shader));
+    console.error(
+      "[WebGLShader] Shader compile error:",
+      gl.getShaderInfoLog(shader),
+    );
     gl.deleteShader(shader);
     return null;
   }
@@ -145,16 +152,16 @@ const initWebGL = () => {
   const canvas = canvasRef.value;
   if (!canvas) return;
 
-  gl = canvas.getContext('webgl', { 
-    alpha: false, 
+  gl = canvas.getContext("webgl", {
+    alpha: false,
     antialias: true,
     depth: false,
     stencil: false,
-    powerPreference: 'high-performance'
+    powerPreference: "high-performance",
   });
 
   if (!gl) {
-    console.warn('[WebGL] WebGL context is not supported, falling back.');
+    console.warn("[WebGL] WebGL context is not supported, falling back.");
     return;
   }
 
@@ -170,7 +177,7 @@ const initWebGL = () => {
   gl.linkProgram(program);
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    console.error('[WebGL] Link error:', gl.getProgramInfoLog(program));
+    console.error("[WebGL] Link error:", gl.getProgramInfoLog(program));
     return;
   }
 
@@ -178,28 +185,23 @@ const initWebGL = () => {
 
   // Position Buffer (covering full NDC viewport space)
   const vertices = new Float32Array([
-    -1.0, -1.0,
-     1.0, -1.0,
-    -1.0,  1.0,
-    -1.0,  1.0,
-     1.0, -1.0,
-     1.0,  1.0,
+    -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
   ]);
 
   const positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
-  const positionLoc = gl.getAttribLocation(program, 'position');
+  const positionLoc = gl.getAttribLocation(program, "position");
   gl.enableVertexAttribArray(positionLoc);
   gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
 
   // Uniform locations
-  uResolutionLoc = gl.getUniformLocation(program, 'u_resolution');
-  uTimeLoc = gl.getUniformLocation(program, 'u_time');
-  uMouseLoc = gl.getUniformLocation(program, 'u_mouse');
-  uActiveLoc = gl.getUniformLocation(program, 'u_active');
-  uIsDarkLoc = gl.getUniformLocation(program, 'u_is_dark');
+  uResolutionLoc = gl.getUniformLocation(program, "u_resolution");
+  uTimeLoc = gl.getUniformLocation(program, "u_time");
+  uMouseLoc = gl.getUniformLocation(program, "u_mouse");
+  uActiveLoc = gl.getUniformLocation(program, "u_active");
+  uIsDarkLoc = gl.getUniformLocation(program, "u_is_dark");
 
   startTime = performance.now();
   renderLoop();
@@ -294,12 +296,16 @@ onMounted(() => {
       // Zero-intrusive Parent Interaction Listener
       if (canvas.parentElement) {
         boundParent = canvas.parentElement;
-        boundParent.addEventListener('mousemove', trackInteraction);
-        boundParent.addEventListener('mouseleave', releaseInteraction);
-        boundParent.addEventListener('touchmove', trackInteraction, { passive: false });
-        boundParent.addEventListener('touchend', releaseInteraction);
-        boundParent.addEventListener('mousedown', trackInteraction);
-        boundParent.addEventListener('touchstart', trackInteraction, { passive: true });
+        boundParent.addEventListener("mousemove", trackInteraction);
+        boundParent.addEventListener("mouseleave", releaseInteraction);
+        boundParent.addEventListener("touchmove", trackInteraction, {
+          passive: false,
+        });
+        boundParent.addEventListener("touchend", releaseInteraction);
+        boundParent.addEventListener("mousedown", trackInteraction);
+        boundParent.addEventListener("touchstart", trackInteraction, {
+          passive: true,
+        });
       }
     }
   }, 100);
@@ -309,19 +315,19 @@ onUnmounted(() => {
   if (animationFrameId) {
     cancelAnimationFrame(animationFrameId);
   }
-  
+
   if (resizeObserver) {
     resizeObserver.disconnect();
   }
 
   // Clean up event listeners on parent
   if (boundParent) {
-    boundParent.removeEventListener('mousemove', trackInteraction);
-    boundParent.removeEventListener('mouseleave', releaseInteraction);
-    boundParent.removeEventListener('touchmove', trackInteraction);
-    boundParent.removeEventListener('touchend', releaseInteraction);
-    boundParent.removeEventListener('mousedown', trackInteraction);
-    boundParent.removeEventListener('touchstart', trackInteraction);
+    boundParent.removeEventListener("mousemove", trackInteraction);
+    boundParent.removeEventListener("mouseleave", releaseInteraction);
+    boundParent.removeEventListener("touchmove", trackInteraction);
+    boundParent.removeEventListener("touchend", releaseInteraction);
+    boundParent.removeEventListener("mousedown", trackInteraction);
+    boundParent.removeEventListener("touchstart", trackInteraction);
   }
 
   gl = null;
@@ -329,17 +335,20 @@ onUnmounted(() => {
 });
 
 // Proactively update dark mode value inside running loop when theme changes
-watch(() => themeStore.isDarkResolved, (isDark) => {
-  if (gl && program && uIsDarkLoc) {
-    gl.useProgram(program);
-    gl.uniform1f(uIsDarkLoc, isDark ? 1.0 : 0.0);
-  }
-});
+watch(
+  () => themeStore.isDarkResolved,
+  (isDark) => {
+    if (gl && program && uIsDarkLoc) {
+      gl.useProgram(program);
+      gl.uniform1f(uIsDarkLoc, isDark ? 1.0 : 0.0);
+    }
+  },
+);
 </script>
 
 <template>
-  <canvas 
-    ref="canvasRef" 
+  <canvas
+    ref="canvasRef"
     class="w-full h-full block bg-transparent pointer-events-none"
   />
 </template>

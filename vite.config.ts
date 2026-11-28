@@ -11,7 +11,9 @@ function getPhysicalIps() {
     interfaces = os.networkInterfaces();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[vite.config] Failed to inspect network interfaces, falling back to 0.0.0.0: ${message}`);
+    console.warn(
+      `[vite.config] Failed to inspect network interfaces, falling back to 0.0.0.0: ${message}`,
+    );
     return [];
   }
 
@@ -63,22 +65,24 @@ const physicalIps = getPhysicalIps();
 const detectedHost = process.env.TAURI_DEV_HOST;
 
 // USB 模式（localhost）直接信任；WiFi 模式校验是否在物理 IP 列表中，防止 TUN 劫持
-const isLocalhost = detectedHost === "localhost" || (detectedHost && detectedHost.startsWith("127."));
+const isLocalhost =
+  detectedHost === "localhost" ||
+  (detectedHost && detectedHost.startsWith("127."));
 const host = isLocalhost
   ? detectedHost
-  : (detectedHost && physicalIps.includes(detectedHost))
+  : detectedHost && physicalIps.includes(detectedHost)
     ? detectedHost
-    : (physicalIps[0] || "0.0.0.0");
+    : physicalIps[0] || "0.0.0.0";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [
-    vue(),
-    UnoCSS(),
-  ],
+  plugins: [vue(), UnoCSS()],
 
   esbuild: {
-    pure: process.env.NODE_ENV === "production" ? ["console.log", "console.debug", "console.info"] : [],
+    pure:
+      process.env.NODE_ENV === "production"
+        ? ["console.log", "console.debug", "console.info"]
+        : [],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -88,7 +92,7 @@ export default defineConfig(async () => ({
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
-    host: host || '0.0.0.0',
+    host: host || "0.0.0.0",
     strictPort: true,
     hmr: host
       ? {

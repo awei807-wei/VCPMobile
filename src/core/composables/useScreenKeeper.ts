@@ -1,4 +1,4 @@
-import { setKeepScreenOn, clearKeepScreenOn } from 'tauri-plugin-vcp-mobile';
+import { setKeepScreenOn, clearKeepScreenOn } from "tauri-plugin-vcp-mobile";
 
 let refCount = 0;
 

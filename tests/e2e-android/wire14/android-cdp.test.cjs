@@ -73,15 +73,23 @@ test("fetchJson 超时会 abort 请求、清理定时器并返回稳定错误码
   const timer = clearTimerCounter();
   let aborted = false;
   await assert.rejects(
-    fetchJson("http://127.0.0.1:1/json/list", { timeoutMs: 10 }, {
-      fetch: (_url, { signal }) => {
-        signal.addEventListener("abort", () => {
-          aborted = true;
-        }, { once: true });
-        return hangingFetch()(_url, { signal });
+    fetchJson(
+      "http://127.0.0.1:1/json/list",
+      { timeoutMs: 10 },
+      {
+        fetch: (_url, { signal }) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+            },
+            { once: true },
+          );
+          return hangingFetch()(_url, { signal });
+        },
+        clearTimeout: timer.clearTimeout,
       },
-      clearTimeout: timer.clearTimeout,
-    }),
+    ),
     (error) => {
       assert.equal(error.code, "CDP_JSON_TIMEOUT");
       return true;
@@ -169,13 +177,10 @@ test("WebSocket 握手超时会关闭 socket、移除监听并返回稳定错误
   const client = new CdpClient("ws://127.0.0.1/devtools/page", {
     WebSocket: HangingWebSocket,
   });
-  await assert.rejects(
-    client.connect({ timeoutMs: 10 }),
-    (error) => {
-      assert.equal(error.code, "CDP_WEBSOCKET_CONNECT_TIMEOUT");
-      return true;
-    },
-  );
+  await assert.rejects(client.connect({ timeoutMs: 10 }), (error) => {
+    assert.equal(error.code, "CDP_WEBSOCKET_CONNECT_TIMEOUT");
+    return true;
+  });
   const socket = HangingWebSocket.instances.at(-1);
   assert.equal(socket.closed, true);
   assert.equal(socket.listenerCount(), 0);

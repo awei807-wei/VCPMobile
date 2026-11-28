@@ -129,20 +129,16 @@ function parseProcRss(output, field = null, source = PROC_STATUS_SOURCE) {
     );
     const match = text.match(pattern);
     if (!match) continue;
-    const reading = makeReading(
-      "rss",
-      candidate,
-      match[1],
-      match[2],
-      source,
-    );
+    const reading = makeReading("rss", candidate, match[1], match[2], source);
     if (reading) return reading;
   }
   return null;
 }
 
 function parsePid(output) {
-  const match = String(output || "").trim().match(/\b\d+\b/);
+  const match = String(output || "")
+    .trim()
+    .match(/\b\d+\b/);
   if (!match) return null;
   const pid = Number(match[0]);
   return isPid(pid) ? pid : null;

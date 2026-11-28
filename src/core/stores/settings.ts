@@ -90,18 +90,19 @@ export type ConnectionProfileRuntimeField =
 const createConnectionProfileFromSettings = (
   settings: Partial<AppSettings> | null | undefined,
   id: ConnectionProfileId,
-): ConnectionProfile => mirrorRealtimeAliases({
-  ...createEmptyConnectionProfile(id),
-  vcpServerUrl: settings?.vcpServerUrl || "",
-  vcpApiKey: settings?.vcpApiKey || "",
-  vcpLogUrl: settings?.vcpLogUrl || "",
-  vcpLogKey: settings?.vcpLogKey || "",
-  syncServerUrl: settings?.syncServerUrl || "",
-  syncHttpUrl: settings?.syncHttpUrl || "",
-  syncToken: settings?.syncToken || "",
-  distributedWsUrl: settings?.distributedWsUrl || "",
-  distributedVcpKey: settings?.distributedVcpKey || "",
-});
+): ConnectionProfile =>
+  mirrorRealtimeAliases({
+    ...createEmptyConnectionProfile(id),
+    vcpServerUrl: settings?.vcpServerUrl || "",
+    vcpApiKey: settings?.vcpApiKey || "",
+    vcpLogUrl: settings?.vcpLogUrl || "",
+    vcpLogKey: settings?.vcpLogKey || "",
+    syncServerUrl: settings?.syncServerUrl || "",
+    syncHttpUrl: settings?.syncHttpUrl || "",
+    syncToken: settings?.syncToken || "",
+    distributedWsUrl: settings?.distributedWsUrl || "",
+    distributedVcpKey: settings?.distributedVcpKey || "",
+  });
 
 const mirrorRealtimeAliases = <
   T extends {
@@ -252,10 +253,12 @@ export const useSettingsStore = defineStore("settings", () => {
       ].some((field) => Object.prototype.hasOwnProperty.call(updates, field));
 
       if (settings.value && explicitlyTouchesProfile) {
-        const mergedSettings = JSON.parse(JSON.stringify({
-          ...settings.value,
-          ...updates,
-        })) as AppSettings;
+        const mergedSettings = JSON.parse(
+          JSON.stringify({
+            ...settings.value,
+            ...updates,
+          }),
+        ) as AppSettings;
         syncActiveConnectionProfileFromSettings(mergedSettings);
         preparedUpdates.vcpLogUrl = mergedSettings.vcpLogUrl;
         preparedUpdates.vcpLogKey = mergedSettings.vcpLogKey;

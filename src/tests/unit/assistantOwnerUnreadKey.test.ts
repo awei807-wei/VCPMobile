@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { mockInvoke } from "../mocks/tauri";
-import {
-  ownerUnreadKey,
-  useAssistantStore,
-} from "../../core/stores/assistant";
+import { ownerUnreadKey, useAssistantStore } from "../../core/stores/assistant";
 
 describe("owner unread aggregation key contract", () => {
   beforeEach(() => {
@@ -46,10 +43,12 @@ describe("owner unread aggregation key contract", () => {
 
     expect(store.getOwnerUnreadCount(agentId, "agent")).toBe(11);
     expect(store.getOwnerUnreadCount(groupId, "group")).toBe(7);
-    expect(Object.keys(store.unreadCounts).sort()).toEqual([
-      ownerUnreadKey("agent", agentId),
-      ownerUnreadKey("group", groupId),
-    ].sort());
+    expect(Object.keys(store.unreadCounts).sort()).toEqual(
+      [
+        ownerUnreadKey("agent", agentId),
+        ownerUnreadKey("group", groupId),
+      ].sort(),
+    );
   });
 
   it("loads snapshot counts without crossing Agent and Group encoded keys", async () => {
@@ -69,9 +68,11 @@ describe("owner unread aggregation key contract", () => {
 
     expect(store.getOwnerUnreadCount(agentId, "agent")).toBe(11);
     expect(store.getOwnerUnreadCount(groupId, "group")).toBe(7);
-    expect(Object.keys(store.unreadCounts).sort()).toEqual([
-      ownerUnreadKey("agent", agentId),
-      ownerUnreadKey("group", groupId),
-    ].sort());
+    expect(Object.keys(store.unreadCounts).sort()).toEqual(
+      [
+        ownerUnreadKey("agent", agentId),
+        ownerUnreadKey("group", groupId),
+      ].sort(),
+    );
   });
 });

@@ -13,8 +13,7 @@ function coldRestartSampleChecks(sample) {
     foregrounded: sample?.foregrounded === true,
     previousPidChanged:
       isPid(previousPid) && isPid(nextPid) && previousPid !== nextPid,
-    nextPidMatchesCdpPid:
-      isPid(nextPid) && isPid(cdpPid) && nextPid === cdpPid,
+    nextPidMatchesCdpPid: isPid(nextPid) && isPid(cdpPid) && nextPid === cdpPid,
   };
 }
 
@@ -23,7 +22,8 @@ function coldRestartChecks(samples) {
   const sampleChecks = list.map(coldRestartSampleChecks);
   return {
     coldSamplesProcessRestarted:
-      list.length > 0 && sampleChecks.every((checks) => checks.processRestarted),
+      list.length > 0 &&
+      sampleChecks.every((checks) => checks.processRestarted),
     coldSamplesForegrounded:
       list.length > 0 && sampleChecks.every((checks) => checks.foregrounded),
     coldSamplesPreviousPidChanged:
@@ -77,7 +77,12 @@ function coldRestartGateFailures(samples) {
 function mergeColdRestartGateFailures(existing, samples) {
   const failures = Array.isArray(existing) ? [...existing] : [];
   for (const failure of coldRestartGateFailures(samples)) {
-    if (!failures.some((item) => item.phase === failure.phase && item.message === failure.message)) {
+    if (
+      !failures.some(
+        (item) =>
+          item.phase === failure.phase && item.message === failure.message,
+      )
+    ) {
       failures.push(failure);
     }
   }

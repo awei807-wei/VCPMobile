@@ -320,8 +320,13 @@ function acceptStreamGeneration(
     if (wireState && parsed.wireGeneration < wireState.wireGeneration)
       return null;
     if (wireState && parsed.wireGeneration === wireState.wireGeneration) {
-      if (wireState.interrupted && parsed.event.type !== "end" &&
-          parsed.event.type !== "error" && !isTerminalAurora(parsed.event)) return null;
+      if (
+        wireState.interrupted &&
+        parsed.event.type !== "end" &&
+        parsed.event.type !== "error" &&
+        !isTerminalAurora(parsed.event)
+      )
+        return null;
       parsed.generation = wireState.streamGeneration;
     } else {
       parsed.generation = nextStreamGeneration(

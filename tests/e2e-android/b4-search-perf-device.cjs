@@ -13,7 +13,10 @@ const {
   runAdbToFile,
 } = require("./scripts/adb-env.cjs");
 const runtimeSupport = require("./b4-search-perf-device-support.cjs");
-const { cleanupError, runCleanupActions } = require("./b4-search-perf-device-operations.cjs");
+const {
+  cleanupError,
+  runCleanupActions,
+} = require("./b4-search-perf-device-operations.cjs");
 
 const TARGET_SERIAL = "emulator-5554";
 const TARGET_AVD = "VCPMobile_Perf_16K";
@@ -23,7 +26,8 @@ const REMOTE_STAGED_VERIFY = "/data/local/tmp/vcp-b4-fixture-staged.db";
 // opens vcp_avatar.db. Keep every app-private path as a basename so it stays
 // in that same directory; `files/...` would target the wrong database.
 const REMOTE_APP_DATA_ROOT = ".";
-const appPrivatePath = (basename) => path.posix.join(REMOTE_APP_DATA_ROOT, basename);
+const appPrivatePath = (basename) =>
+  path.posix.join(REMOTE_APP_DATA_ROOT, basename);
 const REMOTE_APP_DB = appPrivatePath("vcp_avatar.db");
 const REMOTE_APP_DB_WAL = appPrivatePath("vcp_avatar.db-wal");
 const REMOTE_APP_DB_SHM = appPrivatePath("vcp_avatar.db-shm");
@@ -44,7 +48,9 @@ function compactError(error) {
 
 function assertDebugPackage(packageName = DEBUG_PACKAGE) {
   if (packageName !== "com.vcp.avatar.debug") {
-    throw new Error(`B4 只允许 debug 包 com.vcp.avatar.debug，收到=${packageName}`);
+    throw new Error(
+      `B4 只允许 debug 包 com.vcp.avatar.debug，收到=${packageName}`,
+    );
   }
   return packageName;
 }
@@ -53,7 +59,10 @@ function assertTargetSerial(serial) {
   if (serial !== undefined && serial !== null && serial !== TARGET_SERIAL) {
     throw new Error(`B4 只允许设备 serial ${TARGET_SERIAL}`);
   }
-  if (process.env.ANDROID_SERIAL && process.env.ANDROID_SERIAL !== TARGET_SERIAL) {
+  if (
+    process.env.ANDROID_SERIAL &&
+    process.env.ANDROID_SERIAL !== TARGET_SERIAL
+  ) {
     throw new Error(`ANDROID_SERIAL 必须严格为 ${TARGET_SERIAL}`);
   }
 }
@@ -111,7 +120,11 @@ async function withTargetDevice(serial, action, dependencies = {}) {
 }
 
 function parsePid(output) {
-  const pid = Number(String(output || "").trim().split(/\s+/)[0]);
+  const pid = Number(
+    String(output || "")
+      .trim()
+      .split(/\s+/)[0],
+  );
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
@@ -154,7 +167,8 @@ async function killDebugProcess(dependencies = {}) {
 }
 
 function assertLocalFixture(localPath) {
-  if (!localPath || typeof localPath !== "string") throw new Error("fixture path 不能为空");
+  if (!localPath || typeof localPath !== "string")
+    throw new Error("fixture path 不能为空");
   const resolved = path.resolve(localPath);
   if (!fs.statSync(resolved, { throwIfNoEntry: false })?.isFile()) {
     throw new Error("fixture 文件不存在");
@@ -167,11 +181,14 @@ function localPullPath(prefix = "vcpmobile-b4-device") {
 }
 
 function stagedTransferError(errorOrResult, bytesWritten = 0) {
-  const status = Number.isInteger(errorOrResult?.status) ? errorOrResult.status : 1;
-  const reportedBytes = Number.isSafeInteger(errorOrResult?.bytesWritten)
-    && errorOrResult.bytesWritten >= 0
-    ? errorOrResult.bytesWritten
-    : bytesWritten;
+  const status = Number.isInteger(errorOrResult?.status)
+    ? errorOrResult.status
+    : 1;
+  const reportedBytes =
+    Number.isSafeInteger(errorOrResult?.bytesWritten) &&
+    errorOrResult.bytesWritten >= 0
+      ? errorOrResult.bytesWritten
+      : bytesWritten;
   const stderr = String(errorOrResult?.stderr || "")
     .replace(/[^\x20-\x7e\t\r\n]/g, "?")
     .replace(/\s+/g, " ")
@@ -198,7 +215,8 @@ function pullStagedFixture(runAdbFn, options, packageName, stagedLocal) {
   if (typeof options.pullStaged === "function") {
     return options.pullStaged(REMOTE_STAGING, stagedLocal);
   }
-  const streamToFile = options.runAdbToFile || (runAdbFn === runAdb ? runAdbToFile : null);
+  const streamToFile =
+    options.runAdbToFile || (runAdbFn === runAdb ? runAdbToFile : null);
   if (streamToFile) {
     try {
       const result = streamToFile(
@@ -210,21 +228,35 @@ function pullStagedFixture(runAdbFn, options, packageName, stagedLocal) {
       }
       return result;
     } catch (error) {
-      if (error?.message?.startsWith("staged fixture transfer failed")) throw error;
+      if (error?.message?.startsWith("staged fixture transfer failed"))
+        throw error;
       throw stagedTransferError(error);
     }
   }
-  const readBuffer = options.runAdbBuffer || (runAdbFn === runAdb ? runAdbBuffer : null);
+  const readBuffer =
+    options.runAdbBuffer || (runAdbFn === runAdb ? runAdbBuffer : null);
   if (readBuffer) {
     try {
-      const bytes = readBuffer(["exec-out", "run-as", packageName, "cat", REMOTE_STAGING]);
-      fs.writeFileSync(stagedLocal, Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes));
+      const bytes = readBuffer([
+        "exec-out",
+        "run-as",
+        packageName,
+        "cat",
+        REMOTE_STAGING,
+      ]);
+      fs.writeFileSync(
+        stagedLocal,
+        Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes),
+      );
       return;
     } catch (error) {
       throw stagedTransferError(error);
     }
   }
-  runRemote(runAdbFn, packageName, "cp", [REMOTE_STAGING, REMOTE_STAGED_VERIFY]);
+  runRemote(runAdbFn, packageName, "cp", [
+    REMOTE_STAGING,
+    REMOTE_STAGED_VERIFY,
+  ]);
   runAdbFn(["pull", REMOTE_STAGED_VERIFY, stagedLocal]);
 }
 
@@ -236,7 +268,11 @@ function resultRunner(runAdbFn, dependencies = {}) {
       return { status: 0, stdout: runAdbFn(args, options), stderr: "" };
     } catch (error) {
       if (Number.isInteger(error?.status)) {
-        return { status: error.status, stdout: "", stderr: compactError(error) };
+        return {
+          status: error.status,
+          stdout: "",
+          stderr: compactError(error),
+        };
       }
       throw error;
     }
@@ -250,27 +286,56 @@ function remoteFileExists(runAdbFn, dependencies, packageName, remotePath) {
   );
   if (result.status === 0) return true;
   if (result.status === 1) return false;
-  throw new Error(`检查 app-private fixture 路径失败: ${compactError(result.stderr)}`);
+  throw new Error(
+    `检查 app-private fixture 路径失败: ${compactError(result.stderr)}`,
+  );
 }
 
-async function rollbackRemoteFixture(runAdbFn, dependencies, packageName, moved, commitAttempted) {
+async function rollbackRemoteFixture(
+  runAdbFn,
+  dependencies,
+  packageName,
+  moved,
+  commitAttempted,
+) {
   const failures = [];
   if (commitAttempted) {
-    failures.push(...await runCleanupActions([
-      ["rollback-current-db", () => removeRemoteFile(runAdbFn, packageName, REMOTE_APP_DB)],
-      ["rollback-staging", () => removeRemoteFile(runAdbFn, packageName, REMOTE_STAGING)],
-    ]));
+    failures.push(
+      ...(await runCleanupActions([
+        [
+          "rollback-current-db",
+          () => removeRemoteFile(runAdbFn, packageName, REMOTE_APP_DB),
+        ],
+        [
+          "rollback-staging",
+          () => removeRemoteFile(runAdbFn, packageName, REMOTE_STAGING),
+        ],
+      ])),
+    );
   }
   for (const [source, backup] of [...moved].reverse()) {
     try {
-      const backupExists = remoteFileExists(runAdbFn, dependencies, packageName, backup);
-      const sourceExists = remoteFileExists(runAdbFn, dependencies, packageName, source);
-      if (backupExists && !sourceExists) runRemote(runAdbFn, packageName, "mv", [backup, source]);
+      const backupExists = remoteFileExists(
+        runAdbFn,
+        dependencies,
+        packageName,
+        backup,
+      );
+      const sourceExists = remoteFileExists(
+        runAdbFn,
+        dependencies,
+        packageName,
+        source,
+      );
+      if (backupExists && !sourceExists)
+        runRemote(runAdbFn, packageName, "mv", [backup, source]);
     } catch (error) {
       const residualPaths = [];
       for (const candidate of [source, backup]) {
         try {
-          if (remoteFileExists(runAdbFn, dependencies, packageName, candidate)) {
+          if (
+            remoteFileExists(runAdbFn, dependencies, packageName, candidate)
+          ) {
             residualPaths.push(candidate);
           }
         } catch {
@@ -287,7 +352,13 @@ async function rollbackRemoteFixture(runAdbFn, dependencies, packageName, moved,
   return failures;
 }
 
-async function stageFixture(runAdbFn, options, packageName, source, stagedLocal) {
+async function stageFixture(
+  runAdbFn,
+  options,
+  packageName,
+  source,
+  stagedLocal,
+) {
   runAdbFn(["push", source, REMOTE_TEMP]);
   runRemote(runAdbFn, packageName, "cp", [REMOTE_TEMP, REMOTE_STAGING]);
   pullStagedFixture(runAdbFn, options, packageName, stagedLocal);
@@ -362,92 +433,167 @@ async function injectFixture(localPath, options = {}) {
     throw new Error("注入前必须提供 staged fixture 校验器");
   }
   const runAdbFn = options.runAdb || runAdb;
-  return withTargetDevice(options.serial, async (device) => {
-    const stagedLocal = localPullPath("vcpmobile-b4-staged");
-    const state = { moved: [], commitAttempted: false, committed: false };
-    let result = null;
-    let primary = null;
-    try {
-      await killDebugProcess({ ...options, runAdb: runAdbFn });
-      await stageFixture(runAdbFn, options, packageName, source, stagedLocal);
-      commitStagedFixture(runAdbFn, options, packageName, state);
-      result = {
-        ...device,
-        injected: true,
-        stagedFixtureVerified: true,
-        packageDebug: packageName,
-      };
-    } catch (error) {
-      primary = error;
-      // A failure while moving the old DB/WAL/SHM can happen before
-      // commitAttempted is set. Moved entries still need restoring.
-      if (!state.committed && (state.commitAttempted || state.moved.length > 0)) {
-        const rollbackFailures = await rollbackRemoteFixture(
-          runAdbFn,
-          options,
-          packageName,
-          state.moved,
-          true,
-        );
-        if (rollbackFailures.length) {
-          primary = cleanupError(primary, rollbackFailures);
+  return withTargetDevice(
+    options.serial,
+    async (device) => {
+      const stagedLocal = localPullPath("vcpmobile-b4-staged");
+      const state = { moved: [], commitAttempted: false, committed: false };
+      let result = null;
+      let primary = null;
+      try {
+        await killDebugProcess({ ...options, runAdb: runAdbFn });
+        await stageFixture(runAdbFn, options, packageName, source, stagedLocal);
+        commitStagedFixture(runAdbFn, options, packageName, state);
+        result = {
+          ...device,
+          injected: true,
+          stagedFixtureVerified: true,
+          packageDebug: packageName,
+        };
+      } catch (error) {
+        primary = error;
+        // A failure while moving the old DB/WAL/SHM can happen before
+        // commitAttempted is set. Moved entries still need restoring.
+        if (
+          !state.committed &&
+          (state.commitAttempted || state.moved.length > 0)
+        ) {
+          const rollbackFailures = await rollbackRemoteFixture(
+            runAdbFn,
+            options,
+            packageName,
+            state.moved,
+            true,
+          );
+          if (rollbackFailures.length) {
+            primary = cleanupError(primary, rollbackFailures);
+          }
         }
       }
-    }
-    const cleanupFailures = await runCleanupActions([
-      ["remote-temp", () => removeAdbPath(runAdbFn, ["shell", "rm", "-f", REMOTE_TEMP], REMOTE_TEMP)],
-      ["remote-staged-verify", () => removeAdbPath(runAdbFn, ["shell", "rm", "-f", REMOTE_STAGED_VERIFY], REMOTE_STAGED_VERIFY)],
-      ["local-staged-verify", () => removeLocalPath(stagedLocal)],
-      ["remote-staging", () => removeRemoteFile(runAdbFn, packageName, REMOTE_STAGING)],
-    ]);
-    if (primary || cleanupFailures.length) throw cleanupError(primary, cleanupFailures);
-    return result;
-  }, options);
+      const cleanupFailures = await runCleanupActions([
+        [
+          "remote-temp",
+          () =>
+            removeAdbPath(
+              runAdbFn,
+              ["shell", "rm", "-f", REMOTE_TEMP],
+              REMOTE_TEMP,
+            ),
+        ],
+        [
+          "remote-staged-verify",
+          () =>
+            removeAdbPath(
+              runAdbFn,
+              ["shell", "rm", "-f", REMOTE_STAGED_VERIFY],
+              REMOTE_STAGED_VERIFY,
+            ),
+        ],
+        ["local-staged-verify", () => removeLocalPath(stagedLocal)],
+        [
+          "remote-staging",
+          () => removeRemoteFile(runAdbFn, packageName, REMOTE_STAGING),
+        ],
+      ]);
+      if (primary || cleanupFailures.length)
+        throw cleanupError(primary, cleanupFailures);
+      return result;
+    },
+    options,
+  );
 }
 
 async function verifyDeviceFixture(options = {}) {
   const packageName = assertDebugPackage(options.packageName);
   const runAdbFn = options.runAdb || runAdb;
-  return withTargetDevice(options.serial, async (device) => {
-    const readPid = options.readPid || (() => readDebugPid(runAdbFn));
-    const pid = readPid();
-    if (!pid) throw new Error("debug 应用未运行，无法读取运行态 fixture");
-    const runtimeResult = await (options.readRuntimeStatus || runtimeSupport.readRustRuntimeStatus)(options);
-    const semanticChecks = runtimeSupport.normalizeSemanticChecks(runtimeResult?.semanticChecks);
-    const verification = runtimeSupport.runtimeFixtureChecks(runtimeResult?.status || runtimeResult, semanticChecks);
-    if (!verification.valid) throw new Error("运行态 B4 fixture 校验失败");
-    return {
-      ...device,
-      ...verification.dto,
-      ok: true,
-      semanticChecks,
-      semanticValid: true,
-      runtimeStatusVerified: true,
-      deviceFixtureVerified: true,
-      command: "verify-device",
-      packageDebug: packageName,
-    };
-  }, options);
+  return withTargetDevice(
+    options.serial,
+    async (device) => {
+      const readPid = options.readPid || (() => readDebugPid(runAdbFn));
+      const pid = readPid();
+      if (!pid) throw new Error("debug 应用未运行，无法读取运行态 fixture");
+      const runtimeResult = await (
+        options.readRuntimeStatus || runtimeSupport.readRustRuntimeStatus
+      )(options);
+      const semanticChecks = runtimeSupport.normalizeSemanticChecks(
+        runtimeResult?.semanticChecks,
+      );
+      const verification = runtimeSupport.runtimeFixtureChecks(
+        runtimeResult?.status || runtimeResult,
+        semanticChecks,
+      );
+      if (!verification.valid) throw new Error("运行态 B4 fixture 校验失败");
+      return {
+        ...device,
+        ...verification.dto,
+        ok: true,
+        semanticChecks,
+        semanticValid: true,
+        runtimeStatusVerified: true,
+        deviceFixtureVerified: true,
+        command: "verify-device",
+        packageDebug: packageName,
+      };
+    },
+    options,
+  );
 }
 
 async function cleanupDebugFixture(options = {}) {
   const packageName = assertDebugPackage(options.packageName);
   const runAdbFn = options.runAdb || runAdb;
-  return withTargetDevice(options.serial, async (device) => {
-    const failures = [];
-    try {
-      await killDebugProcess({ ...options, runAdb: runAdbFn });
-    } catch (error) {
-      failures.push({ phase: "restart", message: compactError(error) });
-    }
-    failures.push(...await runCleanupActions([
-      ["remote-database", () => removeRemoteFiles(runAdbFn, packageName, [REMOTE_APP_DB, REMOTE_APP_DB_WAL, REMOTE_APP_DB_SHM])],
-      ["remote-temp", () => removeAdbPath(runAdbFn, ["shell", "rm", "-f", REMOTE_TEMP], REMOTE_TEMP)],
-      ["remote-staging", () => removeRemoteFiles(runAdbFn, packageName, [REMOTE_STAGING, REMOTE_BACKUP, REMOTE_BACKUP_WAL, REMOTE_BACKUP_SHM])],
-    ]));
-    if (failures.length) throw cleanupError(null, failures);
-    return { ...device, command: "cleanup-device", ok: true, cleaned: true, packageDebug: packageName };
-  }, options);
+  return withTargetDevice(
+    options.serial,
+    async (device) => {
+      const failures = [];
+      try {
+        await killDebugProcess({ ...options, runAdb: runAdbFn });
+      } catch (error) {
+        failures.push({ phase: "restart", message: compactError(error) });
+      }
+      failures.push(
+        ...(await runCleanupActions([
+          [
+            "remote-database",
+            () =>
+              removeRemoteFiles(runAdbFn, packageName, [
+                REMOTE_APP_DB,
+                REMOTE_APP_DB_WAL,
+                REMOTE_APP_DB_SHM,
+              ]),
+          ],
+          [
+            "remote-temp",
+            () =>
+              removeAdbPath(
+                runAdbFn,
+                ["shell", "rm", "-f", REMOTE_TEMP],
+                REMOTE_TEMP,
+              ),
+          ],
+          [
+            "remote-staging",
+            () =>
+              removeRemoteFiles(runAdbFn, packageName, [
+                REMOTE_STAGING,
+                REMOTE_BACKUP,
+                REMOTE_BACKUP_WAL,
+                REMOTE_BACKUP_SHM,
+              ]),
+          ],
+        ])),
+      );
+      if (failures.length) throw cleanupError(null, failures);
+      return {
+        ...device,
+        command: "cleanup-device",
+        ok: true,
+        cleaned: true,
+        packageDebug: packageName,
+      };
+    },
+    options,
+  );
 }
 
 module.exports = {

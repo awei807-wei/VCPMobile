@@ -1,16 +1,20 @@
-import { afterEach, vi } from 'vitest';
+import { afterEach, vi } from "vitest";
 
-export type MockInvokeHandler = (args?: Record<string, unknown>) => unknown | Promise<unknown>;
+export type MockInvokeHandler = (
+  args?: Record<string, unknown>,
+) => unknown | Promise<unknown>;
 
 const invokeHandlers = new Map<string, MockInvokeHandler>();
 
-export const invokeMock = vi.fn((command: string, args?: Record<string, unknown>) => {
-  const handler = invokeHandlers.get(command);
-  if (handler) {
-    return Promise.resolve(handler(args));
-  }
-  return Promise.resolve(undefined);
-});
+export const invokeMock = vi.fn(
+  (command: string, args?: Record<string, unknown>) => {
+    const handler = invokeHandlers.get(command);
+    if (handler) {
+      return Promise.resolve(handler(args));
+    }
+    return Promise.resolve(undefined);
+  },
+);
 
 export function mockInvoke(command: string, handler: MockInvokeHandler): void {
   invokeHandlers.set(command, handler);
@@ -37,18 +41,26 @@ export class MockChannel<T = unknown> {
   }
 }
 
-const listeners = new Map<string, Array<(event: { payload: unknown }) => void>>();
+const listeners = new Map<
+  string,
+  Array<(event: { payload: unknown }) => void>
+>();
 
-export const listenMock = vi.fn(async (event: string, handler: (event: { payload: unknown }) => void) => {
-  const eventListeners = listeners.get(event) ?? [];
-  eventListeners.push(handler);
-  listeners.set(event, eventListeners);
+export const listenMock = vi.fn(
+  async (event: string, handler: (event: { payload: unknown }) => void) => {
+    const eventListeners = listeners.get(event) ?? [];
+    eventListeners.push(handler);
+    listeners.set(event, eventListeners);
 
-  return () => {
-    const current = listeners.get(event) ?? [];
-    listeners.set(event, current.filter((item) => item !== handler));
-  };
-});
+    return () => {
+      const current = listeners.get(event) ?? [];
+      listeners.set(
+        event,
+        current.filter((item) => item !== handler),
+      );
+    };
+  },
+);
 
 export function emitTauriEvent(event: string, payload: unknown): void {
   for (const handler of listeners.get(event) ?? []) {
@@ -68,17 +80,17 @@ afterEach(() => {
   clearTauriMocks();
 });
 
-vi.mock('@tauri-apps/api/core', () => ({
+vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
   convertFileSrc: convertFileSrcMock,
   Channel: MockChannel,
 }));
 
-vi.mock('@tauri-apps/api/event', () => ({
+vi.mock("@tauri-apps/api/event", () => ({
   listen: listenMock,
 }));
 
-vi.mock('@tauri-apps/api/window', () => ({
+vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: vi.fn(() => ({
     close: vi.fn(),
     hide: vi.fn(),
@@ -87,7 +99,7 @@ vi.mock('@tauri-apps/api/window', () => ({
   })),
 }));
 
-vi.mock('@tauri-apps/api/webviewWindow', () => ({
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: vi.fn(() => ({
     listen: vi.fn(),
     close: vi.fn(),
@@ -103,17 +115,21 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
   })),
 }));
 
-vi.mock('tauri-plugin-vcp-mobile', () => ({
+vi.mock("tauri-plugin-vcp-mobile", () => ({
   setKeepScreenOn: vi.fn(() => Promise.resolve()),
   clearKeepScreenOn: vi.fn(() => Promise.resolve()),
   startStreamService: vi.fn(() => Promise.resolve()),
   stopStreamService: vi.fn(() => Promise.resolve()),
   pickFile: vi.fn(() => Promise.resolve(undefined)),
   openFileNative: vi.fn(() => Promise.resolve()),
-  saveImageToGallery: vi.fn(() => Promise.resolve({ uri: '', displayName: '', mimeType: '', size: 0 })),
-  saveImageFromPath: vi.fn(() => Promise.resolve({ uri: '', displayName: '', mimeType: '', size: 0 })),
-  writeTempFile: vi.fn(() => Promise.resolve('')),
+  saveImageToGallery: vi.fn(() =>
+    Promise.resolve({ uri: "", displayName: "", mimeType: "", size: 0 }),
+  ),
+  saveImageFromPath: vi.fn(() =>
+    Promise.resolve({ uri: "", displayName: "", mimeType: "", size: 0 }),
+  ),
+  writeTempFile: vi.fn(() => Promise.resolve("")),
   checkRootAccess: vi.fn(() => Promise.resolve({ isRoot: false })),
-  runRootCommand: vi.fn(() => Promise.resolve({ success: false, output: '' })),
+  runRootCommand: vi.fn(() => Promise.resolve({ success: false, output: "" })),
   launchRootManager: vi.fn(() => Promise.resolve({ success: false })),
 }));

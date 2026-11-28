@@ -33,7 +33,10 @@ function rss(pid, bytes) {
 test("重建 baseline/during/after 全程传递 verified CDP expected PID", async () => {
   const pid = 4_321;
   const memoryCalls = [];
-  const runtime = runtimeFor(pid, async () => ({ durationMs: 2, indexedCount: 3 }));
+  const runtime = runtimeFor(pid, async () => ({
+    durationMs: 2,
+    indexedCount: 3,
+  }));
   const result = await rebuildIndex(runtime, {
     readMemory: (options) => {
       memoryCalls.push(options);

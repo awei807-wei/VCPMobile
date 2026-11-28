@@ -12,7 +12,7 @@ const props = withDefaults(
   }>(),
   {
     defaultExpanded: false,
-  }
+  },
 );
 
 const isExpanded = ref(props.defaultExpanded);
@@ -21,7 +21,7 @@ watch(
   () => props.defaultExpanded,
   (newVal) => {
     isExpanded.value = newVal;
-  }
+  },
 );
 
 const toggleExpand = () => {
@@ -46,7 +46,11 @@ function escapeHtml(text: string): string {
         {{ block.theme || "元思考链" }}
         <Loader2 v-if="!block.is_complete" :size="10" class="custom-spin" />
       </span>
-      <component :is="isExpanded ? ChevronUp : ChevronDown" :size="14" class="opacity-40 ml-auto" />
+      <component
+        :is="isExpanded ? ChevronUp : ChevronDown"
+        :size="14"
+        class="opacity-40 ml-auto"
+      />
     </div>
 
     <div v-show="isExpanded" class="vcp-thought-content animate-slide-down">

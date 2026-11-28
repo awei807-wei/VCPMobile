@@ -1,10 +1,25 @@
 "use strict";
 
-const { DEBUG_PACKAGE, SSE_PATHS, TEST_ID } = require("./helper-stream-e2e-support.cjs");
+const {
+  DEBUG_PACKAGE,
+  SSE_PATHS,
+  TEST_ID,
+} = require("./helper-stream-e2e-support.cjs");
 
 const OWNER_TYPES = new Set(["agent", "group"]);
-const RESULT_STATUSES = new Set(["streaming", "completed", "stale", "failed", "skipped"]);
-const FINISH_REASONS = new Set(["cancelled_by_user", "completed", "stop", "error"]);
+const RESULT_STATUSES = new Set([
+  "streaming",
+  "completed",
+  "stale",
+  "failed",
+  "skipped",
+]);
+const FINISH_REASONS = new Set([
+  "cancelled_by_user",
+  "completed",
+  "stop",
+  "error",
+]);
 
 function safeStatus(value) {
   return typeof value === "string" && RESULT_STATUSES.has(value) ? value : null;
@@ -19,19 +34,25 @@ function sanitizeResult(value) {
     status: safeStatus(value?.status),
     finalization: value?.finalization === "skipped" ? "skipped" : null,
     finishReason: safeFinishReason(value?.finishReason),
-    streamingStarted: typeof value?.streamingStarted === "boolean" ? value.streamingStarted : null,
+    streamingStarted:
+      typeof value?.streamingStarted === "boolean"
+        ? value.streamingStarted
+        : null,
     hasFullContent: typeof value?.fullContent === "string",
   };
 }
 
 function sanitizeChannelEvents(events, identity, generation) {
-  const expectedGeneration = Number.isSafeInteger(generation) && generation > 0 ? generation : null;
+  const expectedGeneration =
+    Number.isSafeInteger(generation) && generation > 0 ? generation : null;
   return (Array.isArray(events) ? events : []).map((event) => ({
     type: typeof event?.type === "string" ? event.type : "unknown",
     messageIdMatches: event?.messageIdMatches === true,
     identityMatches: event?.identityMatches === true,
-    generationMatches: expectedGeneration !== null && event?.generation === expectedGeneration,
-    generationPresent: Number.isSafeInteger(event?.generation) && event.generation > 0,
+    generationMatches:
+      expectedGeneration !== null && event?.generation === expectedGeneration,
+    generationPresent:
+      Number.isSafeInteger(event?.generation) && event.generation > 0,
     hasChunk: event?.hasChunk === true,
     final: event?.final === true,
     finishReason: safeFinishReason(event?.finishReason),
@@ -55,16 +76,20 @@ function sanitizeContract(contract) {
       stream: typeof body.stream === "boolean" ? body.stream : null,
       requestIdPresent: body.requestIdPresent === true,
       messagesArray: body.messagesArray === true,
-      messageCount: Number.isSafeInteger(body.messageCount) ? body.messageCount : null,
+      messageCount: Number.isSafeInteger(body.messageCount)
+        ? body.messageCount
+        : null,
       modelPresent: body.modelPresent === true,
     },
   };
 }
 
 function sanitizeFailure(failure) {
-  const code = typeof failure?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(failure.code)
-    ? failure.code
-    : "E2E_FAILED";
+  const code =
+    typeof failure?.code === "string" &&
+    /^[A-Z][A-Z0-9_]{0,63}$/.test(failure.code)
+      ? failure.code
+      : "E2E_FAILED";
   return { code };
 }
 
@@ -107,7 +132,9 @@ function sanitizeCleanup(cleanup = {}) {
     cdpCallbacksRemoved: cleanup.cdpCallbacksRemoved === true,
     reverseRemoved: cleanup.reverseRemoved === true,
     serverStopped: cleanup.serverStopped === true,
-    issues: Array.isArray(cleanup.issues) ? cleanup.issues.map(() => "cleanup_failed") : [],
+    issues: Array.isArray(cleanup.issues)
+      ? cleanup.issues.map(() => "cleanup_failed")
+      : [],
   };
 }
 
@@ -122,7 +149,9 @@ function sanitizeEvidence(input = {}) {
     mode: "debug-only",
     packageDebug: input.packageDebug === DEBUG_PACKAGE ? DEBUG_PACKAGE : null,
     identity: {
-      ownerType: OWNER_TYPES.has(identity.ownerType) ? identity.ownerType : null,
+      ownerType: OWNER_TYPES.has(identity.ownerType)
+        ? identity.ownerType
+        : null,
       ownerIdPresent: identity.ownerIdPresent === true,
       topicIdPresent: identity.topicIdPresent === true,
       allFieldsMatch: identity.allFieldsMatch === true,
@@ -130,7 +159,9 @@ function sanitizeEvidence(input = {}) {
     },
     server: {
       requestCount: contracts.length,
-      acceptedPathCount: contracts.filter((item) => SSE_PATHS.includes(item.path)).length,
+      acceptedPathCount: contracts.filter((item) =>
+        SSE_PATHS.includes(item.path),
+      ).length,
       contracts,
       sseCancelled: input.server?.sseCancelled === true,
     },
@@ -148,7 +179,11 @@ async function writeEvidence(filePath, evidence) {
   const fs = require("node:fs/promises");
   const path = require("node:path");
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(sanitizeEvidence(evidence), null, 2)}\n`, "utf8");
+  await fs.writeFile(
+    filePath,
+    `${JSON.stringify(sanitizeEvidence(evidence), null, 2)}\n`,
+    "utf8",
+  );
 }
 
 module.exports = {

@@ -35,7 +35,10 @@ interface MentionHit {
  * - 命中区间互不重叠，命中后从区间末尾继续扫描；
  * - 返回按出现位置升序。
  */
-export function scanMentionHits(content: string, names: string[]): MentionHit[] {
+export function scanMentionHits(
+  content: string,
+  names: string[],
+): MentionHit[] {
   if (!content) return [];
   const candidates = names
     .map((n) => n.trim())

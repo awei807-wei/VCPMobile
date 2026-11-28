@@ -103,7 +103,7 @@ function rebuildTailSnapshot(sandbox: HTMLElement): void {
 function handleAstFrameFailure(sandbox: HTMLElement, reason: string): void {
   astFailureCount += 1;
   console.warn(
-    `[AST Diff Recovery] ${props.message.id}: ${reason}. failureCount=${astFailureCount}`
+    `[AST Diff Recovery] ${props.message.id}: ${reason}. failureCount=${astFailureCount}`,
   );
   if (getTailSnapshotNodes().length > 0) {
     rebuildTailSnapshot(sandbox);
@@ -131,7 +131,7 @@ const shell = computed(() => props.message.shell);
 
 // 数据层面：消息是否处于任意活跃流中（不依赖当前话题）
 const isMessageInAnyActiveStream = computed(() =>
-  streamStore.isMessageInAnyActiveStream(props.message.id)
+  streamStore.isMessageInAnyActiveStream(props.message.id),
 );
 const isMessageInActiveStream = isMessageInAnyActiveStream;
 
@@ -153,7 +153,7 @@ const isStreaming = computed(() => {
   return streamStore.isMessageActiveInSession(
     itemId,
     topicId,
-    props.message.id
+    props.message.id,
   );
 });
 
@@ -372,7 +372,7 @@ async function handleToggleToolResultHidden(block: ContentBlock) {
     const changed = await historyStore.toggleToolResultHidden(
       props.message.id,
       { ordinal, rawHash: block.raw_hash },
-      hidden
+      hidden,
     );
     if (!changed) return;
     notificationStore.addNotification({
@@ -422,7 +422,7 @@ function renderBlockHtml(block: ContentBlock): string {
             (_, css) => {
               cssContent += css.trim() + "\n";
               return "";
-            }
+            },
           );
           if (cssContent.trim().length > 0) {
             injectScopedCss(cssContent, props.message.id);
@@ -432,11 +432,11 @@ function renderBlockHtml(block: ContentBlock): string {
         return `<div class="vcp-markdown-block">${renderMarkdownNodes(
           block.nodes,
           props.message.id,
-          block.hash
+          block.hash,
         )}</div>`;
       }
       return `<div class="vcp-markdown-block"><p>${escapeHtml(
-        block.content || ""
+        block.content || "",
       )}</p></div>`;
 
     case "diary":
@@ -477,7 +477,7 @@ function renderBlockHtml(block: ContentBlock): string {
 function renderMarkdownField(
   nodes: ContentBlock["nodes"],
   raw: string | undefined,
-  fallback: string
+  fallback: string,
 ): string {
   if (nodes && nodes.length > 0) {
     return renderMarkdownNodes(nodes, props.message.id, raw || fallback);
@@ -500,12 +500,12 @@ function renderDailyNoteBlock(block: ContentBlock): string {
     const targetHtml = renderMarkdownField(
       block.target_nodes,
       block.target,
-      "原文解析失败"
+      "原文解析失败",
     );
     const replaceHtml = renderMarkdownField(
       block.replace_nodes,
       block.replace,
-      "替换内容解析失败"
+      "替换内容解析失败",
     );
     return `
       <div class="maid-diary-update-bubble ${agentType}-diary-update-bubble" data-vcp-block-type="maid-diary-update">
@@ -518,7 +518,7 @@ function renderDailyNoteBlock(block: ContentBlock): string {
               ${
                 agentName
                   ? `<span class="diary-maid-name">${escapeHtml(
-                      agentName
+                      agentName,
                     )}</span>`
                   : ""
               }
@@ -530,7 +530,7 @@ function renderDailyNoteBlock(block: ContentBlock): string {
               ${
                 folder
                   ? `<span class="diary-folder-name">${escapeHtml(
-                      folder
+                      folder,
                     )}</span>`
                   : ""
               }
@@ -557,7 +557,7 @@ function renderDailyNoteBlock(block: ContentBlock): string {
   const diaryContent = renderMarkdownField(
     block.nodes,
     block.content,
-    "[日记内容解析失败]"
+    "[日记内容解析失败]",
   );
   return `
     <div class="maid-diary-bubble ${agentType}-diary-bubble vcp-diary-block" data-vcp-block-type="maid-diary">
@@ -602,7 +602,7 @@ function renderDailyNoteBlock(block: ContentBlock): string {
           ${
             block.tag
               ? `<span class="diary-folder-label">Tag:</span> <span class="diary-folder-name">${escapeHtml(
-                  block.tag
+                  block.tag,
                 )}</span>`
               : ""
           }
@@ -689,8 +689,8 @@ const renderHeavyContent = async () => {
   // 1. KaTeX math (inline + display mode, rendered inside markdown blocks via v-html)
   const mathElements = Array.from(
     messageContentRef.value.querySelectorAll(
-      ".vcp-math-inline[data-latex], .vcp-math-block[data-latex]"
-    )
+      ".vcp-math-inline[data-latex], .vcp-math-block[data-latex]",
+    ),
   ).filter((el) => !el.closest(".streaming-tail"));
 
   if (mathElements.length > 0) {
@@ -716,8 +716,8 @@ const renderHeavyContent = async () => {
   // 2. Mermaid diagrams
   const mermaidPlaceholders = Array.from(
     messageContentRef.value.querySelectorAll(
-      ".mermaid-placeholder, pre.mermaid, code.language-mermaid"
-    )
+      ".mermaid-placeholder, pre.mermaid, code.language-mermaid",
+    ),
   ).filter((el) => !el.closest(".streaming-tail"));
 
   if (mermaidPlaceholders.length > 0) {
@@ -769,10 +769,10 @@ const renderHeavyContent = async () => {
           console.error(
             "[MessageRenderer] Mermaid render failed:",
             errorMsg,
-            e
+            e,
           );
           placeholder.innerHTML = `<div class="text-red-500 text-[10px] p-4 rounded-xl border border-red-500/10 bg-red-500/5">图表渲染失败: ${escapeHtml(
-            errorMsg
+            errorMsg,
           )}</div>`;
         } finally {
           renderingMermaids.delete(codeKey);
@@ -798,7 +798,7 @@ watch(
   () => {
     renderHeavyContent();
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 // 消息真正离开活跃流后统一执行一次重渲染，确保 KaTeX/Mermaid/Emoticon 正确渲染
@@ -870,7 +870,7 @@ const showMessageContextMenu = async () => {
             props.message.topicId ||
               props.message.topic_id ||
               sessionStore.currentTopicId ||
-              ""
+              "",
           );
           notificationStore.addNotification({
             type: "success",
@@ -936,7 +936,7 @@ const showMessageContextMenu = async () => {
 
   overlayStore.openContextMenu(
     actions,
-    shell.value?.isUser ? "User" : "Assistant"
+    shell.value?.isUser ? "User" : "Assistant",
   );
 };
 
@@ -963,7 +963,7 @@ watch(
       }
     }
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 // === Stream Tail Morphdom Smooth Rendering ===
@@ -997,7 +997,7 @@ watch(
         (_, css) => {
           cssContent += css.trim() + "\n";
           return ""; // 从正文 HTML 中抹除 style 标签
-        }
+        },
       );
 
       if (cssContent.trim().length > 0) {
@@ -1060,7 +1060,7 @@ watch(
       }
     });
   },
-  { immediate: true, flush: "post" }
+  { immediate: true, flush: "post" },
 );
 
 // === AST Diff Executor ===
@@ -1077,7 +1077,7 @@ watch(
         frame ? frame.frameSeq : "none"
       }, mutations=${frame?.mutations?.length || 0}, sandbox=${
         sandbox ? "Ready" : "Null"
-      }, epoch=${frame?.epoch}, revision=${frame?.revision}`
+      }, epoch=${frame?.epoch}, revision=${frame?.revision}`,
     );
 
     if (!useAstForCurrentTail.value || !sandbox) {
@@ -1138,7 +1138,7 @@ watch(
     }
 
     astDebugLog(
-      `[AST Diff Apply] Executing frame ${frame.frameSeq} (${mutations.length} mutations) for ${props.message.id}`
+      `[AST Diff Apply] Executing frame ${frame.frameSeq} (${mutations.length} mutations) for ${props.message.id}`,
     );
     const result = applyFrame(mutations, props.message.id, sandbox);
     if (result.ok) {
@@ -1148,11 +1148,11 @@ watch(
     } else {
       handleAstFrameFailure(
         sandbox,
-        result.failed?.reason || "applyFrame failed"
+        result.failed?.reason || "applyFrame failed",
       );
     }
   },
-  { flush: "post", immediate: true }
+  { flush: "post", immediate: true },
 );
 
 onUnmounted(() => {
@@ -1224,7 +1224,9 @@ onUnmounted(() => {
                     :content="block.content"
                     :block="block"
                     :default-expanded="isMessageInActiveStream"
-                    :tool-result-ordinal="toolResultOrdinalByBlock.get(block) ?? -1"
+                    :tool-result-ordinal="
+                      toolResultOrdinalByBlock.get(block) ?? -1
+                    "
                     :streaming="isMessageInActiveStream"
                     @toggle-hidden="handleToggleToolResultHidden(block)"
                   />
@@ -1279,7 +1281,11 @@ onUnmounted(() => {
                 "
               >
                 <div
-                  :ref="(el) => { tailSandboxRef = el as HTMLElement | null }"
+                  :ref="
+                    (el) => {
+                      tailSandboxRef = el as HTMLElement | null;
+                    }
+                  "
                   class="vcp-markdown-block vcp-ast-sandbox"
                 />
               </div>
@@ -1287,7 +1293,11 @@ onUnmounted(() => {
                 v-else-if="
                   !useAstForCurrentTail && isPlainBlock(message.tailBlock.type)
                 "
-                :ref="(el) => { tailRootRef = el as HTMLElement | null }"
+                :ref="
+                  (el) => {
+                    tailRootRef = el as HTMLElement | null;
+                  }
+                "
                 class="vcp-markdown-block"
               />
             </div>

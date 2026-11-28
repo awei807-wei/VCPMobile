@@ -93,7 +93,9 @@ describe("流式渲染背压与纪元门禁", () => {
     setActivePinia(createPinia());
     mockInvoke("process_message_content", () => []);
     const topicStore = useTopicStore();
-    topicStore.incrementTopicUnreadCount = vi.fn().mockResolvedValue({ success: true }) as any;
+    topicStore.incrementTopicUnreadCount = vi
+      .fn()
+      .mockResolvedValue({ success: true }) as any;
     topicStore.incrementTopicMsgCount = vi.fn() as any;
   });
 

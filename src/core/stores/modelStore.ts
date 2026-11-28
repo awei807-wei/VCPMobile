@@ -50,7 +50,7 @@ export const useModelStore = defineStore("model", () => {
   });
 
   const isFavorite = computed(
-    () => (modelId: string) => favorites.value.includes(modelId)
+    () => (modelId: string) => favorites.value.includes(modelId),
   );
 
   // --- Actions ---
@@ -116,7 +116,7 @@ export const useModelStore = defineStore("model", () => {
         const minDuration = 800; // 最低转圈时长保证 800ms
         if (elapsed < minDuration) {
           await new Promise((resolve) =>
-            setTimeout(resolve, minDuration - elapsed)
+            setTimeout(resolve, minDuration - elapsed),
           );
         }
       }
@@ -182,7 +182,7 @@ export const useModelStore = defineStore("model", () => {
       await Promise.all([fetchHotModels(), fetchFavorites()]);
       cleanupOldTestResults();
       console.log(
-        `[SWR/Self-Healing] Silent sync completed. Total models: ${freshModels.length}`
+        `[SWR/Self-Healing] Silent sync completed. Total models: ${freshModels.length}`,
       );
     } catch (error) {
       console.warn("[SWR/Self-Healing] Silent sync failed:", error);
@@ -242,7 +242,7 @@ export const useModelStore = defineStore("model", () => {
 
     const targets = modelIds.filter(
       (id) =>
-        !testResults.value[id] || testResults.value[id].status !== "testing"
+        !testResults.value[id] || testResults.value[id].status !== "testing",
     );
     if (targets.length === 0) return;
 

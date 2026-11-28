@@ -12,8 +12,12 @@ defineProps<{ toolCount: number }>();
 const settingsStore = useSettingsStore();
 const notificationStore = useNotificationStore();
 const { status, activate, deactivate } = useDistributed();
-const { rootGranted, check: checkRoot, openManager, dispose: disposeRoot } =
-  useDistributedRootAccess();
+const {
+  rootGranted,
+  check: checkRoot,
+  openManager,
+  dispose: disposeRoot,
+} = useDistributedRootAccess();
 
 const deviceName = ref("VCPMobile");
 const wsUrl = ref("");
@@ -114,15 +118,26 @@ onUnmounted(() => {
 
 <template>
   <div class="px-4 py-6 space-y-6">
-    <div class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 p-4 rounded-2xl flex items-center justify-between">
+    <div
+      class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 p-4 rounded-2xl flex items-center justify-between"
+    >
       <div class="flex items-center gap-3 min-w-0">
         <span
           class="h-3 w-3 rounded-full shrink-0"
-          :class="status.connected ? 'bg-emerald-500' : status.state === 'connecting' || status.state === 'disconnecting' ? 'bg-amber-500' : 'bg-rose-500'"
+          :class="
+            status.connected
+              ? 'bg-emerald-500'
+              : status.state === 'connecting' ||
+                  status.state === 'disconnecting'
+                ? 'bg-amber-500'
+                : 'bg-rose-500'
+          "
         ></span>
         <div class="flex flex-col min-w-0">
           <span class="text-xs font-bold">连接状态</span>
-          <span class="text-[9px] opacity-50 font-mono uppercase">{{ status.state }}</span>
+          <span class="text-[9px] opacity-50 font-mono uppercase">{{
+            status.state
+          }}</span>
         </div>
       </div>
       <button
@@ -144,12 +159,20 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <div class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 p-4 rounded-2xl space-y-3">
+    <div
+      class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 p-4 rounded-2xl space-y-3"
+    >
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
           <span class="text-xs font-bold block">超级用户 Root 状态</span>
           <span class="text-[8px] opacity-40 font-mono uppercase">
-            {{ rootGranted === true ? "已获得 Root 权限" : rootGranted === false ? "未获得 Root 权限" : "尚未检测 Root 状态" }}
+            {{
+              rootGranted === true
+                ? "已获得 Root 权限"
+                : rootGranted === false
+                  ? "未获得 Root 权限"
+                  : "尚未检测 Root 状态"
+            }}
           </span>
         </div>
         <div class="flex gap-1.5 shrink-0">
@@ -199,28 +222,50 @@ onUnmounted(() => {
       </div>
     </SettingsCard>
 
-    <div v-if="status.connected" class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 p-4 rounded-2xl space-y-3">
-      <div class="flex justify-between items-center text-xs border-b border-black/5 dark:border-white/5 pb-2">
+    <div
+      v-if="status.connected"
+      class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 p-4 rounded-2xl space-y-3"
+    >
+      <div
+        class="flex justify-between items-center text-xs border-b border-black/5 dark:border-white/5 pb-2"
+      >
         <span class="opacity-50">本地客户端 ID</span>
-        <button class="font-mono text-[10px]" @click="copyText(status.client_id || '', '客户端 ID 已复制')">
+        <button
+          class="font-mono text-[10px]"
+          @click="copyText(status.client_id || '', '客户端 ID 已复制')"
+        >
           {{ status.client_id || "N/A" }}
         </button>
       </div>
-      <div class="flex justify-between items-center text-xs border-b border-black/5 dark:border-white/5 pb-2">
+      <div
+        class="flex justify-between items-center text-xs border-b border-black/5 dark:border-white/5 pb-2"
+      >
         <span class="opacity-50">服务端连接 ID</span>
-        <button class="font-mono text-[10px]" @click="copyText(status.server_id || '', '服务端 ID 已复制')">
+        <button
+          class="font-mono text-[10px]"
+          @click="copyText(status.server_id || '', '服务端 ID 已复制')"
+        >
           {{ status.server_id || "N/A" }}
         </button>
       </div>
       <div class="flex justify-between items-center text-xs">
         <span class="opacity-50">已注册分布式工具</span>
-        <span class="font-mono font-bold">{{ status.registered_tools }} / {{ toolCount }}</span>
+        <span class="font-mono font-bold"
+          >{{ status.registered_tools }} / {{ toolCount }}</span
+        >
       </div>
     </div>
 
-    <div v-if="status.last_error" class="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl">
+    <div
+      v-if="status.last_error"
+      class="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl"
+    >
       <div class="text-red-500 text-xs font-bold mb-2">错误日志</div>
-      <p class="text-[10px] font-mono text-red-500 opacity-80 whitespace-pre-wrap break-all">{{ status.last_error }}</p>
+      <p
+        class="text-[10px] font-mono text-red-500 opacity-80 whitespace-pre-wrap break-all"
+      >
+        {{ status.last_error }}
+      </p>
     </div>
   </div>
 </template>

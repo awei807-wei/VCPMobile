@@ -55,8 +55,10 @@ const derivedVcpKey = computed(() => {
 });
 
 const statusDisplay = computed(() => {
-  if (status.value.state === "connecting") return { type: "loading" as const, message: "连接中..." };
-  if (status.value.state === "disconnecting") return { type: "loading" as const, message: "断开中..." };
+  if (status.value.state === "connecting")
+    return { type: "loading" as const, message: "连接中..." };
+  if (status.value.state === "disconnecting")
+    return { type: "loading" as const, message: "断开中..." };
   if (status.value.connected) {
     return {
       type: "success" as const,
@@ -81,7 +83,7 @@ const toggleConnection = async () => {
         type: "warning",
         title: "配置缺失",
         message: "请先在服务器连接中配置 VCPLog/WebSocket 地址和密钥",
-        toastOnly: true
+        toastOnly: true,
       });
       return;
     }

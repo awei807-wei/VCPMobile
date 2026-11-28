@@ -34,11 +34,14 @@ export class RequestEpoch {
   }
 
   isCurrent(ticket: RequestTicket): boolean {
-    return ticket.epoch === this.epoch && this.active.get(ticket.id) === ticket.epoch;
+    return (
+      ticket.epoch === this.epoch && this.active.get(ticket.id) === ticket.epoch
+    );
   }
 
   finish(ticket: RequestTicket): void {
     // An obsolete finally can release only its own request, never the newer one.
-    if (this.active.get(ticket.id) === ticket.epoch) this.active.delete(ticket.id);
+    if (this.active.get(ticket.id) === ticket.epoch)
+      this.active.delete(ticket.id);
   }
 }

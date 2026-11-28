@@ -25,7 +25,9 @@ async function fetchAgents(context: AssistantReadContext) {
     const snapshot = await invoke<AssistantSnapshot>("get_assistants_snapshot");
     context.agents.value = snapshot.agents;
     context.unreadCounts.value = snapshot.unreadCounts;
-    console.log(`[Profile] fetchAgents finished in ${Date.now() - startTime}ms`);
+    console.log(
+      `[Profile] fetchAgents finished in ${Date.now() - startTime}ms`,
+    );
   } catch (error: any) {
     context.error.value = error.toString();
     console.error("[AssistantStore] fetchAgents failed:", error);
@@ -44,7 +46,9 @@ async function fetchGroups(context: AssistantReadContext) {
     const snapshot = await invoke<AssistantSnapshot>("get_assistants_snapshot");
     context.groups.value = snapshot.groups;
     context.unreadCounts.value = snapshot.unreadCounts;
-    console.log(`[Profile] fetchGroups finished in ${Date.now() - startTime}ms`);
+    console.log(
+      `[Profile] fetchGroups finished in ${Date.now() - startTime}ms`,
+    );
   } catch (error: any) {
     context.error.value = error.toString();
     console.error("[AssistantStore] fetchGroups failed:", error);

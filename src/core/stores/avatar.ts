@@ -100,14 +100,14 @@ const extractDominantColorFromBlob = (blobUrl: string): Promise<string> => {
           const g = Math.round(bestBucket.g / bestBucket.count);
           const b = Math.round(bestBucket.b / bestBucket.count);
           resolve(
-            `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`
+            `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`,
           );
         } else if (count > 0) {
           const r = Math.round(rSum / count);
           const g = Math.round(gSum / count);
           const b = Math.round(bSum / count);
           resolve(
-            `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`
+            `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`,
           );
         } else {
           resolve("#808080");
@@ -115,7 +115,7 @@ const extractDominantColorFromBlob = (blobUrl: string): Promise<string> => {
       } catch (e) {
         console.error(
           "[AvatarStore] Canvas dominant color computation error:",
-          e
+          e,
         );
         resolve("#808080");
       }
@@ -145,7 +145,7 @@ export const useAvatarStore = defineStore("avatar", () => {
   const getAvatarUrl = async (
     ownerType: string,
     ownerId: string,
-    version: number = 0
+    version: number = 0,
   ): Promise<string> => {
     const key = `${ownerType}:${ownerId}`;
     const existing = cache.get(key);
@@ -194,13 +194,13 @@ export const useAvatarStore = defineStore("avatar", () => {
                 })
                 .then(() => {
                   console.log(
-                    `[AvatarStore] Computed and stored dominant_color for ${key}`
+                    `[AvatarStore] Computed and stored dominant_color for ${key}`,
                   );
                 })
                 .catch((err) => {
                   console.error(
                     `[AvatarStore] Failed to handle dominant_color for ${key}:`,
-                    err
+                    err,
                   );
                 })
                 .finally(() => {
@@ -266,7 +266,7 @@ export const useAvatarStore = defineStore("avatar", () => {
    */
   const getDominantColor = (
     ownerType: string,
-    ownerId: string
+    ownerId: string,
   ): string | undefined => {
     return dominantColors.get(`${ownerType}:${ownerId}`);
   };
@@ -307,7 +307,7 @@ export const useAvatarStore = defineStore("avatar", () => {
       console.log(
         `[AvatarStore] preloadAll complete in ${
           Date.now() - startTime
-        }ms. Cached ${results?.length || 0} avatars.`
+        }ms. Cached ${results?.length || 0} avatars.`,
       );
     } catch (err) {
       console.error("[AvatarStore] Failed to preload all avatars:", err);

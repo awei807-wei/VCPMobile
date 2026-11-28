@@ -13,7 +13,10 @@ defineProps<{
 </script>
 
 <template>
-  <div class="flex items-center gap-2 mb-1.5 px-1 w-full" :class="isUser ? 'flex-row-reverse' : 'flex-row'">
+  <div
+    class="flex items-center gap-2 mb-1.5 px-1 w-full"
+    :class="isUser ? 'flex-row-reverse' : 'flex-row'"
+  >
     <ChatAvatar
       :owner-type="ownerType"
       :owner-id="ownerId"
@@ -23,7 +26,11 @@ defineProps<{
       :dominant-color="avatarDominantColor"
     />
 
-    <div v-if="displayName" class="text-[11px] font-bold tracking-widest opacity-80" :style="nameStyle">
+    <div
+      v-if="displayName"
+      class="text-[11px] font-bold tracking-widest opacity-80"
+      :style="nameStyle"
+    >
       {{ displayName }}
     </div>
   </div>

@@ -33,7 +33,9 @@ async function createAgent(context: AssistantWriteContext, name: string) {
 async function deleteAgent(context: AssistantWriteContext, id: string) {
   try {
     await invoke("delete_agent", { agentId: id });
-    context.agents.value = context.agents.value.filter((agent) => agent.id !== id);
+    context.agents.value = context.agents.value.filter(
+      (agent) => agent.id !== id,
+    );
     context.notificationStore.addNotification({
       type: "success",
       title: "Agent 删除成功",
@@ -68,7 +70,9 @@ async function createGroup(context: AssistantWriteContext, name: string) {
 async function deleteGroup(context: AssistantWriteContext, id: string) {
   try {
     await invoke("delete_group", { groupId: id });
-    context.groups.value = context.groups.value.filter((group) => group.id !== id);
+    context.groups.value = context.groups.value.filter(
+      (group) => group.id !== id,
+    );
     context.notificationStore.addNotification({
       type: "success",
       title: "Group 删除成功",
@@ -84,7 +88,9 @@ async function deleteGroup(context: AssistantWriteContext, id: string) {
 async function saveAgent(context: AssistantWriteContext, agent: AgentConfig) {
   try {
     await invoke("save_agent_config", { agent });
-    const index = context.agents.value.findIndex((item) => item.id === agent.id);
+    const index = context.agents.value.findIndex(
+      (item) => item.id === agent.id,
+    );
     if (index !== -1) {
       const updated = [...context.agents.value];
       updated[index] = {
@@ -111,7 +117,9 @@ async function saveAgent(context: AssistantWriteContext, agent: AgentConfig) {
 async function saveGroup(context: AssistantWriteContext, group: GroupConfig) {
   try {
     await invoke("save_group_config", { group });
-    const index = context.groups.value.findIndex((item) => item.id === group.id);
+    const index = context.groups.value.findIndex(
+      (item) => item.id === group.id,
+    );
     if (index !== -1) {
       const updated = [...context.groups.value];
       updated[index] = {

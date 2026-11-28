@@ -1,9 +1,9 @@
-import { defineStore } from 'pinia';
-import { ref, shallowRef, computed } from 'vue';
-import { useModalHistory } from '../composables/useModalHistory';
-import { LAYER_PAGE_BASE, LAYER_PAGE_MAX_OFFSET } from '../constants/layers';
-import { useSyncSessionStore } from './syncSession';
-import { useRebuildSessionStore } from './rebuildSession';
+import { defineStore } from "pinia";
+import { ref, shallowRef, computed } from "vue";
+import { useModalHistory } from "../composables/useModalHistory";
+import { LAYER_PAGE_BASE, LAYER_PAGE_MAX_OFFSET } from "../constants/layers";
+import { useSyncSessionStore } from "./syncSession";
+import { useRebuildSessionStore } from "./rebuildSession";
 import type {
   ConfirmConfig,
   ConfirmOptions,
@@ -11,7 +11,7 @@ import type {
   EditorConfig,
   OverlayActionItem,
   PromptConfig,
-} from '../types/overlay';
+} from "../types/overlay";
 
 interface PageStackItem {
   type: string;
@@ -25,7 +25,7 @@ interface ConfirmRequest {
   settled: boolean;
 }
 
-export const useOverlayStore = defineStore('overlay', () => {
+export const useOverlayStore = defineStore("overlay", () => {
   const { registerModal, unregisterModal, replaceModal } = useModalHistory();
 
   const promptConfig = ref<PromptConfig | null>(null);
@@ -38,9 +38,9 @@ export const useOverlayStore = defineStore('overlay', () => {
 
   const registerOverlayModal = (modalId: string, closeHandler: () => void) => {
     if (
-      modalId !== 'ContextMenu' &&
+      modalId !== "ContextMenu" &&
       contextMenuConfig.value &&
-      replaceModal('ContextMenu', modalId, closeHandler)
+      replaceModal("ContextMenu", modalId, closeHandler)
     ) {
       contextMenuConfig.value = null;
       return;
@@ -52,39 +52,65 @@ export const useOverlayStore = defineStore('overlay', () => {
   // --- Page Stack (Virtual Navigation Stack) ---
   const pageStack = ref<PageStackItem[]>([]);
 
-  const pageStackTop = computed(() => pageStack.value[pageStack.value.length - 1] || null);
+  const pageStackTop = computed(
+    () => pageStack.value[pageStack.value.length - 1] || null,
+  );
 
-  const isSettingsOpen = computed(() => pageStack.value.some(p => p.type === 'settings'));
-  const isAgentSettingsOpen = computed(() => pageStack.value.some(p => p.type === 'agentSettings'));
-  const isGroupSettingsOpen = computed(() => pageStack.value.some(p => p.type === 'groupSettings'));
-  const isSyncSessionOpen = computed(() => pageStack.value.some(p => p.type === 'syncSession'));
-  const isRebuildSessionOpen = computed(() => pageStack.value.some(p => p.type === 'rebuildSession'));
-  const isTarvenSettingsOpen = computed(() => pageStack.value.some(p => p.type === 'tarvenSettings'));
-  const isDistributedOpen = computed(() => pageStack.value.some(p => p.type === 'distributed'));
-  const isDailyNoteOpen = computed(() => pageStack.value.some(p => p.type === 'dailyNote'));
-  const isRagObserverOpen = computed(() => pageStack.value.some(p => p.type === 'ragObserver'));
-  const isGlobalSearchOpen = computed(() => pageStack.value.some(p => p.type === 'globalSearch'));
-  const isLogCenterOpen = computed(() => pageStack.value.some(p => p.type === 'logCenter'));
-  const isLogCenterActive = computed(() => pageStackTop.value?.type === 'logCenter');
+  const isSettingsOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "settings"),
+  );
+  const isAgentSettingsOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "agentSettings"),
+  );
+  const isGroupSettingsOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "groupSettings"),
+  );
+  const isSyncSessionOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "syncSession"),
+  );
+  const isRebuildSessionOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "rebuildSession"),
+  );
+  const isTarvenSettingsOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "tarvenSettings"),
+  );
+  const isDistributedOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "distributed"),
+  );
+  const isDailyNoteOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "dailyNote"),
+  );
+  const isRagObserverOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "ragObserver"),
+  );
+  const isGlobalSearchOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "globalSearch"),
+  );
+  const isLogCenterOpen = computed(() =>
+    pageStack.value.some((p) => p.type === "logCenter"),
+  );
+  const isLogCenterActive = computed(
+    () => pageStackTop.value?.type === "logCenter",
+  );
 
   const agentSettingsId = computed(() => {
-    const page = pageStack.value.find(p => p.type === 'agentSettings');
-    return page?.id || '';
+    const page = pageStack.value.find((p) => p.type === "agentSettings");
+    return page?.id || "";
   });
 
   const groupSettingsId = computed(() => {
-    const page = pageStack.value.find(p => p.type === 'groupSettings');
-    return page?.id || '';
+    const page = pageStack.value.find((p) => p.type === "groupSettings");
+    return page?.id || "";
   });
 
   const getPageZIndex = (type: string) => {
-    const index = pageStack.value.findIndex(p => p.type === type);
+    const index = pageStack.value.findIndex((p) => p.type === type);
     if (index === -1) return LAYER_PAGE_BASE;
     return LAYER_PAGE_BASE + Math.min(index, LAYER_PAGE_MAX_OFFSET);
   };
 
   const pushPage = (type: string, id?: string) => {
-    const modalId = `Page:${type}:${id || ''}`;
+    const modalId = `Page:${type}:${id || ""}`;
     const top = pageStack.value[pageStack.value.length - 1];
     if (top && top.type === type && top.id === id) return;
 
@@ -123,8 +149,8 @@ export const useOverlayStore = defineStore('overlay', () => {
     if (isSyncSessionOpen.value) return;
     const syncStore = useSyncSessionStore();
     syncStore.open();
-    const modalId = 'Page:syncSession';
-    pageStack.value.push({ type: 'syncSession', id: undefined, modalId });
+    const modalId = "Page:syncSession";
+    pageStack.value.push({ type: "syncSession", id: undefined, modalId });
     registerModal(modalId, () => {
       syncStore.close();
       popPageInternal();
@@ -136,19 +162,21 @@ export const useOverlayStore = defineStore('overlay', () => {
     const syncStore = useSyncSessionStore();
     syncStore.close();
     const top = pageStack.value[pageStack.value.length - 1];
-    if (top?.type === 'syncSession') {
+    if (top?.type === "syncSession") {
       unregisterModal(top.modalId);
       pageStack.value.pop();
     }
   };
 
   // --- Rebuild Session ---
-  const openRebuildSession = (taskType: import('./rebuildSession').RebuildTaskType = 'preRender') => {
+  const openRebuildSession = (
+    taskType: import("./rebuildSession").RebuildTaskType = "preRender",
+  ) => {
     if (isRebuildSessionOpen.value) return;
     const rebuildStore = useRebuildSessionStore();
     rebuildStore.open(taskType);
-    const modalId = 'Page:rebuildSession';
-    pageStack.value.push({ type: 'rebuildSession', id: undefined, modalId });
+    const modalId = "Page:rebuildSession";
+    pageStack.value.push({ type: "rebuildSession", id: undefined, modalId });
     registerModal(modalId, () => {
       rebuildStore.close();
       popPageInternal();
@@ -160,7 +188,7 @@ export const useOverlayStore = defineStore('overlay', () => {
     const rebuildStore = useRebuildSessionStore();
     rebuildStore.close();
     const top = pageStack.value[pageStack.value.length - 1];
-    if (top?.type === 'rebuildSession') {
+    if (top?.type === "rebuildSession") {
       unregisterModal(top.modalId);
       pageStack.value.pop();
     }
@@ -168,7 +196,7 @@ export const useOverlayStore = defineStore('overlay', () => {
 
   // --- Legacy API wrappers (backward compatible) ---
   const openSettings = () => {
-    pushPage('settings');
+    pushPage("settings");
   };
 
   const closeSettings = () => {
@@ -176,7 +204,7 @@ export const useOverlayStore = defineStore('overlay', () => {
   };
 
   const openAgentSettings = (id: string) => {
-    pushPage('agentSettings', id);
+    pushPage("agentSettings", id);
   };
 
   const closeAgentSettings = () => {
@@ -184,7 +212,7 @@ export const useOverlayStore = defineStore('overlay', () => {
   };
 
   const openGroupSettings = (id: string) => {
-    pushPage('groupSettings', id);
+    pushPage("groupSettings", id);
   };
 
   const closeGroupSettings = () => {
@@ -192,7 +220,7 @@ export const useOverlayStore = defineStore('overlay', () => {
   };
 
   const openTarvenSettings = () => {
-    pushPage('tarvenSettings');
+    pushPage("tarvenSettings");
   };
 
   const closeTarvenSettings = () => {
@@ -200,7 +228,7 @@ export const useOverlayStore = defineStore('overlay', () => {
   };
 
   const openDistributed = () => {
-    pushPage('distributed');
+    pushPage("distributed");
   };
 
   const closeDistributed = () => {
@@ -208,7 +236,7 @@ export const useOverlayStore = defineStore('overlay', () => {
   };
 
   const openDailyNote = () => {
-    pushPage('dailyNote');
+    pushPage("dailyNote");
   };
 
   const closeDailyNote = () => {
@@ -216,7 +244,7 @@ export const useOverlayStore = defineStore('overlay', () => {
   };
 
   const openRagObserver = () => {
-    pushPage('ragObserver');
+    pushPage("ragObserver");
   };
 
   const closeRagObserver = () => {
@@ -224,30 +252,32 @@ export const useOverlayStore = defineStore('overlay', () => {
   };
 
   const openGlobalSearch = () => {
-    pushPage('globalSearch');
+    pushPage("globalSearch");
   };
 
   const closeGlobalSearch = () => {
-    if (pageStackTop.value?.type === 'globalSearch') popPage();
+    if (pageStackTop.value?.type === "globalSearch") popPage();
   };
 
   const openLogCenter = () => {
-    if (!isLogCenterOpen.value) pushPage('logCenter');
+    if (!isLogCenterOpen.value) pushPage("logCenter");
   };
 
   const closeLogCenter = () => {
-    if (pageStackTop.value?.type === 'logCenter') popPage();
+    if (pageStackTop.value?.type === "logCenter") popPage();
   };
 
   // --- Modal API (unchanged) ---
   const openPrompt = (config: PromptConfig) => {
     promptConfig.value = config;
-    registerOverlayModal('Prompt', () => { promptConfig.value = null; });
+    registerOverlayModal("Prompt", () => {
+      promptConfig.value = null;
+    });
   };
 
   const closePrompt = () => {
     if (promptConfig.value) {
-      unregisterModal('Prompt');
+      unregisterModal("Prompt");
       promptConfig.value = null;
     }
   };
@@ -262,13 +292,13 @@ export const useOverlayStore = defineStore('overlay', () => {
     confirmConfig.value = {
       title: request.options.title,
       message: request.options.message,
-      confirmText: request.options.confirmText || '确认',
-      cancelText: request.options.cancelText || '取消',
+      confirmText: request.options.confirmText || "确认",
+      cancelText: request.options.cancelText || "取消",
       isDanger: request.options.isDanger ?? false,
       onlyConfirm: request.options.onlyConfirm ?? false,
     };
 
-    registerOverlayModal('Confirm', () => {
+    registerOverlayModal("Confirm", () => {
       settleConfirm(false, true);
     });
   }
@@ -294,7 +324,7 @@ export const useOverlayStore = defineStore('overlay', () => {
     if (fromHistory) {
       finalize();
     } else {
-      unregisterModal('Confirm', finalize);
+      unregisterModal("Confirm", finalize);
     }
   }
 
@@ -315,27 +345,31 @@ export const useOverlayStore = defineStore('overlay', () => {
 
   const openContextMenu = (actions: OverlayActionItem[], title?: string) => {
     contextMenuConfig.value = {
-      title: title || '',
-      actions
+      title: title || "",
+      actions,
     };
-    registerModal('ContextMenu', () => { contextMenuConfig.value = null; });
+    registerModal("ContextMenu", () => {
+      contextMenuConfig.value = null;
+    });
   };
 
   const closeContextMenu = () => {
     if (contextMenuConfig.value) {
-      unregisterModal('ContextMenu');
+      unregisterModal("ContextMenu");
       contextMenuConfig.value = null;
     }
   };
 
   const openEditor = (config: EditorConfig) => {
     editorConfig.value = config;
-    registerOverlayModal('FullScreenEditor', () => { editorConfig.value = null; });
+    registerOverlayModal("FullScreenEditor", () => {
+      editorConfig.value = null;
+    });
   };
 
   const closeEditor = () => {
     if (editorConfig.value) {
-      unregisterModal('FullScreenEditor');
+      unregisterModal("FullScreenEditor");
       editorConfig.value = null;
     }
   };
@@ -399,6 +433,6 @@ export const useOverlayStore = defineStore('overlay', () => {
     openContextMenu,
     closeContextMenu,
     openEditor,
-    closeEditor
+    closeEditor,
   };
 });

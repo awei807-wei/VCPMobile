@@ -19,7 +19,9 @@ function normalizeCoreStatus(value) {
 }
 
 function positiveInteger(value, fallback) {
-  return Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : fallback;
+  return Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.floor(value))
+    : fallback;
 }
 
 function compactError(error) {
@@ -29,7 +31,9 @@ function compactError(error) {
 
 function coreReadyTimeout(timeoutMs, lastStatus) {
   const suffix = lastStatus ? `；最后状态=${lastStatus}` : "";
-  const error = new Error(`核心 READY 等待超时（预算 ${timeoutMs}ms${suffix}）`);
+  const error = new Error(
+    `核心 READY 等待超时（预算 ${timeoutMs}ms${suffix}）`,
+  );
   error.code = "CORE_READY_TIMEOUT";
   error.lastStatus = lastStatus;
   return error;
@@ -44,9 +48,10 @@ function unexpectedCoreStatus(status) {
 }
 
 function coreStartupFailed(lastError) {
-  const detail = typeof lastError === "string" && lastError.trim().length > 0
-    ? `：${lastError.trim().slice(0, 400)}`
-    : "";
+  const detail =
+    typeof lastError === "string" && lastError.trim().length > 0
+      ? `：${lastError.trim().slice(0, 400)}`
+      : "";
   const error = new Error(`核心启动失败${detail}`);
   error.code = "CORE_STARTUP_FAILED";
   error.lastError = lastError ?? null;
@@ -100,7 +105,9 @@ async function waitForCoreReady(cdp, options = {}) {
         lastError = await cdp.invoke(
           "get_last_error",
           {},
-          { timeoutMs: Math.min(statusTimeoutMs, Math.max(1, deadline - now())) },
+          {
+            timeoutMs: Math.min(statusTimeoutMs, Math.max(1, deadline - now())),
+          },
         );
       } catch (error) {
         lastError = `读取 get_last_error 失败：${compactError(error)}`;

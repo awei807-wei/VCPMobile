@@ -1,7 +1,7 @@
-import { afterEach } from 'vitest';
-import { config } from '@vue/test-utils';
-import './mocks/browser';
-import './mocks/tauri';
+import { afterEach } from "vitest";
+import { config } from "@vue/test-utils";
+import "./mocks/browser";
+import "./mocks/tauri";
 
 config.global.stubs = {
   Transition: false,
@@ -9,6 +9,6 @@ config.global.stubs = {
 };
 
 afterEach(() => {
-  document.body.innerHTML = '';
-  document.head.innerHTML = '';
+  document.body.innerHTML = "";
+  document.head.innerHTML = "";
 });

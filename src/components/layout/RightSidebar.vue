@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { computed, watch, ref } from "vue";
-import { X, Trash2, Bug, RefreshCw, BookOpen, Sparkles, FileText } from "lucide-vue-next";
+import {
+  X,
+  Trash2,
+  Bug,
+  RefreshCw,
+  BookOpen,
+  Sparkles,
+  FileText,
+} from "lucide-vue-next";
 import { useNotificationStore } from "../../core/stores/notification";
 import { useNotificationProcessor } from "../../core/composables/useNotificationProcessor";
 import { useSidebarSwipe } from "../../core/composables/useSidebarSwipe";
@@ -305,7 +313,9 @@ watch(
           @click="openLogCenterView"
         >
           <FileText :size="15" />
-          <span class="font-bold text-[11px] leading-none">日志中心 · 只读</span>
+          <span class="font-bold text-[11px] leading-none"
+            >日志中心 · 只读</span
+          >
         </button>
       </div>
     </div>

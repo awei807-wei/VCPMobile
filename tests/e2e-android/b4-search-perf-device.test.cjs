@@ -64,10 +64,18 @@ function harness({ failCommit = false, failBackupMove = false } = {}) {
     }
     if (command === "mv") {
       const [source, destination] = commandArgs;
-      if (failBackupMove && source === device.REMOTE_APP_DB_WAL && destination === device.REMOTE_BACKUP_WAL) {
+      if (
+        failBackupMove &&
+        source === device.REMOTE_APP_DB_WAL &&
+        destination === device.REMOTE_BACKUP_WAL
+      ) {
         throw new Error("injected backup rename failure");
       }
-      if (failCommit && source === device.REMOTE_STAGING && destination === device.REMOTE_APP_DB) {
+      if (
+        failCommit &&
+        source === device.REMOTE_STAGING &&
+        destination === device.REMOTE_APP_DB
+      ) {
         throw new Error("injected atomic rename failure");
       }
       remote.delete(source);
@@ -152,9 +160,15 @@ test("注入只使用 app-private staging 和同文件系统 rename，成功后�
     assert.equal(result.remoteDatabaseVerified, undefined);
     assert.equal(fake.remote.has(device.REMOTE_APP_DB), true);
     assert.equal(fake.remote.has(device.REMOTE_APP_DB_WAL), false);
-    assert.ok(fake.calls.some(([, args]) => args.includes(device.REMOTE_STAGING)));
+    assert.ok(
+      fake.calls.some(([, args]) => args.includes(device.REMOTE_STAGING)),
+    );
     assert.ok(fake.calls.some(([, args]) => args.includes("mv")));
-    assert.ok(fake.calls.every(([, args]) => !args.includes("am") && !args.includes("force-stop")));
+    assert.ok(
+      fake.calls.every(
+        ([, args]) => !args.includes("am") && !args.includes("force-stop"),
+      ),
+    );
   } finally {
     cleanupFixtureFile(pathname);
   }
@@ -184,7 +198,9 @@ test("大于 32MiB 的 staged fixture 通过 runAdbToFile 依赖注入直接写�
       },
       ensureSingleDevice: fake.ensureSingleDevice,
       readPid: fake.readPid,
-      verifyLocal: async (localPath) => ({ ok: fs.statSync(localPath).size === transferBytes }),
+      verifyLocal: async (localPath) => ({
+        ok: fs.statSync(localPath).size === transferBytes,
+      }),
     });
     assert.equal(result.stagedFixtureVerified, true);
     assert.equal(calls.length, 1);
@@ -207,7 +223,12 @@ test("stage 传输失败不泄露二进制 stdout，并清理 app-private stagin
   const originalRunAdb = fake.runAdb;
   const secret = "SQLITE_BINARY_SECRET";
   fake.runAdb = (args) => {
-    if (args[0] === "shell" && args[1] === "run-as" && args[3] === "rm" && args.includes(device.REMOTE_STAGING)) {
+    if (
+      args[0] === "shell" &&
+      args[1] === "run-as" &&
+      args[3] === "rm" &&
+      args.includes(device.REMOTE_STAGING)
+    ) {
       throw new Error("staging cleanup unavailable");
     }
     return originalRunAdb(args);
@@ -229,7 +250,9 @@ test("stage 传输失败不泄露二进制 stdout，并清理 app-private stagin
       }),
       (error) => {
         assert.equal(error.message.includes(secret), false);
-        const stagingFailure = error.cleanupFailures.find((failure) => failure.phase === "remote-staging");
+        const stagingFailure = error.cleanupFailures.find(
+          (failure) => failure.phase === "remote-staging",
+        );
         assert.deepEqual(stagingFailure.residualPaths, [device.REMOTE_STAGING]);
         return true;
       },
@@ -256,7 +279,11 @@ test("原子 rename 失败恢复 DB/WAL/SHM 三件套并清理临时文件", asy
       }),
       /atomic rename failure/,
     );
-    for (const remotePath of [device.REMOTE_APP_DB, device.REMOTE_APP_DB_WAL, device.REMOTE_APP_DB_SHM]) {
+    for (const remotePath of [
+      device.REMOTE_APP_DB,
+      device.REMOTE_APP_DB_WAL,
+      device.REMOTE_APP_DB_SHM,
+    ]) {
       assert.equal(fake.remote.has(remotePath), true, remotePath);
     }
     assert.equal(fake.remote.has(device.REMOTE_TEMP), false);
@@ -281,7 +308,11 @@ test("备份 DB/WAL/SHM 过程中失败也恢复已移动的文件", async () =>
       }),
       /backup rename failure/,
     );
-    for (const remotePath of [device.REMOTE_APP_DB, device.REMOTE_APP_DB_WAL, device.REMOTE_APP_DB_SHM]) {
+    for (const remotePath of [
+      device.REMOTE_APP_DB,
+      device.REMOTE_APP_DB_WAL,
+      device.REMOTE_APP_DB_SHM,
+    ]) {
       assert.equal(fake.remote.has(remotePath), true, remotePath);
     }
     assert.equal(fake.remote.has(device.REMOTE_BACKUP), false);
@@ -305,7 +336,10 @@ test("Release 包与非目标 serial 在任何 adb 操作前拒绝", async () =>
       /只允许 debug 包/,
     );
     await assert.rejects(
-      device.verifyDeviceFixture({ serial: "other-device", runAdb: fake.runAdb }),
+      device.verifyDeviceFixture({
+        serial: "other-device",
+        runAdb: fake.runAdb,
+      }),
       /只允许设备 serial/,
     );
     assert.equal(fake.calls.length, 0);
@@ -320,13 +354,19 @@ test("设备 verify 只信任 READY 后 Rust FTS 状态和六项语义查询，�
     runAdb: fake.runAdb,
     ensureSingleDevice: fake.ensureSingleDevice,
     readPid: () => 9_001,
-    readRuntimeStatus: async () => ({ status: runtimeStatus(), semanticChecks: semanticChecks() }),
+    readRuntimeStatus: async () => ({
+      status: runtimeStatus(),
+      semanticChecks: semanticChecks(),
+    }),
   });
   assert.equal(result.ok, true);
   assert.equal(result.runtimeStatusVerified, true);
   assert.equal(result.liveTopicRowCount, 1_800);
   assert.equal(result.deviceFixtureVerified, true);
-  assert.equal(fake.calls.some(([, args]) => args[0] === "pull"), false);
+  assert.equal(
+    fake.calls.some(([, args]) => args[0] === "pull"),
+    false,
+  );
 });
 
 test("运行态 CDP 读取先等 READY，再读取 status 和无原词 evidence 的语义结果", async () => {
@@ -346,7 +386,11 @@ test("运行态 CDP 读取先等 READY，再读取 status 和无原词 evidence 
     waitReady: async () => calls.push("ready"),
   });
   assert.equal(result.status.liveCount, 50_000);
-  assert.deepEqual(calls.slice(0, 3), ["ready", "get_fts_index_status", "search_messages_fts"]);
+  assert.deepEqual(calls.slice(0, 3), [
+    "ready",
+    "get_fts_index_status",
+    "search_messages_fts",
+  ]);
   assert.equal(result.semanticChecks[0].caseId, "default-zh-1");
   assert.equal(result.semanticChecks[0].query, undefined);
   assert.equal(calls.at(-1), "close");

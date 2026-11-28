@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { startStreamService, stopStreamService } from "../../../src-tauri/plugins/vcp-mobile/guest-js/index";
+import {
+  startStreamService,
+  stopStreamService,
+} from "../../../src-tauri/plugins/vcp-mobile/guest-js/index";
 import { invokeMock, mockInvoke } from "../mocks/tauri";
 
 const identity = {
@@ -15,7 +18,9 @@ describe("vcp-mobile guest-js 流式服务契约", () => {
     await expect(startStreamService("agent-label", identity)).resolves.toBe(17);
 
     mockInvoke("plugin:vcp-mobile|start_streaming_service", () => null);
-    await expect(startStreamService("agent-label", identity)).resolves.toBeNull();
+    await expect(
+      startStreamService("agent-label", identity),
+    ).resolves.toBeNull();
   });
 
   it("stop 原样传递 agentName、identity 和 expectedGeneration", async () => {

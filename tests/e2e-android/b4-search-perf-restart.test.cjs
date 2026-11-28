@@ -2,9 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {
-  coldSearch,
-} = require("./b4-search-perf-runner.cjs");
+const { coldSearch } = require("./b4-search-perf-runner.cjs");
 const {
   buildDirectKillArgs,
   restartB4ColdRuntime,
@@ -44,15 +42,18 @@ test("默认 direct-kill 使用 fail-fast，并透传 adb 失败", async () => {
   const failure = new Error("adb kill failed");
   let closeCount = 0;
   await assert.rejects(
-    restartB4ColdRuntime(oldRuntime(async () => {
-      closeCount += 1;
-    }), {
-      runAdb: (args, options) => {
-        assert.deepEqual(args, buildDirectKillArgs(OLD_PID));
-        assert.equal(options.allowFailure, false);
-        throw failure;
+    restartB4ColdRuntime(
+      oldRuntime(async () => {
+        closeCount += 1;
+      }),
+      {
+        runAdb: (args, options) => {
+          assert.deepEqual(args, buildDirectKillArgs(OLD_PID));
+          assert.equal(options.allowFailure, false);
+          throw failure;
+        },
       },
-    }),
+    ),
     (error) => error === failure,
   );
   assert.equal(closeCount, 1);
@@ -163,9 +164,6 @@ test("CDP PID mismatch 会关闭候选并阻止 READY/search，runtime.cdp 保�
   assert.equal(searchCount, 0);
   assert.equal(result.samples.length, 1);
   assert.equal(result.samples[0].ok, false);
-  assert.equal(
-    result.samples[0].errorCode,
-    "ANDROID_NEW_PROCESS_PID_MISMATCH",
-  );
+  assert.equal(result.samples[0].errorCode, "ANDROID_NEW_PROCESS_PID_MISMATCH");
   assert.match(result.samples[0].error, /CDP 重连未证明绑定新进程/);
 });

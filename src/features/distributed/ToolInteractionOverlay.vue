@@ -42,7 +42,9 @@ const normalizeDistributedNotification = (payload: unknown) => {
   const androidNotification = isRecord(record.androidNotification)
     ? record.androidNotification
     : {};
-  const title = toNotificationText(record.title, "VCP Notification").trim() || "VCP Notification";
+  const title =
+    toNotificationText(record.title, "VCP Notification").trim() ||
+    "VCP Notification";
   const body = toNotificationText(record.body);
 
   return {
@@ -79,7 +81,8 @@ onMounted(async () => {
     "distributed-notification",
     async (event) => {
       const notification = normalizeDistributedNotification(event.payload);
-      const canRetryNative = !notification.delivered && !notification.androidSkipped;
+      const canRetryNative =
+        !notification.delivered && !notification.androidSkipped;
       if (canRetryNative) {
         try {
           await invoke("plugin:vcp-mobile|show_system_notification", {
@@ -87,8 +90,14 @@ onMounted(async () => {
             body: notification.body,
           });
         } catch (error) {
-          console.warn("[Distributed Notification] Native notification failed:", error);
-          showBrowserNotificationFallback(notification.title, notification.body);
+          console.warn(
+            "[Distributed Notification] Native notification failed:",
+            error,
+          );
+          showBrowserNotificationFallback(
+            notification.title,
+            notification.body,
+          );
         }
       } else if (!notification.delivered) {
         showBrowserNotificationFallback(notification.title, notification.body);
@@ -141,9 +150,7 @@ onUnmounted(() => {
             <div class="text-lg font-bold text-primary-text">
               工具请求: {{ activeRequest.tool }}
             </div>
-            <div class="text-sm opacity-60">
-              此工具需要您的操作才能完成。
-            </div>
+            <div class="text-sm opacity-60">此工具需要您的操作才能完成。</div>
             <!-- Phase 3+: tool-specific UI components will be rendered here -->
             <!-- e.g. <CameraCapture v-if="activeRequest.tool === 'camera'" /> -->
             <!-- e.g. <BiometricPrompt v-if="activeRequest.tool === 'biometric'" /> -->

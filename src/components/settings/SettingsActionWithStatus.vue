@@ -1,22 +1,22 @@
 <script setup lang="ts">
-import SettingsRow from './SettingsRow.vue';
-import SettingsActionButton from './SettingsActionButton.vue';
-import SettingsInlineStatus from './SettingsInlineStatus.vue';
+import SettingsRow from "./SettingsRow.vue";
+import SettingsActionButton from "./SettingsActionButton.vue";
+import SettingsInlineStatus from "./SettingsInlineStatus.vue";
 
 const emit = defineEmits<{
-  (e: 'action-click'): void;
+  (e: "action-click"): void;
 }>();
 
 defineProps<{
   title?: string;
   description?: string;
-  buttonVariant: 'primary' | 'secondary' | 'danger' | 'ghost';
-  buttonSize?: 'sm' | 'md' | 'lg';
+  buttonVariant: "primary" | "secondary" | "danger" | "ghost";
+  buttonSize?: "sm" | "md" | "lg";
   buttonLabel: string;
   buttonLoading?: boolean;
   buttonDisabled?: boolean;
   buttonIcon?: any;
-  statusType?: 'success' | 'error' | 'loading' | 'info' | null;
+  statusType?: "success" | "error" | "loading" | "info" | null;
   statusMessage?: string;
   statusMono?: boolean;
   statusMultiline?: boolean;

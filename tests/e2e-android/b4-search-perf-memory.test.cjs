@@ -76,8 +76,18 @@ test("严格 RSS 缺少 expected PID 时拒绝 pidof 和 package fallback", () =
 });
 
 test("PSS 或缺失样本会使内存门禁 fail-closed", () => {
-  const pss = { available: true, rssAvailable: false, metric: "pss", bytes: 100 };
-  const rss = { available: true, rssAvailable: true, metric: "rss", bytes: 110 };
+  const pss = {
+    available: true,
+    rssAvailable: false,
+    metric: "pss",
+    bytes: 100,
+  };
+  const rss = {
+    available: true,
+    rssAvailable: true,
+    metric: "rss",
+    bytes: 110,
+  };
   assert.equal(memoryDelta(rss, pss, 200).gatePassed, false);
   assert.equal(memoryPeakDelta(rss, pss, [rss, pss], 200).gatePassed, false);
   assert.equal(memoryPeakDelta(rss, null, [rss], 200).peakSampled, false);
@@ -108,7 +118,10 @@ test("RSS 读数的可用标志、RSS 标志、字节数和 PID 均严格校验"
     ["metric 非 rss", (reading) => (reading.metric = "pss")],
     ["bytes 非有限", (reading) => (reading.bytes = Infinity)],
     ["bytes 为小数", (reading) => (reading.bytes = 0.5)],
-    ["bytes 超出安全整数", (reading) => (reading.bytes = Number.MAX_SAFE_INTEGER + 1)],
+    [
+      "bytes 超出安全整数",
+      (reading) => (reading.bytes = Number.MAX_SAFE_INTEGER + 1),
+    ],
     ["bytes 为负数", (reading) => (reading.bytes = -1)],
     ["bytes 非数字", (reading) => (reading.bytes = "100")],
     ["PID 缺失", (reading) => delete reading.pid],
@@ -144,13 +157,9 @@ test("RSS 最大安全整数边界在 delta 与 peak 门禁中仍合法", () => 
     memoryDelta(before, after, 200, { requireSamePid: true }).gatePassed,
     true,
   );
-  const peak = memoryPeakDelta(
-    before,
-    during,
-    [before, during, after],
-    200,
-    { expectedPid: 7_001 },
-  );
+  const peak = memoryPeakDelta(before, during, [before, during, after], 200, {
+    expectedPid: 7_001,
+  });
   assert.equal(peak.peakSampled, true);
   assert.equal(peak.gatePassed, true);
 });
@@ -168,7 +177,12 @@ test("重建窗口 baseline、during、after、peak PID 不一致时拒绝门禁
   const after = { ...baseline, phase: "after", bytes: 110 };
   const peak = { ...during };
   const delta = memoryDelta(baseline, after, 200, { requireSamePid: true });
-  const peakDelta = memoryPeakDelta(baseline, peak, [baseline, during, after], 200);
+  const peakDelta = memoryPeakDelta(
+    baseline,
+    peak,
+    [baseline, during, after],
+    200,
+  );
   assert.equal(delta.gatePassed, true);
   assert.equal(peakDelta.gatePassed, false);
   assert.equal(peakDelta.pidConsistent, false);

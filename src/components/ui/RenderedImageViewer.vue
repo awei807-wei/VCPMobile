@@ -55,7 +55,9 @@ const displayTitle = computed(
 );
 const imageStyle = computed(() => ({
   transform: `translate3d(${panX.value}px, ${panY.value}px, 0) scale(${zoom.value})`,
-  transition: isAnimating.value ? "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)" : "none",
+  transition: isAnimating.value
+    ? "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)"
+    : "none",
 }));
 
 function getNaturalImageRenderSize() {
@@ -268,7 +270,11 @@ function handleTouchStart(event: TouchEvent): void {
 }
 
 function handleTouchMove(event: TouchEvent): void {
-  if (zoom.value > 1 || event.touches.length >= 2 || gestureMode.value !== "none") {
+  if (
+    zoom.value > 1 ||
+    event.touches.length >= 2 ||
+    gestureMode.value !== "none"
+  ) {
     if (event.cancelable) event.preventDefault();
   }
 
@@ -310,8 +316,10 @@ function handleTouchMove(event: TouchEvent): void {
         const vcy = ch / 2;
 
         // 物理精确的以双指中点为轴心的缩放平移算法
-        const targetX = midX - vcx - factor * (touchStartMidX - vcx - touchStartPanX);
-        const targetY = midY - vcy - factor * (touchStartMidY - vcy - touchStartPanY);
+        const targetX =
+          midX - vcx - factor * (touchStartMidX - vcx - touchStartPanX);
+        const targetY =
+          midY - vcy - factor * (touchStartMidY - vcy - touchStartPanY);
 
         // 引入实时滑动范围硬性保护边界约束，杜绝飞图
         const limited = limitPanDuringMove(targetX, targetY, newZoom);

@@ -28,11 +28,14 @@ const topic = (unreadCount?: number, unread = false) => ({
 });
 
 const findUnreadIndicator = (wrapper: ReturnType<typeof mount>) =>
-  wrapper.findAll("div").find((element) =>
-    element.classes().includes("absolute") &&
-    (element.classes().includes("w-3") ||
-      element.classes().includes("min-w-[18px]")),
-  );
+  wrapper
+    .findAll("div")
+    .find(
+      (element) =>
+        element.classes().includes("absolute") &&
+        (element.classes().includes("w-3") ||
+          element.classes().includes("min-w-[18px]")),
+    );
 
 afterEach(() => {
   wrappers.splice(0).forEach((wrapper) => wrapper.unmount());

@@ -6,4 +6,4 @@ declare module "*.vue" {
   export default component;
 }
 
-declare module 'vue-cropper-next';
+declare module "vue-cropper-next";

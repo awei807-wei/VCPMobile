@@ -279,17 +279,22 @@ describe("逻辑流消息话题计数", () => {
     const first = deferred<TopicUnreadState>();
     mockInvoke("increment_topic_unread_count", () => first.promise);
     const sessionStore = useChatSessionStore();
-    sessionStore.currentSelectedItem = { id: baseContext.ownerId, type: "agent" };
+    sessionStore.currentSelectedItem = {
+      id: baseContext.ownerId,
+      type: "agent",
+    };
     sessionStore.currentTopicId = baseContext.topicId;
     const topicStore = useTopicStore();
-    topicStore.topics = [{
-      id: baseContext.topicId,
-      ownerId: baseContext.ownerId,
-      ownerType: "agent",
-      name: "topic",
-      createdAt: 1,
-      msgCount: 0,
-    }];
+    topicStore.topics = [
+      {
+        id: baseContext.topicId,
+        ownerId: baseContext.ownerId,
+        ownerType: "agent",
+        name: "topic",
+        createdAt: 1,
+        msgCount: 0,
+      },
+    ];
     const streamStore = useChatStreamStore();
 
     await streamStore.processStreamEvent(event("thinking", 1));
@@ -329,14 +334,16 @@ describe("逻辑流消息话题计数", () => {
       sessionStore.currentSelectedItem = { id: "current-agent", type: "agent" };
       sessionStore.currentTopicId = "current-topic";
       const topicStore = useTopicStore();
-      topicStore.topics = [{
-        id: baseContext.topicId,
-        ownerId: baseContext.ownerId,
-        ownerType: "agent",
-        name: "topic",
-        createdAt: 1,
-        msgCount: 0,
-      }];
+      topicStore.topics = [
+        {
+          id: baseContext.topicId,
+          ownerId: baseContext.ownerId,
+          ownerType: "agent",
+          name: "topic",
+          createdAt: 1,
+          msgCount: 0,
+        },
+      ];
       return { topicStore, streamStore: useChatStreamStore() };
     };
 
@@ -351,7 +358,9 @@ describe("逻辑流消息话题计数", () => {
     await first.streamStore.processStreamEvent(event("thinking", 1));
     await first.topicStore.flushUnreadMutations();
     expect(
-      invokeMock.mock.calls.filter(([command]) => command === "increment_topic_unread_count"),
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "increment_topic_unread_count",
+      ),
     ).toHaveLength(1);
     first.streamStore.$dispose();
 
@@ -363,7 +372,9 @@ describe("逻辑流消息话题计数", () => {
     );
     await second.topicStore.flushUnreadMutations();
     expect(
-      invokeMock.mock.calls.filter(([command]) => command === "increment_topic_unread_count"),
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "increment_topic_unread_count",
+      ),
     ).toHaveLength(1);
     second.streamStore.$dispose();
   });
@@ -373,14 +384,16 @@ describe("逻辑流消息话题计数", () => {
     sessionStore.currentSelectedItem = { id: "current-agent", type: "agent" };
     sessionStore.currentTopicId = "current-topic";
     const topicStore = useTopicStore();
-    topicStore.topics = [{
-      id: baseContext.topicId,
-      ownerId: baseContext.ownerId,
-      ownerType: "agent",
-      name: "topic",
-      createdAt: 1,
-      msgCount: 0,
-    }];
+    topicStore.topics = [
+      {
+        id: baseContext.topicId,
+        ownerId: baseContext.ownerId,
+        ownerType: "agent",
+        name: "topic",
+        createdAt: 1,
+        msgCount: 0,
+      },
+    ];
     mockInvoke("increment_topic_unread_count", (args = {}) => ({
       ownerId: args.ownerId,
       ownerType: args.ownerType,
@@ -391,13 +404,13 @@ describe("逻辑流消息话题计数", () => {
 
     const streamStore = useChatStreamStore();
     await streamStore.processStreamEvent(event("thinking", 1));
-    await streamStore.processStreamEvent(
-      event("thinking", 2, "message-1"),
-    );
+    await streamStore.processStreamEvent(event("thinking", 2, "message-1"));
     await topicStore.flushUnreadMutations();
 
     expect(
-      invokeMock.mock.calls.filter(([command]) => command === "increment_topic_unread_count"),
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "increment_topic_unread_count",
+      ),
     ).toHaveLength(1);
   });
 

@@ -3,7 +3,10 @@
 const metrics = require("./b4-search-perf-metrics.cjs");
 const runner = require("./b4-search-perf-runner.cjs");
 const fixtureCli = require("./b4-search-perf-fixture-cli.cjs");
-const { redactText, sanitizeDto } = require("./b4-search-perf-evidence-schema.cjs");
+const {
+  redactText,
+  sanitizeDto,
+} = require("./b4-search-perf-evidence-schema.cjs");
 
 const SCHEMA = "vcp.android.b4.search-performance.v1";
 
@@ -18,7 +21,12 @@ function argumentFailure(error) {
     generatedAt: new Date().toISOString(),
     package: runner.EXPECTED_DEBUG_PACKAGE,
     mode: "debug-only",
-    failures: [metrics.makeFailure("arguments", redactText(metrics.errorText(error), []))],
+    failures: [
+      metrics.makeFailure(
+        "arguments",
+        redactText(metrics.errorText(error), []),
+      ),
+    ],
   };
 }
 
@@ -39,37 +47,58 @@ function uncaughtFailure(error) {
     generatedAt: new Date().toISOString(),
     package: runner.EXPECTED_DEBUG_PACKAGE,
     mode: "debug-only",
-    failures: [metrics.makeFailure("uncaught", redactText(metrics.errorText(error), []))],
+    failures: [
+      metrics.makeFailure("uncaught", redactText(metrics.errorText(error), [])),
+    ],
   };
 }
 
 function safeFixtureFailure(error, options) {
-  const payload = error?.fixturePayload && typeof error.fixturePayload === "object"
-    ? error.fixturePayload
-    : {};
+  const payload =
+    error?.fixturePayload && typeof error.fixturePayload === "object"
+      ? error.fixturePayload
+      : {};
   const rawFailures = [
     ...(Array.isArray(payload.failures) ? payload.failures : []),
     ...(Array.isArray(error?.cleanupFailures) ? error.cleanupFailures : []),
   ];
-  const failures = rawFailures
-    .map((failure) => metrics.makeFailure(
+  const failures = rawFailures.map((failure) =>
+    metrics.makeFailure(
       typeof failure?.phase === "string" ? failure.phase : "fixture",
-      redactText(typeof failure?.message === "string" ? failure.message : "fixture 命令失败", options.queries),
-    ));
+      redactText(
+        typeof failure?.message === "string"
+          ? failure.message
+          : "fixture 命令失败",
+        options.queries,
+      ),
+    ),
+  );
   if (failures.length === 0) {
-    failures.push(metrics.makeFailure("fixture", redactText(metrics.errorText(error), options.queries)));
+    failures.push(
+      metrics.makeFailure(
+        "fixture",
+        redactText(metrics.errorText(error), options.queries),
+      ),
+    );
   }
   const residualCount = rawFailures.reduce(
-    (count, failure) => count + (Array.isArray(failure?.residualPaths) ? failure.residualPaths.length : 0),
+    (count, failure) =>
+      count +
+      (Array.isArray(failure?.residualPaths)
+        ? failure.residualPaths.length
+        : 0),
     Array.isArray(payload.residualPaths) ? payload.residualPaths.length : 0,
   );
-  const fixture = sanitizeDto({
-    ...payload,
-    command: options.fixture,
-    ok: false,
-    residualCount,
-    error: redactText(metrics.errorText(error), options.queries),
-  }, "fixture") || { command: options.fixture, ok: false };
+  const fixture = sanitizeDto(
+    {
+      ...payload,
+      command: options.fixture,
+      ok: false,
+      residualCount,
+      error: redactText(metrics.errorText(error), options.queries),
+    },
+    "fixture",
+  ) || { command: options.fixture, ok: false };
   return {
     schema: SCHEMA,
     ok: false,
@@ -83,11 +112,14 @@ function safeFixtureFailure(error, options) {
 
 function fixtureReport(result, options) {
   const operationOk = result?.ok === true;
-  const fixture = sanitizeDto({
-    ...(result && typeof result === "object" ? result : {}),
-    command: options.fixture,
-    ok: operationOk,
-  }, "fixture") || { command: options.fixture, ok: false };
+  const fixture = sanitizeDto(
+    {
+      ...(result && typeof result === "object" ? result : {}),
+      command: options.fixture,
+      ok: operationOk,
+    },
+    "fixture",
+  ) || { command: options.fixture, ok: false };
   return {
     schema: SCHEMA,
     ok: fixture.ok === true,
@@ -95,7 +127,10 @@ function fixtureReport(result, options) {
     package: runner.EXPECTED_DEBUG_PACKAGE,
     mode: "fixture",
     fixture,
-    failures: fixture.ok === true ? [] : [metrics.makeFailure("fixture", "fixture 命令失败")],
+    failures:
+      fixture.ok === true
+        ? []
+        : [metrics.makeFailure("fixture", "fixture 命令失败")],
   };
 }
 

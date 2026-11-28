@@ -121,7 +121,8 @@ const loadTopicList = async (
     const channel = new Channel<Topic[]>();
     context.topics.value = [];
     channel.onmessage = (chunk) => {
-      if (!isCurrentTopicRequest(context, requestOwnerKey, requestEpoch)) return;
+      if (!isCurrentTopicRequest(context, requestOwnerKey, requestEpoch))
+        return;
       context.topics.value.push(...mapTopicChunk(chunk, ownerId, ownerType));
       context.topics.value = [...context.topics.value];
     };
@@ -215,7 +216,10 @@ const deleteTopic = async (
       try {
         await context.refreshOwnerUnreadCount(ownerId, ownerType);
       } catch (error) {
-        console.error("[TopicStore] 删除话题后刷新 owner 未读聚合失败：", error);
+        console.error(
+          "[TopicStore] 删除话题后刷新 owner 未读聚合失败：",
+          error,
+        );
       }
     }
     if (!isCurrentSessionTopic(context, ownerId, ownerType, topicId)) return;
@@ -243,17 +247,15 @@ const updateTopicTitle = async (
   newTitle: string,
 ) => {
   try {
-    console.log(
-      `[TopicStore] 正在将话题 ${topicId} 的标题更新为“${newTitle}”`,
-    );
+    console.log(`[TopicStore] 正在将话题 ${topicId} 的标题更新为“${newTitle}”`);
     await invoke("update_topic_title", {
       ownerId,
       ownerType,
       topicId,
       title: newTitle,
     });
-    const index = context.topics.value.findIndex(
-      (topic) => hasTopicIdentity(topic, ownerId, ownerType, topicId),
+    const index = context.topics.value.findIndex((topic) =>
+      hasTopicIdentity(topic, ownerId, ownerType, topicId),
     );
     if (index !== -1) {
       context.topics.value[index] = {
@@ -281,8 +283,8 @@ const toggleTopicLock = async (
   topicId: string,
 ) => {
   try {
-    const index = context.topics.value.findIndex(
-      (topic) => hasTopicIdentity(topic, ownerId, ownerType, topicId),
+    const index = context.topics.value.findIndex((topic) =>
+      hasTopicIdentity(topic, ownerId, ownerType, topicId),
     );
     if (index === -1) return;
     const targetLockState = !context.topics.value[index].locked;

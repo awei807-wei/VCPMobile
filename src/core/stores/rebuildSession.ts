@@ -1,21 +1,21 @@
-import { defineStore } from 'pinia';
-import { ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { withScreenKeep } from '../composables/useScreenKeeper';
+import { defineStore } from "pinia";
+import { ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { withScreenKeep } from "../composables/useScreenKeeper";
 
-export type RebuildTaskType = 'preRender';
+export type RebuildTaskType = "preRender";
 
-export const useRebuildSessionStore = defineStore('rebuildSession', () => {
+export const useRebuildSessionStore = defineStore("rebuildSession", () => {
   // --- 视图状态 ---
   const isOpen = ref(false);
   const canDismiss = ref(true);
 
   // --- 任务类型 ---
-  const taskType = ref<RebuildTaskType>('preRender');
+  const taskType = ref<RebuildTaskType>("preRender");
 
   // --- 状态机 ---
-  const status = ref<'idle' | 'running' | 'completed' | 'error'>('idle');
+  const status = ref<"idle" | "running" | "completed" | "error">("idle");
 
   // --- 进度 ---
   const progress = ref({ current: 0, total: 0 });
@@ -24,39 +24,39 @@ export const useRebuildSessionStore = defineStore('rebuildSession', () => {
   const needsReload = ref(false);
 
   // --- 错误信息 ---
-  const errorMessage = ref('');
+  const errorMessage = ref("");
 
   // --- 监听器引用 ---
   let unlistenFn: UnlistenFn | null = null;
 
-  const open = (type: RebuildTaskType = 'preRender') => {
+  const open = (type: RebuildTaskType = "preRender") => {
     taskType.value = type;
     isOpen.value = true;
     canDismiss.value = true;
-    status.value = 'idle';
+    status.value = "idle";
     progress.value = { current: 0, total: 0 };
     needsReload.value = false;
-    errorMessage.value = '';
+    errorMessage.value = "";
     registerListener();
   };
 
   const startRebuild = async () => {
-    if (status.value !== 'idle') return;
-    status.value = 'running';
+    if (status.value !== "idle") return;
+    status.value = "running";
     canDismiss.value = false;
     progress.value = { current: 0, total: 0 };
-    errorMessage.value = '';
+    errorMessage.value = "";
 
     try {
-      await withScreenKeep(() => invoke('rebuild_all_pre_renders'));
+      await withScreenKeep(() => invoke("rebuild_all_pre_renders"));
       needsReload.value = true;
-      status.value = 'completed';
+      status.value = "completed";
       canDismiss.value = true;
     } catch (e: any) {
       console.error(`[RebuildSession] ${taskType.value} failed:`, e);
-      const msg = typeof e === 'string' ? e : (e?.message ?? String(e));
+      const msg = typeof e === "string" ? e : (e?.message ?? String(e));
       errorMessage.value = msg;
-      status.value = 'error';
+      status.value = "error";
       canDismiss.value = true;
     }
   };
@@ -73,9 +73,12 @@ export const useRebuildSessionStore = defineStore('rebuildSession', () => {
 
   const registerListener = () => {
     cleanupListener();
-    listen<{ current: number; total: number }>('render_rebuild_progress', (event) => {
-      progress.value = event.payload;
-    }).then((fn) => {
+    listen<{ current: number; total: number }>(
+      "render_rebuild_progress",
+      (event) => {
+        progress.value = event.payload;
+      },
+    ).then((fn) => {
       unlistenFn = fn;
     });
   };

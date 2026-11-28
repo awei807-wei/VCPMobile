@@ -1,11 +1,11 @@
-import { ref, watch, computed } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
-import { useAppLifecycleStore } from '../stores/appLifecycle';
-import { useUpdateDownloader } from './useUpdateDownloader';
-import { useUpdateStore } from '../stores/update';
+import { ref, watch, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useAppLifecycleStore } from "../stores/appLifecycle";
+import { useUpdateDownloader } from "./useUpdateDownloader";
+import { useUpdateStore } from "../stores/update";
 
-const LAST_CHECK_KEY = 'vcp_last_update_check';
+const LAST_CHECK_KEY = "vcp_last_update_check";
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 export interface UpdateInfo {
@@ -25,12 +25,16 @@ export function useAutoUpdate() {
 
   const isPromptOpen = computed({
     get: () => updateStore.isPromptOpen,
-    set: (val) => { updateStore.isPromptOpen = val; }
+    set: (val) => {
+      updateStore.isPromptOpen = val;
+    },
   });
 
   const updateInfo = computed<UpdateInfo | null>({
     get: () => updateStore.updateInfo,
-    set: (val) => { updateStore.updateInfo = val; }
+    set: (val) => {
+      updateStore.updateInfo = val;
+    },
   });
 
   const hasCheckedThisSession = ref(false);
@@ -46,19 +50,19 @@ export function useAutoUpdate() {
     hasCheckedThisSession.value = true;
 
     if (!shouldCheck()) {
-      console.log('[AutoUpdate] Skipped: within 24h cooldown');
+      console.log("[AutoUpdate] Skipped: within 24h cooldown");
       return;
     }
 
     try {
-      const info: UpdateInfo = await invoke('check_for_update');
+      const info: UpdateInfo = await invoke("check_for_update");
       localStorage.setItem(LAST_CHECK_KEY, Date.now().toString());
 
       if (info.hasUpdate) {
         updateStore.openPrompt(info);
       }
     } catch (e) {
-      console.error('[AutoUpdate] Check failed:', e);
+      console.error("[AutoUpdate] Check failed:", e);
       localStorage.setItem(LAST_CHECK_KEY, Date.now().toString());
     }
   };
@@ -66,7 +70,7 @@ export function useAutoUpdate() {
   watch(
     () => lifecycleStore.state,
     (newState) => {
-      if (newState === 'READY') {
+      if (newState === "READY") {
         // 延迟 2s 执行，避开首屏渲染与聊天历史加载的 CPU 密集期
         setTimeout(() => performCheck(), 2000);
       }

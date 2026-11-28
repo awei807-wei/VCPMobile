@@ -9,10 +9,7 @@ const B = "b".repeat(64);
 
 test("scale summaries require the exact topic identity set and wire hashes", () => {
   const summary = summarizeTopicSet(
-    [
-      { id: "topic-b" },
-      { id: "topic-a" },
-    ],
+    [{ id: "topic-b" }, { id: "topic-a" }],
     ["topic-a", "topic-b"],
     [
       { id: "topic-b", configHash: A, contentHash: "" },

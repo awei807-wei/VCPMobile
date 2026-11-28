@@ -1,8 +1,8 @@
-import { ref, nextTick, watch, type Ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { useChatSessionStore } from '../../../core/stores/chatSessionStore';
-import { useAttachmentStore } from '../../../core/stores/attachmentStore';
-import { useNotificationStore } from '../../../core/stores/notification';
+import { ref, nextTick, watch, type Ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { useChatSessionStore } from "../../../core/stores/chatSessionStore";
+import { useAttachmentStore } from "../../../core/stores/attachmentStore";
+import { useNotificationStore } from "../../../core/stores/notification";
 
 const LONG_TEXT_THRESHOLD = 1000;
 
@@ -18,9 +18,9 @@ export function useLongTextPaste(input: Ref<string>) {
   const assertTopicSelected = (): boolean => {
     if (!sessionStore.currentSelectedItem?.id || !sessionStore.currentTopicId) {
       notificationStore.addNotification({
-        type: 'warning',
-        title: '无法粘贴长文本',
-        message: '请先选择一个 Agent 和话题，再粘贴长文本。',
+        type: "warning",
+        title: "无法粘贴长文本",
+        message: "请先选择一个 Agent 和话题，再粘贴长文本。",
         toastOnly: true,
       });
       return false;
@@ -32,32 +32,36 @@ export function useLongTextPaste(input: Ref<string>) {
    * 将文本内容暂存为 .txt 附件
    */
   const stageTextAsFile = async (text: string, fileName?: string) => {
-    const name = fileName || `pasted_text_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+    const name =
+      fileName ||
+      `pasted_text_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.txt`;
     const bytes = new TextEncoder().encode(text);
     const stableId = `att_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     // 1. 插入 loading 占位
     attachmentStore.stagedAttachments.unshift({
       id: stableId,
-      type: 'text/plain',
-      src: '',
+      type: "text/plain",
+      src: "",
       name,
       size: bytes.length,
-      status: 'loading',
+      status: "loading",
     });
     await nextTick();
-    window.dispatchEvent(new Event('resize'));
+    window.dispatchEvent(new Event("resize"));
 
     try {
       // 2. IPC 保存到附件目录
-      const finalData = await invoke<any>('store_file', {
+      const finalData = await invoke<any>("store_file", {
         originalName: name,
         fileBytes: bytes,
-        mimeType: 'text/plain',
+        mimeType: "text/plain",
       });
 
       // 3. 更新为完成状态
-      const index = attachmentStore.stagedAttachments.findIndex(a => a.id === stableId);
+      const index = attachmentStore.stagedAttachments.findIndex(
+        (a) => a.id === stableId,
+      );
       if (index !== -1) {
         attachmentStore.stagedAttachments[index] = {
           ...attachmentStore.stagedAttachments[index],
@@ -67,23 +71,25 @@ export function useLongTextPaste(input: Ref<string>) {
           size: finalData.size,
           hash: finalData.hash,
           internalPath: finalData.internalPath,
-          status: 'done',
+          status: "done",
         };
       }
 
       notificationStore.addNotification({
-        type: 'success',
-        title: '长文本已转附件',
+        type: "success",
+        title: "长文本已转附件",
         message: `已保存为 ${name}（${text.length} 字符）`,
         toastOnly: true,
       });
     } catch (err) {
-      console.error('[useLongTextPaste] Failed to stage text as file:', err);
-      const index = attachmentStore.stagedAttachments.findIndex(a => a.id === stableId);
+      console.error("[useLongTextPaste] Failed to stage text as file:", err);
+      const index = attachmentStore.stagedAttachments.findIndex(
+        (a) => a.id === stableId,
+      );
       if (index !== -1) attachmentStore.stagedAttachments.splice(index, 1);
       notificationStore.addNotification({
-        type: 'error',
-        title: '附件保存失败',
+        type: "error",
+        title: "附件保存失败",
         message: err instanceof Error ? err.message : String(err),
         toastOnly: true,
       });
@@ -108,11 +114,11 @@ export function useLongTextPaste(input: Ref<string>) {
 
     // 2. 优先处理图片数据
     for (let i = 0; i < clipboardData.items.length; i++) {
-      if (clipboardData.items[i].type.startsWith('image/')) return;
+      if (clipboardData.items[i].type.startsWith("image/")) return;
     }
 
     // 3. 检查纯文本长度
-    const pastedText = clipboardData.getData('text/plain');
+    const pastedText = clipboardData.getData("text/plain");
     if (pastedText && pastedText.length > LONG_TEXT_THRESHOLD) {
       event.preventDefault();
 
@@ -132,9 +138,10 @@ export function useLongTextPaste(input: Ref<string>) {
    */
   const handleBeforeInput = (event: InputEvent) => {
     if (
-      event.inputType !== 'insertFromPaste' &&
-      event.inputType !== 'insertFromPasteAsQuotation'
-    ) return;
+      event.inputType !== "insertFromPaste" &&
+      event.inputType !== "insertFromPasteAsQuotation"
+    )
+      return;
 
     const text = event.data;
     if (text && text.length > LONG_TEXT_THRESHOLD) {

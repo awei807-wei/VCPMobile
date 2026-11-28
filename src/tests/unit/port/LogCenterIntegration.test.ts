@@ -336,7 +336,11 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function fetchResult(content: string, offset: number, path = "/var/log/vcp.log") {
+function fetchResult(
+  content: string,
+  offset: number,
+  path = "/var/log/vcp.log",
+) {
   return {
     content,
     offset,
@@ -421,7 +425,9 @@ describe("日志中心 T07 集成门禁", () => {
     const overlay = useOverlayStore();
     expect(overlay.isLogCenterOpen).toBe(true);
     expect(overlay.isLogCenterActive).toBe(true);
-    expect(overlay.pageStack.filter((page) => page.type === "logCenter")).toHaveLength(1);
+    expect(
+      overlay.pageStack.filter((page) => page.type === "logCenter"),
+    ).toHaveLength(1);
     expect(sidebar.emitted("close")).toHaveLength(1);
   });
 
@@ -436,7 +442,9 @@ describe("日志中心 T07 集成门禁", () => {
     await logEntry!.trigger("click");
 
     const overlay = useOverlayStore();
-    expect(overlay.pageStack.filter((page) => page.type === "logCenter")).toHaveLength(1);
+    expect(
+      overlay.pageStack.filter((page) => page.type === "logCenter"),
+    ).toHaveLength(1);
   });
 
   it("Android 返回先由 ModalHistory 关闭 BottomSheet，再关闭日志页且保留其他页面", async () => {
@@ -456,7 +464,10 @@ describe("日志中心 T07 集成门禁", () => {
     );
     await nextTick();
     expect(sheet.props("modelValue")).toBe(false);
-    expect(overlay.pageStack.map((page) => page.type)).toEqual(["settings", "logCenter"]);
+    expect(overlay.pageStack.map((page) => page.type)).toEqual([
+      "settings",
+      "logCenter",
+    ]);
 
     window.dispatchEvent(
       new PopStateEvent("popstate", {
@@ -495,9 +506,9 @@ describe("日志中心 T07 集成门禁", () => {
     const pending = [first, resumed, incremental];
     mocks.invoke.mockImplementation(() => pending.shift()!.promise);
 
-    const actual = await vi.importActual<typeof import("../../../features/logcenter/logCenterStore")>(
-      "../../../features/logcenter/logCenterStore",
-    );
+    const actual = await vi.importActual<
+      typeof import("../../../features/logcenter/logCenterStore")
+    >("../../../features/logcenter/logCenterStore");
     const store = actual.useLogCenterStore();
 
     store.startSession();
@@ -572,11 +583,16 @@ describe("日志中心 T07 集成门禁", () => {
     expect(wrapper.text()).toContain(unsafeLines[2]);
     expect(wrapper.find("script").exists()).toBe(false);
     expect(wrapper.find("b").exists()).toBe(false);
-    expect((globalThis as { __logCenterExecuted?: boolean }).__logCenterExecuted).not.toBe(true);
+    expect(
+      (globalThis as { __logCenterExecuted?: boolean }).__logCenterExecuted,
+    ).not.toBe(true);
   });
 
   it("3000 行降到 100 行后虚拟窗口恢复并继续显示日志", async () => {
-    const rows = Array.from({ length: 3000 }, (_, index) => `日志行-${index + 1}`);
+    const rows = Array.from(
+      { length: 3000 },
+      (_, index) => `日志行-${index + 1}`,
+    );
     mocks.logStore!.lineLimit = 3000;
     mocks.logStore!.lines = rows;
     mocks.logStore!.displayedLines = rows;
@@ -603,7 +619,9 @@ describe("日志中心 T07 集成门禁", () => {
     await nextTick();
 
     expect(mocks.logStore!.setLineLimit).toHaveBeenCalledWith(100);
-    expect(wrapper.find('[data-logcenter-role="log-scroll"]').exists()).toBe(true);
+    expect(wrapper.find('[data-logcenter-role="log-scroll"]').exists()).toBe(
+      true,
+    );
     expect(wrapper.findAll(".log-row").length).toBeGreaterThan(0);
     expect(wrapper.find(".log-empty").exists()).toBe(false);
   });
@@ -639,8 +657,13 @@ describe("日志中心 T07 集成门禁", () => {
   });
 
   it("数据库未就绪时日志命令仍受启动门禁拦截且未加入白名单", () => {
-    const allowlistStart = invokeGuardSource.indexOf("pub fn can_run_before_db_ready");
-    const allowlistEnd = invokeGuardSource.indexOf("/// 判断当前 IPC", allowlistStart);
+    const allowlistStart = invokeGuardSource.indexOf(
+      "pub fn can_run_before_db_ready",
+    );
+    const allowlistEnd = invokeGuardSource.indexOf(
+      "/// 判断当前 IPC",
+      allowlistStart,
+    );
     expect(allowlistStart).toBeGreaterThanOrEqual(0);
     expect(allowlistEnd).toBeGreaterThan(allowlistStart);
 

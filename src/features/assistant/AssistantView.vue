@@ -189,13 +189,21 @@ onMounted(() => {
           ref="textareaRef"
           v-model="inputText"
           rows="1"
-          :placeholder="floatingStore.isFloatingMode && !floatingStore.wsConfigured ? '正在连接助手服务...' : '问问 VCP...'"
+          :placeholder="
+            floatingStore.isFloatingMode && !floatingStore.wsConfigured
+              ? '正在连接助手服务...'
+              : '问问 VCP...'
+          "
           class="flex-1 max-h-32 bg-transparent border-none outline-none resize-none text-[13px] py-1 px-1 text-primary-text placeholder-primary-text/30"
           @keydown.enter.prevent="handleSend"
         ></textarea>
         <button
           @click="handleSend"
-          :disabled="!inputText.trim() || floatingStore.isGenerating || (floatingStore.isFloatingMode && !floatingStore.wsConfigured)"
+          :disabled="
+            !inputText.trim() ||
+            floatingStore.isGenerating ||
+            (floatingStore.isFloatingMode && !floatingStore.wsConfigured)
+          "
           class="p-2 bg-blue-500 disabled:bg-black/10 dark:disabled:bg-white/10 text-white rounded-lg disabled:text-primary-text/20 active:scale-95 transition-all shrink-0"
         >
           <svg

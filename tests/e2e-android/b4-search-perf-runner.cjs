@@ -1,9 +1,6 @@
 "use strict";
 
-const {
-  DEBUG_PACKAGE,
-  runAdb,
-} = require("./scripts/adb-env.cjs");
+const { DEBUG_PACKAGE, runAdb } = require("./scripts/adb-env.cjs");
 const { reconnectAndroidCdp } = require("./wire14/android-state.cjs");
 const {
   errorText,
@@ -44,9 +41,7 @@ const {
   COLD_RESTART_TIMEOUT_MS,
   restartB4ColdRuntime,
 } = require("./b4-search-perf-restart.cjs");
-const {
-  coldRestartSampleChecks,
-} = require("./b4-search-perf-gates.cjs");
+const { coldRestartSampleChecks } = require("./b4-search-perf-gates.cjs");
 const {
   recordIndexFailure,
   recordSearchFailures,
@@ -177,7 +172,9 @@ async function warmSearch(cdp, queries, sampleCount, querySource) {
     const started = performance.now();
     try {
       const parsed = normalizeSearchPage(
-        await cdp.invoke("search_messages_fts", { filter: searchFilter(query) }),
+        await cdp.invoke("search_messages_fts", {
+          filter: searchFilter(query),
+        }),
       );
       warmups.push({
         query,
@@ -207,10 +204,20 @@ async function warmSearch(cdp, queries, sampleCount, querySource) {
   const samples = [];
   for (let index = 0; index < sampleCount; index += 1) {
     samples.push(
-      await timedSearch(cdp, queries[index % queries.length], index + 1, "warm"),
+      await timedSearch(
+        cdp,
+        queries[index % queries.length],
+        index + 1,
+        "warm",
+      ),
     );
   }
-  return { warmups, samples, stats: summarizeDurations(samples), queryValidation };
+  return {
+    warmups,
+    samples,
+    stats: summarizeDurations(samples),
+    queryValidation,
+  };
 }
 async function coldSearch(runtime, queries, sampleCount, dependencies = {}) {
   const restart = dependencies.restart || restartB4ColdRuntime;
@@ -245,7 +252,9 @@ async function coldSearch(runtime, queries, sampleCount, dependencies = {}) {
         nextCursorPresent: null,
         restartMs: roundMs(now() - restartStarted),
         ...restartSampleFields(restartResult),
-        restartGates: coldRestartSampleChecks(restartSampleFields(restartResult)),
+        restartGates: coldRestartSampleChecks(
+          restartSampleFields(restartResult),
+        ),
         ok: false,
         errorCode: error?.code || null,
         error: errorText(error),
@@ -273,7 +282,9 @@ async function runRebuildAndIndex(state, dependencies = {}) {
   const expectedPid = getVerifiedCdpPid(state.runtime);
   state.rebuild = await rebuildIndex(state.runtime, dependencies);
   if (state.rebuild.expectedPid !== expectedPid) {
-    state.failures.push(makeFailure("rebuild", "重建期间 CDP binding PID 已漂移"));
+    state.failures.push(
+      makeFailure("rebuild", "重建期间 CDP binding PID 已漂移"),
+    );
   }
   state.rebuildMemorySamples = state.rebuild.memorySamples || [];
   state.rebuildMemoryBefore =
@@ -288,10 +299,17 @@ async function runRebuildAndIndex(state, dependencies = {}) {
   for (const failure of state.rebuild.memorySamplingFailures || []) {
     state.failures.push(makeFailure("memory_sampling", failure.message));
   }
-  if (!state.rebuild.ok) state.failures.push(makeFailure("rebuild", "索引重建失败"));
+  if (!state.rebuild.ok)
+    state.failures.push(makeFailure("rebuild", "索引重建失败"));
   state.indexAfterRebuild = await readIndexStatus(state.runtime);
-  state.indexValidationAfterRebuild = validateIndexStatus(state.indexAfterRebuild);
-  recordIndexFailure(state, "index_after_rebuild", state.indexValidationAfterRebuild);
+  state.indexValidationAfterRebuild = validateIndexStatus(
+    state.indexAfterRebuild,
+  );
+  recordIndexFailure(
+    state,
+    "index_after_rebuild",
+    state.indexValidationAfterRebuild,
+  );
 }
 async function runMeasurementWindow(state, options, dependencies = {}) {
   const readMemory = resolveReadMemory(dependencies);
@@ -304,7 +322,9 @@ async function runMeasurementWindow(state, options, dependencies = {}) {
   try {
     await runSearchPhases(state, options);
     if (!state.runtime.cdp?.cdp) {
-      state.failures.push(makeFailure("rebuild", "冷进程重连失败，无法继续重建测量"));
+      state.failures.push(
+        makeFailure("rebuild", "冷进程重连失败，无法继续重建测量"),
+      );
       return;
     }
     await runRebuildAndIndex(state, { ...dependencies, readMemory });
@@ -349,7 +369,10 @@ async function runBenchmark(options) {
         makeFailure("corpus", state.corpusValidationBefore.reason),
       );
     }
-    if (!state.indexValidationBefore.healthy || !state.corpusValidationBefore.valid) {
+    if (
+      !state.indexValidationBefore.healthy ||
+      !state.corpusValidationBefore.valid
+    ) {
       return state;
     }
     await runMeasurementWindow(state, options);

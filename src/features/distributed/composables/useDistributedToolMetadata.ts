@@ -1,7 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  DistributedToolConfigStatus,
-} from "./useDistributedAuthorization";
+import type { DistributedToolConfigStatus } from "./useDistributedAuthorization";
 import type {
   InvocationCommand,
   PluginItem,
@@ -25,7 +23,9 @@ function optionalString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
-export function normalizeInvocationCommands(tool: Record<string, any>): InvocationCommand[] {
+export function normalizeInvocationCommands(
+  tool: Record<string, any>,
+): InvocationCommand[] {
   const rawCommands =
     tool.capabilities?.invocationCommands || tool.invocation_commands || [];
   if (!Array.isArray(rawCommands)) {
@@ -65,13 +65,21 @@ function enabledFromConfig(
   return metadataEnabled;
 }
 
-function normalizePlugin(tool: Record<string, any>, enabled: boolean): PluginItem {
+function normalizePlugin(
+  tool: Record<string, any>,
+  enabled: boolean,
+): PluginItem {
   const category = tool.category;
   const type =
-    category === "interactive" || category === "streaming" ? category : "oneshot";
+    category === "interactive" || category === "streaming"
+      ? category
+      : "oneshot";
   return {
     id: optionalString(tool.name) || "unknown",
-    name: optionalString(tool.display_name) || optionalString(tool.name) || "未命名工具",
+    name:
+      optionalString(tool.display_name) ||
+      optionalString(tool.name) ||
+      "未命名工具",
     englishName: optionalString(tool.name) || "unknown",
     description: optionalString(tool.description) || "",
     type,
@@ -84,11 +92,14 @@ function normalizePlugin(tool: Record<string, any>, enabled: boolean): PluginIte
   };
 }
 
-function normalizePlaceholders(tools: Record<string, any>[]): PlaceholderItem[] {
+function normalizePlaceholders(
+  tools: Record<string, any>[],
+): PlaceholderItem[] {
   return tools.flatMap((tool) => {
     const macro = optionalString(tool.placeholder);
     if (!macro) return [];
-    const name = optionalString(tool.display_name) || optionalString(tool.name) || "工具";
+    const name =
+      optionalString(tool.display_name) || optionalString(tool.name) || "工具";
     return [
       {
         macro,
@@ -123,7 +134,8 @@ export async function loadDistributedToolMetadata(
       }
       if (!Array.isArray(rawResult)) throw new Error("工具元数据格式错误");
       const rawTools = rawResult.filter(
-        (tool): tool is Record<string, any> => !!tool && typeof tool === "object",
+        (tool): tool is Record<string, any> =>
+          !!tool && typeof tool === "object",
       );
       state.pluginsList.value = rawTools.map((tool) =>
         normalizePlugin(
@@ -140,7 +152,10 @@ export async function loadDistributedToolMetadata(
       state.pluginsList.value = [];
       state.placeholdersList.value = [];
     }
-    console.error("[DistributedTools] 加载工具授权状态失败，已安全关闭工具：", error);
+    console.error(
+      "[DistributedTools] 加载工具授权状态失败，已安全关闭工具：",
+      error,
+    );
     throw error;
   }
 }

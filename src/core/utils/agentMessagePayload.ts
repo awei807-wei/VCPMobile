@@ -67,7 +67,9 @@ function normalizeAgentMessagePayload(
   value: Record<string, unknown>,
 ): AgentMessagePayload {
   const payload: AgentMessagePayload = { ...value };
-  const androidNotification = parseAndroidNotification(value.androidNotification);
+  const androidNotification = parseAndroidNotification(
+    value.androidNotification,
+  );
   if (androidNotification) {
     payload.androidNotification = androidNotification;
   } else {
@@ -83,8 +85,10 @@ function parseAndroidNotification(
   if (!objectValue) return undefined;
 
   if (
-    ("attempted" in objectValue && typeof objectValue.attempted !== "boolean") ||
-    ("delivered" in objectValue && typeof objectValue.delivered !== "boolean") ||
+    ("attempted" in objectValue &&
+      typeof objectValue.attempted !== "boolean") ||
+    ("delivered" in objectValue &&
+      typeof objectValue.delivered !== "boolean") ||
     ("error" in objectValue &&
       objectValue.error !== null &&
       typeof objectValue.error !== "string")
@@ -96,8 +100,13 @@ function parseAndroidNotification(
 }
 
 function isAgentMessageToolObject(value: Record<string, unknown>): boolean {
-  return ["tool_name", "toolName", "pluginName", "PLUGIN_NAME_FOR_CALLBACK", "name"]
-    .some((key) => isAgentMessageToolName(value[key]));
+  return [
+    "tool_name",
+    "toolName",
+    "pluginName",
+    "PLUGIN_NAME_FOR_CALLBACK",
+    "name",
+  ].some((key) => isAgentMessageToolName(value[key]));
 }
 
 function isAgentMessageToolName(value: unknown): boolean {

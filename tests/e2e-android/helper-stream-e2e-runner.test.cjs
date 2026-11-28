@@ -17,9 +17,7 @@ const {
   sanitizeChannelEvents,
   sanitizeEvidence,
 } = require("./helper-stream-e2e-evidence.cjs");
-const {
-  channelInvokeExpression,
-} = require("./helper-stream-e2e-channel.cjs");
+const { channelInvokeExpression } = require("./helper-stream-e2e-channel.cjs");
 const {
   cleanupResources,
   parseArgs,
@@ -66,7 +64,10 @@ test("loopback SSE 按 A/B 顺序发送，并在客户端取消后记录 cancell
     const contract = server.snapshotContracts()[0];
     assert.equal(contract.headers.authorizationPresent, true);
     assert.equal(contract.body.stream, true);
-    assert.equal(JSON.stringify(contract).includes("android-helper-e2e-secret"), false);
+    assert.equal(
+      JSON.stringify(contract).includes("android-helper-e2e-secret"),
+      false,
+    );
     assert.equal(JSON.stringify(contract).includes("secret prompt"), false);
   } finally {
     controller.abort();
@@ -79,12 +80,18 @@ test("参数、Debug 包和完整复合身份校验均 fail-closed", () => {
   assert.equal(parseArgs(["--no-launch"]).launch, false);
   assert.deepEqual(
     resolveIdentityInput({
-      identityJson: JSON.stringify({ ownerType: "group", ownerId: "g-1", topicId: "t-1" }),
+      identityJson: JSON.stringify({
+        ownerType: "group",
+        ownerId: "g-1",
+        topicId: "t-1",
+      }),
     }),
     { ownerType: "group", ownerId: "g-1", topicId: "t-1" },
   );
   assert.deepEqual(
-    identityFromSearchResult({ results: [{ owner_type: "agent", owner_id: "a-1", topic_id: "t-1" }] }),
+    identityFromSearchResult({
+      results: [{ owner_type: "agent", owner_id: "a-1", topic_id: "t-1" }],
+    }),
     { ownerType: "agent", ownerId: "a-1", topicId: "t-1" },
   );
   assert.throws(
@@ -92,14 +99,22 @@ test("参数、Debug 包和完整复合身份校验均 fail-closed", () => {
     (error) => error.code === "IDENTITY_INCOMPLETE",
   );
   assert.throws(
-    () => resolveIdentityInput({ ownerType: "user", ownerId: "u-1", topicId: "t-1" }),
+    () =>
+      resolveIdentityInput({
+        ownerType: "user",
+        ownerId: "u-1",
+        topicId: "t-1",
+      }),
     (error) => error.code === "IDENTITY_INVALID",
   );
   assert.throws(
     () => assertDebugPackage("com.vcp.avatar.release"),
     (error) => error.code === "DEBUG_PACKAGE_REQUIRED",
   );
-  assert.match(createMessageId(() => Buffer.from("0123456789abcdef01234567", "hex")), /^android-helper-e2e-[0-9a-f]{24}$/);
+  assert.match(
+    createMessageId(() => Buffer.from("0123456789abcdef01234567", "hex")),
+    /^android-helper-e2e-[0-9a-f]{24}$/,
+  );
 });
 
 test("evidence 与 Channel 事件只保留白名单，不泄露身份、正文或 key", () => {
@@ -116,27 +131,48 @@ test("evidence 与 Channel 事件只保留白名单，不泄露身份、正文�
       allFieldsMatch: true,
     },
     server: {
-      contracts: [{
-        method: "POST",
-        path: SSE_PATHS[0],
-        headers: { authorizationPresent: true, contentTypePresent: true, acceptSsePresent: true },
-        body: { validJson: true, stream: true, requestIdPresent: true, messagesArray: true, messageCount: 1, modelPresent: true },
-        apiKey: "secret-key",
-        prompt: "secret prompt",
-      }],
+      contracts: [
+        {
+          method: "POST",
+          path: SSE_PATHS[0],
+          headers: {
+            authorizationPresent: true,
+            contentTypePresent: true,
+            acceptSsePresent: true,
+          },
+          body: {
+            validJson: true,
+            stream: true,
+            requestIdPresent: true,
+            messagesArray: true,
+            messageCount: 1,
+            modelPresent: true,
+          },
+          apiKey: "secret-key",
+          prompt: "secret prompt",
+        },
+      ],
     },
-    phases: { resume: { result: { status: "completed", fullContent: "secret response" } } },
+    phases: {
+      resume: {
+        result: { status: "completed", fullContent: "secret response" },
+      },
+    },
   });
-  const events = sanitizeChannelEvents([
-    {
-      type: "aurora",
-      messageId: "message-secret",
-      ownerType: "agent",
-      generation: 7,
-      hasChunk: true,
-      final: false,
-    },
-  ], { ownerType: "agent", ownerId: secret, topicId: "topic-secret" }, 7);
+  const events = sanitizeChannelEvents(
+    [
+      {
+        type: "aurora",
+        messageId: "message-secret",
+        ownerType: "agent",
+        generation: 7,
+        hasChunk: true,
+        final: false,
+      },
+    ],
+    { ownerType: "agent", ownerId: secret, topicId: "topic-secret" },
+    7,
+  );
   const serialized = JSON.stringify({ evidence, events });
   assert.equal(serialized.includes(secret), false);
   assert.equal(serialized.includes("topic-secret"), false);
@@ -179,15 +215,23 @@ test("cleanupResources finally 只移除本次精确 reverse，并清理回调�
     },
   });
   assert.deepEqual(issues, []);
-  assert.deepEqual(adbCalls, [{
-    args: ["reverse", "--remove", "tcp:38417"],
-    options: { allowFailure: true },
-  }]);
-  assert.equal(adbCalls.some(({ args }) => args.includes("--remove-all")), false);
+  assert.deepEqual(adbCalls, [
+    {
+      args: ["reverse", "--remove", "tcp:38417"],
+      options: { allowFailure: true },
+    },
+  ]);
+  assert.equal(
+    adbCalls.some(({ args }) => args.includes("--remove-all")),
+    false,
+  );
   assert.equal(context.callbacksRemoved, true);
   assert.equal(context.reverseRemoved, true);
   assert.equal(context.serverStopped, true);
-  assert.deepEqual(calls.map(([name]) => name), ["evaluate", "cdp-close", "server-close"]);
+  assert.deepEqual(
+    calls.map(([name]) => name),
+    ["evaluate", "cdp-close", "server-close"],
+  );
 });
 
 test("cleanupResources 每个阶段失败仍继续清理后续资源并精确报告", async () => {
@@ -199,7 +243,8 @@ test("cleanupResources 每个阶段失败仍继续清理后续资源并精确报
         cdp: {
           async evaluate() {
             calls.push("callbacks");
-            if (failedStage === "callbacks") throw new Error("callback failure");
+            if (failedStage === "callbacks")
+              throw new Error("callback failure");
             return true;
           },
         },
@@ -227,35 +272,75 @@ test("cleanupResources 每个阶段失败仍继续清理后续资源并精确报
     });
 
     assert.deepEqual(issues, [
-      failedStage === "callbacks" ? "cdp_callbacks" :
-        failedStage === "cdp" ? "cdp_close" :
-          failedStage === "reverse" ? "adb_reverse" : "sse_server",
+      failedStage === "callbacks"
+        ? "cdp_callbacks"
+        : failedStage === "cdp"
+          ? "cdp_close"
+          : failedStage === "reverse"
+            ? "adb_reverse"
+            : "sse_server",
     ]);
     assert.deepEqual(calls, ["callbacks", "cdp", "reverse", "server"]);
-    assert.equal(context.serverStopped, failedStage === "server" ? undefined : true);
-    assert.equal(context.callbacksRemoved, failedStage === "callbacks" ? undefined : true);
+    assert.equal(
+      context.serverStopped,
+      failedStage === "server" ? undefined : true,
+    );
+    assert.equal(
+      context.callbacksRemoved,
+      failedStage === "callbacks" ? undefined : true,
+    );
     assert.equal(adbCalls.length, 1);
   }
 });
 
 test("cleanupResources 没有 SSE server 时不伪造 serverStopped", async () => {
   const context = {
-    cdp: { cdp: { async evaluate() { return true; } }, async close() {} },
+    cdp: {
+      cdp: {
+        async evaluate() {
+          return true;
+        },
+      },
+      async close() {},
+    },
     callbacksInstalled: true,
   };
   const issues = await cleanupResources(context);
   assert.deepEqual(issues, []);
-  assert.equal(Object.prototype.hasOwnProperty.call(context, "serverStopped"), false);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(context, "serverStopped"),
+    false,
+  );
 });
 
 test("runner 使用真实四个 IPC 命令和 transformCallback Channel，且不启动 release/helper service", () => {
-  const runner = fs.readFileSync(path.join(ROOT, "tests/e2e-android/helper-stream-e2e-runner.cjs"), "utf8");
-  const channel = fs.readFileSync(path.join(ROOT, "tests/e2e-android/helper-stream-e2e-channel.cjs"), "utf8");
-  const flow = fs.readFileSync(path.join(ROOT, "tests/e2e-android/helper-stream-e2e-flow.cjs"), "utf8");
-  const support = fs.readFileSync(path.join(ROOT, "tests/e2e-android/helper-stream-e2e-support.cjs"), "utf8");
-  const adb = fs.readFileSync(path.join(ROOT, "tests/e2e-android/scripts/adb-env.cjs"), "utf8");
+  const runner = fs.readFileSync(
+    path.join(ROOT, "tests/e2e-android/helper-stream-e2e-runner.cjs"),
+    "utf8",
+  );
+  const channel = fs.readFileSync(
+    path.join(ROOT, "tests/e2e-android/helper-stream-e2e-channel.cjs"),
+    "utf8",
+  );
+  const flow = fs.readFileSync(
+    path.join(ROOT, "tests/e2e-android/helper-stream-e2e-flow.cjs"),
+    "utf8",
+  );
+  const support = fs.readFileSync(
+    path.join(ROOT, "tests/e2e-android/helper-stream-e2e-support.cjs"),
+    "utf8",
+  );
+  const adb = fs.readFileSync(
+    path.join(ROOT, "tests/e2e-android/scripts/adb-env.cjs"),
+    "utf8",
+  );
   const source = `${runner}\n${channel}\n${flow}\n${support}\n${adb}`;
-  for (const command of ["sendToVCP", "recover_active_generation", "resume_stream", "interruptRequest"]) {
+  for (const command of [
+    "sendToVCP",
+    "recover_active_generation",
+    "resume_stream",
+    "interruptRequest",
+  ]) {
     assert.equal(source.includes(`"${command}"`), true, `缺少 ${command}`);
   }
   assert.equal(source.includes("transformCallback"), true);
@@ -270,7 +355,12 @@ test("Channel expression 通过 Tauri 的 __CHANNEL__ 序列化传入 streamChan
     "resume",
     "resume_stream",
     { msgId: "message-id", lastEventIndex: -1 },
-    { messageId: "message-id", ownerType: "agent", ownerId: "owner-id", topicId: "topic-id" },
+    {
+      messageId: "message-id",
+      ownerType: "agent",
+      ownerId: "owner-id",
+      topicId: "topic-id",
+    },
   );
   assert.match(expression, /transformCallback/);
   assert.match(expression, /__CHANNEL__:/);

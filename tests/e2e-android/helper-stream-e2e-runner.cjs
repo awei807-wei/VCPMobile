@@ -13,7 +13,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const SYNTHETIC_SEARCH_QUERY = "全";
 
 function positiveInteger(value, flag) {
-  if (!/^\d+$/.test(value)) throw codedError("ARGUMENT_INVALID", `${flag} 无效`);
+  if (!/^\d+$/.test(value))
+    throw codedError("ARGUMENT_INVALID", `${flag} 无效`);
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1) {
     throw codedError("ARGUMENT_INVALID", `${flag} 无效`);
@@ -24,7 +25,8 @@ function positiveInteger(value, flag) {
 function usage() {
   return {
     command: "node tests/e2e-android/helper-stream-e2e-runner.cjs",
-    required: "--identity-json 或完整 ownerType/ownerId/topicId，或 --search-query",
+    required:
+      "--identity-json 或完整 ownerType/ownerId/topicId，或 --search-query",
     options: [
       "--identity-json <json>",
       "--owner-type <agent|group> --owner-id <id> --topic-id <id>",
@@ -74,10 +76,15 @@ function parseArgs(argv) {
       throw codedError("ARGUMENT_INVALID", "参数缺少值");
     }
     index += 1;
-    options[key] = key === "timeoutMs" ? positiveInteger(value, argument) : value;
+    options[key] =
+      key === "timeoutMs" ? positiveInteger(value, argument) : value;
   }
   if (options.searchQuery === "") options.searchQuery = undefined;
-  if (!options.searchQuery && !options.identityJson && options.ownerType === undefined) {
+  if (
+    !options.searchQuery &&
+    !options.identityJson &&
+    options.ownerType === undefined
+  ) {
     options.searchQuery = SYNTHETIC_SEARCH_QUERY;
   }
   return options;
@@ -102,11 +109,13 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  main().then((code) => {
-    process.exitCode = code;
-  }).catch(() => {
-    process.exitCode = 1;
-  });
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch(() => {
+      process.exitCode = 1;
+    });
 }
 
 module.exports = {

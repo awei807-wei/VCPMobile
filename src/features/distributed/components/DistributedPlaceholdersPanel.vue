@@ -68,7 +68,9 @@ onUnmounted(clear);
           清除
         </button>
       </div>
-      <p class="mt-2 text-[10px] opacity-50">点击占位符卡片复制宏；读取动作只在插件页的显式按钮触发。</p>
+      <p class="mt-2 text-[10px] opacity-50">
+        点击占位符卡片复制宏；读取动作只在插件页的显式按钮触发。
+      </p>
     </div>
     <div class="flex-1 overflow-y-auto px-4 py-4 space-y-3 no-rubber-band">
       <button
@@ -79,11 +81,19 @@ onUnmounted(clear);
       >
         <div class="flex items-center justify-between gap-2">
           <span class="text-xs font-bold">{{ item.name }}</span>
-          <span class="font-mono text-[9px] bg-black/10 dark:bg-white/10 px-2 py-0.5 rounded text-[var(--highlight-text)] select-all">{{ item.macro }}</span>
+          <span
+            class="font-mono text-[9px] bg-black/10 dark:bg-white/10 px-2 py-0.5 rounded text-[var(--highlight-text)] select-all"
+            >{{ item.macro }}</span
+          >
         </div>
         <p class="text-[10px] opacity-50">{{ item.description }}</p>
       </button>
-      <div v-if="!filteredPlaceholders.length" class="text-center py-12 text-xs opacity-50">暂无可用占位符</div>
+      <div
+        v-if="!filteredPlaceholders.length"
+        class="text-center py-12 text-xs opacity-50"
+      >
+        暂无可用占位符
+      </div>
     </div>
   </div>
 </template>

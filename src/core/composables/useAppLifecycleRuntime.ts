@@ -1,9 +1,6 @@
 import { onMounted, onUnmounted, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import {
-  addPluginListener,
-  type PluginListener,
-} from "@tauri-apps/api/core";
+import { addPluginListener, type PluginListener } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useAppLifecycleStore } from "../stores/appLifecycle";
 import { useChatStreamStore } from "../stores/chatStreamStore";

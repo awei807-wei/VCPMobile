@@ -1,6 +1,6 @@
-import { ref, onScopeDispose } from 'vue';
-import { Copy, Check } from 'lucide-vue-next';
-import type { VcpNotification } from '../../../core/stores/notification';
+import { ref, onScopeDispose } from "vue";
+import { Copy, Check } from "lucide-vue-next";
+import type { VcpNotification } from "../../../core/stores/notification";
 
 export const useNotificationClipboard = () => {
   const copiedId = ref<string | null>(null);
@@ -25,7 +25,7 @@ export const useNotificationClipboard = () => {
         copyTimer = null;
       }, 2000);
     } catch (error) {
-      console.error('[useNotificationClipboard] Copy failed:', error);
+      console.error("[useNotificationClipboard] Copy failed:", error);
     }
   };
 
@@ -33,12 +33,13 @@ export const useNotificationClipboard = () => {
     if (copyTimer) clearTimeout(copyTimer);
   });
 
-  const getCopyIcon = (itemId: string) => copiedId.value === itemId ? Check : Copy;
+  const getCopyIcon = (itemId: string) =>
+    copiedId.value === itemId ? Check : Copy;
 
   return {
     copiedId,
     buildCopyText,
     copyContent,
-    getCopyIcon
+    getCopyIcon,
   };
 };

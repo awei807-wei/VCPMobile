@@ -8,8 +8,8 @@ import type { Attachment } from "../../core/types/chat";
 const props = defineProps<{ file: Attachment; index: number }>();
 const emit = defineEmits<{ (e: "remove", index: number): void }>();
 
-const attachmentType = computed(() => 
-  classifyAttachment(props.file.type, props.file.name)
+const attachmentType = computed(() =>
+  classifyAttachment(props.file.type, props.file.name),
 );
 
 const isImage = computed(() => attachmentType.value === AttachmentType.IMAGE);
@@ -23,8 +23,8 @@ const isLoading = computed(() => props.file.status === "loading");
     :class="[isImage ? 'w-14 h-14' : 'max-w-[180px]']"
   >
     <!-- Use new component system -->
-    <AttachmentRenderer 
-      :file="file" 
+    <AttachmentRenderer
+      :file="file"
       :index="index"
       :show-remove="true"
       @remove="emit('remove', index)"

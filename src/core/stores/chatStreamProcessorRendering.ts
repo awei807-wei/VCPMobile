@@ -98,7 +98,9 @@ function scheduleAuroraRender(
       `[chatStreamStore] Received tailFrame seq=${aurora.tailFrame.frameSeq} mutations=${aurora.tailFrame.mutations?.length || 0} for ${parsed.messageKey}`,
     );
     const latestSnapshot =
-      aurora.tailFrame.snapshot || aurora.tailSnapshot || aurora.tailBlock?.nodes;
+      aurora.tailFrame.snapshot ||
+      aurora.tailSnapshot ||
+      aurora.tailBlock?.nodes;
     update.tailFrame = mergeTailFrame(
       update.tailFrame ||
         deps.state.activeStreamMessages.get(parsed.messageKey)?.tailFrame ||

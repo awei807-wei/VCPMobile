@@ -1,11 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import {
-  AlertTriangle,
-  CircleCheck,
-  Copy,
-  Play,
-} from "lucide-vue-next";
+import { AlertTriangle, CircleCheck, Copy, Play } from "lucide-vue-next";
 import SettingsSwitch from "../../../components/settings/SettingsSwitch.vue";
 import { useSettingsStore } from "../../../core/stores/settings";
 import { useOverlayStore } from "../../../core/stores/overlay";
@@ -218,7 +213,10 @@ onUnmounted(() => {
         class="mx-4 flex items-center gap-2 border-y border-white/8 py-2 font-mono text-[9px] text-white/40"
         aria-label="桌面同步环境"
       >
-        <span>桌面后端 {{ store.desktopInfo.backendMode === "cds" ? "CDS" : "Legacy" }}</span>
+        <span
+          >桌面后端
+          {{ store.desktopInfo.backendMode === "cds" ? "CDS" : "Legacy" }}</span
+        >
         <span aria-hidden="true">·</span>
         <span>同步插件 v{{ store.desktopInfo.packageVersion }}</span>
       </div>
@@ -291,9 +289,7 @@ onUnmounted(() => {
           class="mt-2.5 rounded border border-white/10 bg-black/40 p-2"
         >
           <div class="mb-1 flex items-center justify-between gap-3">
-            <span class="text-[9px] text-white/40"
-              >电脑端 VCPChat 根目录</span
-            >
+            <span class="text-[9px] text-white/40">电脑端 VCPChat 根目录</span>
             <button
               type="button"
               aria-label="复制 CDS 编译命令"
@@ -381,7 +377,6 @@ onUnmounted(() => {
           </template>
         </div>
       </div>
-
     </template>
   </div>
 </template>

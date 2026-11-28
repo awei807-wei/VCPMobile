@@ -36,7 +36,12 @@ test("四个 fixture 子命令优先 dispatch，绝不进入 benchmark runner", 
   };
   try {
     for (const command of ["prepare", "verify", "inject", "cleanup"]) {
-      const result = await captureMain(["--fixture", command, "--fixture-path", "/tmp/b4-fixture.db"]);
+      const result = await captureMain([
+        "--fixture",
+        command,
+        "--fixture-path",
+        "/tmp/b4-fixture.db",
+      ]);
       assert.equal(result.code, 0);
       assert.equal(result.report.mode, "fixture");
       assert.equal(result.report.ok, true);

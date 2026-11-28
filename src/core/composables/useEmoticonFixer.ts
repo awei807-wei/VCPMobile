@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
 
 export interface EmoticonItem {
   url: string;
@@ -10,27 +10,27 @@ export interface EmoticonItem {
 export function useEmoticonFixer() {
   const fixUrl = async (url: string): Promise<string> => {
     try {
-      return await invoke<string>('fix_emoticon_url', { originalSrc: url });
+      return await invoke<string>("fix_emoticon_url", { originalSrc: url });
     } catch (e) {
-      console.error('[EmoticonFixer] Failed to fix URL:', e);
+      console.error("[EmoticonFixer] Failed to fix URL:", e);
       return url;
     }
   };
 
   const getLibrary = async (): Promise<EmoticonItem[]> => {
     try {
-      return await invoke<EmoticonItem[]>('get_emoticon_library');
+      return await invoke<EmoticonItem[]>("get_emoticon_library");
     } catch (e) {
-      console.error('[EmoticonFixer] Failed to get library:', e);
+      console.error("[EmoticonFixer] Failed to get library:", e);
       return [];
     }
   };
 
   const regenerateLibrary = async (): Promise<number> => {
     try {
-      return await invoke<number>('regenerate_emoticon_library');
+      return await invoke<number>("regenerate_emoticon_library");
     } catch (e) {
-      console.error('[EmoticonFixer] Failed to regenerate library:', e);
+      console.error("[EmoticonFixer] Failed to regenerate library:", e);
       return 0;
     }
   };
@@ -38,21 +38,21 @@ export function useEmoticonFixer() {
   const initGlobalFixer = () => {
     (window as any).__vcpFixEmoticon = async (img: HTMLImageElement) => {
       // 1. 如果已经尝试修复过且依然报错，则显示破碎图片并停止
-      if (img.dataset.vcpFixed === 'true') {
-        img.style.visibility = 'visible';
+      if (img.dataset.vcpFixed === "true") {
+        img.style.visibility = "visible";
         return;
       }
 
       const originalSrc = img.src;
 
       // 2. 只有包含“表情包”关键词的才尝试修复
-      const isEmoticon = decodeURIComponent(originalSrc).includes('表情包');
+      const isEmoticon = decodeURIComponent(originalSrc).includes("表情包");
       if (!isEmoticon) {
-        img.style.visibility = 'visible';
+        img.style.visibility = "visible";
         return;
       }
 
-      img.dataset.vcpFixed = 'true';
+      img.dataset.vcpFixed = "true";
 
       try {
         const fixedUrl = await fixUrl(originalSrc);
@@ -61,39 +61,40 @@ export function useEmoticonFixer() {
           img.src = fixedUrl; // 这会重新触发加载，如果再次失败会进入上面的 dataset 拦截
         } else {
           // 无法修复，直接显示破碎图标
-          img.style.visibility = 'visible';
+          img.style.visibility = "visible";
         }
       } catch (e) {
-        console.error('[EmoticonFixer] Error in global fixer:', e);
-        img.style.visibility = 'visible';
+        console.error("[EmoticonFixer] Error in global fixer:", e);
+        img.style.visibility = "visible";
       }
     };
 
     // 辅助函数：加载成功后显示
     (window as any).__vcpShowEmoticon = (img: HTMLImageElement) => {
-      img.style.visibility = 'visible';
+      img.style.visibility = "visible";
     };
   };
 
   const processEmoticonsInContainer = async (container: HTMLElement) => {
     if (!container) return;
 
-    const imgs = container.querySelectorAll('img');
+    const imgs = container.querySelectorAll("img");
     const promises: Promise<void>[] = [];
 
     imgs.forEach((img) => {
       // 避免重复处理
-      if (img.dataset.vcpProcessed === 'true') return;
-      img.dataset.vcpProcessed = 'true';
+      if (img.dataset.vcpProcessed === "true") return;
+      img.dataset.vcpProcessed = "true";
 
       const originalSrc = decodeURIComponent(img.src);
-      const alt = decodeURIComponent(img.alt || '');
+      const alt = decodeURIComponent(img.alt || "");
 
-      const isEmoticon = originalSrc.includes('表情包') || alt.includes('表情包');
+      const isEmoticon =
+        originalSrc.includes("表情包") || alt.includes("表情包");
       if (isEmoticon) {
-        img.classList.add('vcp-emoticon');
-        const rawSrc = img.getAttribute('src') || originalSrc;
-        
+        img.classList.add("vcp-emoticon");
+        const rawSrc = img.getAttribute("src") || originalSrc;
+
         const fixPromise = async () => {
           try {
             const fixedUrl = await fixUrl(rawSrc);
@@ -101,7 +102,7 @@ export function useEmoticonFixer() {
               img.src = fixedUrl;
             }
           } catch (e) {
-            console.error('[EmoticonFixer] Failed to fix emoticon:', rawSrc, e);
+            console.error("[EmoticonFixer] Failed to fix emoticon:", rawSrc, e);
           }
         };
         promises.push(fixPromise());
@@ -116,6 +117,6 @@ export function useEmoticonFixer() {
     getLibrary,
     regenerateLibrary,
     initGlobalFixer,
-    processEmoticonsInContainer
+    processEmoticonsInContainer,
   };
 }

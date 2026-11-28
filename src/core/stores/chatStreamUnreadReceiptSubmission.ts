@@ -41,7 +41,10 @@ function normalizeReceiptResult(
   return { success: result !== false };
 }
 
-function clearPendingRetry(deps: StreamProcessorDeps, messageKey: string): void {
+function clearPendingRetry(
+  deps: StreamProcessorDeps,
+  messageKey: string,
+): void {
   const retryTimers = deps.state.unreadMessageRetryTimers;
   const pendingRetry = retryTimers?.get(messageKey);
   if (pendingRetry === undefined) return;
@@ -157,7 +160,12 @@ function observeUnreadReceipt(
 ): void {
   void Promise.resolve(submission)
     .then((value) =>
-      completeUnreadReceipt(deps, parsed, prepared, normalizeReceiptResult(value)),
+      completeUnreadReceipt(
+        deps,
+        parsed,
+        prepared,
+        normalizeReceiptResult(value),
+      ),
     )
     .catch((error) => {
       if (!prepared.isActive()) {
@@ -205,8 +213,6 @@ export function submitUnreadReceipt(
     deps,
     parsed,
     prepared,
-    submission as PromiseLike<
-      void | boolean | UnreadReceiptSubmissionResult
-    >,
+    submission as PromiseLike<void | boolean | UnreadReceiptSubmissionResult>,
   );
 }

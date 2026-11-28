@@ -16,12 +16,21 @@ import SettingsRow from "../../components/settings/SettingsRow.vue";
 import AboutSection from "./components/AboutSection.vue"; // 实测解析延迟明显，保持静态
 
 // 低频子页面（advanced / power）：懒加载，用户点进子页面时才解析
-const AssistantSettingsSection = defineAsyncComponent(() => import("./components/AssistantSettingsSection.vue"));
-const TopicSummarySection = defineAsyncComponent(() => import("./components/TopicSummarySection.vue"));
-const DistributedSettingsSection = defineAsyncComponent(() => import("../distributed/DistributedSettingsSection.vue"));
-const MaintenanceSection = defineAsyncComponent(() => import("./components/MaintenanceSection.vue"));
-const BatteryOptimizationGuide = defineAsyncComponent(() => import("./components/BatteryOptimizationGuide.vue"));
-
+const AssistantSettingsSection = defineAsyncComponent(
+  () => import("./components/AssistantSettingsSection.vue"),
+);
+const TopicSummarySection = defineAsyncComponent(
+  () => import("./components/TopicSummarySection.vue"),
+);
+const DistributedSettingsSection = defineAsyncComponent(
+  () => import("../distributed/DistributedSettingsSection.vue"),
+);
+const MaintenanceSection = defineAsyncComponent(
+  () => import("./components/MaintenanceSection.vue"),
+);
+const BatteryOptimizationGuide = defineAsyncComponent(
+  () => import("./components/BatteryOptimizationGuide.vue"),
+);
 
 const props = withDefaults(
   defineProps<{
@@ -70,10 +79,22 @@ const currentSubPage = ref<string | null>(null);
 const visibleSubPage = ref<string | null>(null);
 
 const categories = [
-  { id: "identity", title: "用户身份", description: "头像、用户名与管理员账号" },
-  { id: "connection", title: "服务器连接", description: "VCP Server API 与数据同步" },
+  {
+    id: "identity",
+    title: "用户身份",
+    description: "头像、用户名与管理员账号",
+  },
+  {
+    id: "connection",
+    title: "服务器连接",
+    description: "VCP Server API 与数据同步",
+  },
   { id: "theme", title: "主题切换", description: "视觉风格与壁纸" },
-  { id: "advanced", title: "高级功能", description: "话题总结、分布式节点与数据维护" },
+  {
+    id: "advanced",
+    title: "高级功能",
+    description: "话题总结、分布式节点与数据维护",
+  },
   { id: "power", title: "电池优化", description: "电池白名单与进程锁定设置" },
   { id: "about", title: "关于", description: "版本与更新" },
 ];
@@ -140,13 +161,13 @@ watch(
 );
 
 // 纯展示型子页面：无可编辑内容，物理返回时跳过 saveSettings
-const READ_ONLY_SUBPAGES = new Set(['about', 'power']);
+const READ_ONLY_SUBPAGES = new Set(["about", "power"]);
 
 watch(currentSubPage, (val) => {
   if (val) {
     visibleSubPage.value = val;
     registerModal(SUBPAGE_MODAL_ID, () => {
-      if (READ_ONLY_SUBPAGES.has(currentSubPage.value ?? '')) {
+      if (READ_ONLY_SUBPAGES.has(currentSubPage.value ?? "")) {
         currentSubPage.value = null;
       } else {
         goBack();
@@ -174,7 +195,9 @@ watch(currentSubPage, (val) => {
         v-if="currentSubPage !== 'about'"
         class="px-4 py-3 flex items-center justify-between border-b border-white/10 pt-[calc(var(--vcp-safe-top,24px)+12px)] pb-3 shrink-0"
       >
-        <h2 class="text-xl font-bold">{{ currentSubPage ? subPageTitle : '全局设置' }}</h2>
+        <h2 class="text-xl font-bold">
+          {{ currentSubPage ? subPageTitle : "全局设置" }}
+        </h2>
         <button
           @click="currentSubPage ? goBack() : closeSettings()"
           class="p-2 active:scale-90 transition-all flex items-center justify-center opacity-70 active:opacity-100"
@@ -190,7 +213,7 @@ watch(currentSubPage, (val) => {
             stroke-linecap="round"
             stroke-linejoin="round"
           >
-            <path d="m15 18-6-6 6-6"/>
+            <path d="m15 18-6-6 6-6" />
           </svg>
           <svg
             v-else
@@ -233,7 +256,9 @@ watch(currentSubPage, (val) => {
           </SettingsCard>
 
           <!-- Footer -->
-          <div class="mt-auto text-center opacity-15 text-[8px] py-8 pb-12 font-mono uppercase tracking-[0.25em] select-none">
+          <div
+            class="mt-auto text-center opacity-15 text-[8px] py-8 pb-12 font-mono uppercase tracking-[0.25em] select-none"
+          >
             VCP MOBILE // PROJECT AVATAR // 2026.04.07
           </div>
         </div>
@@ -244,10 +269,13 @@ watch(currentSubPage, (val) => {
             v-if="currentSubPage"
             class="absolute inset-0 flex flex-col z-10 transition-colors duration-300 bg-[var(--primary-bg)]"
           >
-
-            <div 
+            <div
               class="flex-1 pb-safe"
-              :class="currentSubPage === 'about' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto px-3 pt-6 pb-5 space-y-6 no-rubber-band'"
+              :class="
+                currentSubPage === 'about'
+                  ? 'overflow-hidden flex flex-col'
+                  : 'overflow-y-auto px-3 pt-6 pb-5 space-y-6 no-rubber-band'
+              "
             >
               <!-- 用户身份 -->
               <template v-if="visibleSubPage === 'identity'">
@@ -258,7 +286,11 @@ watch(currentSubPage, (val) => {
               <template v-if="visibleSubPage === 'connection'">
                 <div class="space-y-6">
                   <div>
-                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">核心连接</h3>
+                    <h3
+                      class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1"
+                    >
+                      核心连接
+                    </h3>
                     <SettingsCard>
                       <VcpCoreSettingsSection
                         :settings="settings"
@@ -267,7 +299,11 @@ watch(currentSubPage, (val) => {
                     </SettingsCard>
                   </div>
                   <div>
-                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">数据同步</h3>
+                    <h3
+                      class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1"
+                    >
+                      数据同步
+                    </h3>
                     <SettingsCard>
                       <SyncSettingsSection
                         :settings="settings"
@@ -276,7 +312,11 @@ watch(currentSubPage, (val) => {
                     </SettingsCard>
                   </div>
                   <div>
-                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">线路档案</h3>
+                    <h3
+                      class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1"
+                    >
+                      线路档案
+                    </h3>
                     <SettingsCard>
                       <ConnectionProfilesSection
                         :settings="settings"
@@ -300,13 +340,24 @@ watch(currentSubPage, (val) => {
               <template v-if="visibleSubPage === 'advanced'">
                 <div class="space-y-6">
                   <div>
-                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">划词悬浮助手</h3>
+                    <h3
+                      class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1"
+                    >
+                      划词悬浮助手
+                    </h3>
                     <SettingsCard>
-                      <AssistantSettingsSection :settings="settings" @save-request="saveSettings" />
+                      <AssistantSettingsSection
+                        :settings="settings"
+                        @save-request="saveSettings"
+                      />
                     </SettingsCard>
                   </div>
                   <div>
-                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">话题总结</h3>
+                    <h3
+                      class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1"
+                    >
+                      话题总结
+                    </h3>
                     <SettingsCard>
                       <TopicSummarySection
                         :settings="settings"
@@ -316,7 +367,11 @@ watch(currentSubPage, (val) => {
                     </SettingsCard>
                   </div>
                   <div>
-                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">分布式节点</h3>
+                    <h3
+                      class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1"
+                    >
+                      分布式节点
+                    </h3>
                     <SettingsCard>
                       <DistributedSettingsSection
                         :settings="settings"
@@ -325,7 +380,11 @@ watch(currentSubPage, (val) => {
                     </SettingsCard>
                   </div>
                   <div>
-                    <h3 class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1">数据维护</h3>
+                    <h3
+                      class="text-[11px] font-black uppercase tracking-[0.15em] opacity-50 mb-3 px-1"
+                    >
+                      数据维护
+                    </h3>
                     <SettingsCard>
                       <MaintenanceSection />
                     </SettingsCard>

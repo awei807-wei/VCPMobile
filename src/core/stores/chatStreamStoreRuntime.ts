@@ -165,14 +165,7 @@ export function createChatStreamRuntime(
       ownerType: ConversationOwnerType,
       topicId: string,
       messageId: string,
-    ) =>
-      allocateStreamGeneration(
-        deps,
-        ownerId,
-        ownerType,
-        topicId,
-        messageId,
-      ),
+    ) => allocateStreamGeneration(deps, ownerId, ownerType, topicId, messageId),
     stopMessage: controls.stopMessage,
     stopGroupTurn: controls.stopGroupTurn,
     cancelUnreadReceipt: (identity, messageId) =>

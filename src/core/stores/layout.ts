@@ -1,8 +1,8 @@
-import { defineStore } from 'pinia';
-import { ref } from 'vue';
-import { useModalHistory } from '../composables/useModalHistory';
+import { defineStore } from "pinia";
+import { ref } from "vue";
+import { useModalHistory } from "../composables/useModalHistory";
 
-export const useLayoutStore = defineStore('layout', () => {
+export const useLayoutStore = defineStore("layout", () => {
   const { registerModal, unregisterModal } = useModalHistory();
 
   const leftDrawerOpen = ref(false);
@@ -16,13 +16,15 @@ export const useLayoutStore = defineStore('layout', () => {
 
     if (!open) {
       leftDrawerOpen.value = false;
-      unregisterModal('LeftDrawer');
+      unregisterModal("LeftDrawer");
       return;
     }
 
     setRightDrawer(false);
     leftDrawerOpen.value = true;
-    registerModal('LeftDrawer', () => { leftDrawerOpen.value = false; });
+    registerModal("LeftDrawer", () => {
+      leftDrawerOpen.value = false;
+    });
   };
 
   const setRightDrawer = (open: boolean) => {
@@ -30,13 +32,15 @@ export const useLayoutStore = defineStore('layout', () => {
 
     if (!open) {
       rightDrawerOpen.value = false;
-      unregisterModal('RightDrawer');
+      unregisterModal("RightDrawer");
       return;
     }
 
     setLeftDrawer(false);
     rightDrawerOpen.value = true;
-    registerModal('RightDrawer', () => { rightDrawerOpen.value = false; });
+    registerModal("RightDrawer", () => {
+      rightDrawerOpen.value = false;
+    });
   };
 
   return {
@@ -45,6 +49,6 @@ export const useLayoutStore = defineStore('layout', () => {
     toggleLeftDrawer,
     toggleRightDrawer,
     setLeftDrawer,
-    setRightDrawer
+    setRightDrawer,
   };
 });

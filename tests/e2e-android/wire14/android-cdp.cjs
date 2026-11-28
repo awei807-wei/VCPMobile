@@ -20,7 +20,7 @@ function resolveTimeoutMs(timeoutOrOptions) {
   const candidate =
     typeof timeoutOrOptions === "number"
       ? timeoutOrOptions
-      : timeoutOrOptions?.timeoutMs ?? timeoutOrOptions?.timeout;
+      : (timeoutOrOptions?.timeoutMs ?? timeoutOrOptions?.timeout);
   return Number.isFinite(candidate) && candidate > 0
     ? Math.max(1, Math.floor(candidate))
     : DEFAULT_CDP_TIMEOUT_MS;
@@ -92,7 +92,11 @@ async function fetchJson(url, timeoutOrOptions, dependencies = {}) {
     return await response.json();
   } catch (error) {
     if (controller.signal.aborted) {
-      throw codedError("CDP_JSON_TIMEOUT", `CDP JSON 请求超时（${timeoutMs}ms）`, error);
+      throw codedError(
+        "CDP_JSON_TIMEOUT",
+        `CDP JSON 请求超时（${timeoutMs}ms）`,
+        error,
+      );
     }
     throw error;
   } finally {
@@ -240,12 +244,16 @@ class CdpClient {
   }
 
   async evaluate(expression, timeoutOrOptions) {
-    const result = await this.call("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: true,
-    }, timeoutOrOptions);
+    const result = await this.call(
+      "Runtime.evaluate",
+      {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+        userGesture: true,
+      },
+      timeoutOrOptions,
+    );
     if (result?.exceptionDetails) {
       throw new Error("WebView JavaScript 执行失败");
     }
@@ -338,9 +346,11 @@ async function connectAndroidCdp(timeoutOrOptions, dependencies = {}) {
   const readPid = dependencies.packagePid || (() => packagePid(adb));
   const reservePort = dependencies.freePort || freePort;
   const forward =
-    dependencies.forwardSocket || ((localPort, pid) => forwardSocket(localPort, pid, adb));
-  const find = dependencies.findPage || ((localPort, timeout) =>
-    findPage(localPort, timeout, dependencies));
+    dependencies.forwardSocket ||
+    ((localPort, pid) => forwardSocket(localPort, pid, adb));
+  const find =
+    dependencies.findPage ||
+    ((localPort, timeout) => findPage(localPort, timeout, dependencies));
   const device = await ensureDevice();
   const pid = await readPid();
   const localPort = await reservePort();

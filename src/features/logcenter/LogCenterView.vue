@@ -6,8 +6,8 @@
  * 无毛玻璃、Monospace 技术值。方案见
  * plan/vcpmobile-more-tools-research/01-日志中心-上游契约与移植方案.md §4。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { useVirtualList } from '@vueuse/core';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { useVirtualList } from "@vueuse/core";
 import {
   ArrowLeft,
   ArrowDownToLine,
@@ -16,33 +16,41 @@ import {
   Play,
   Search,
   ArrowDownUp,
-} from 'lucide-vue-next';
-import SlidePage from '../../components/ui/SlidePage.vue';
-import RefreshButton from '../../components/ui/RefreshButton.vue';
-import BottomSheet, { type ActionItem } from '../../components/ui/BottomSheet.vue';
-import { useNotificationStore } from '../../core/stores/notification';
-import { useLogCenterStore } from './logCenterStore';
-import { levelOf, splitByKeyword } from './logText';
+} from "lucide-vue-next";
+import SlidePage from "../../components/ui/SlidePage.vue";
+import RefreshButton from "../../components/ui/RefreshButton.vue";
+import BottomSheet, {
+  type ActionItem,
+} from "../../components/ui/BottomSheet.vue";
+import { useNotificationStore } from "../../core/stores/notification";
+import { useLogCenterStore } from "./logCenterStore";
+import { levelOf, splitByKeyword } from "./logText";
 
-const props = withDefaults(defineProps<{
-  isOpen?: boolean;
-  isActive?: boolean;
-  zIndex?: number;
-}>(), {
-  isOpen: false,
-  isActive: false,
-  zIndex: 40,
-});
+const props = withDefaults(
+  defineProps<{
+    isOpen?: boolean;
+    isActive?: boolean;
+    zIndex?: number;
+  }>(),
+  {
+    isOpen: false,
+    isActive: false,
+    zIndex: 40,
+  },
+);
 
 const emit = defineEmits<{ close: [] }>();
 
 const store = useLogCenterStore();
 const notificationStore = useNotificationStore();
 
-const toast = (type: 'info' | 'success' | 'warning' | 'error', message: string) => {
+const toast = (
+  type: "info" | "success" | "warning" | "error",
+  message: string,
+) => {
   notificationStore.addNotification({
     type,
-    title: '日志中心',
+    title: "日志中心",
     message,
     toastOnly: true,
   });
@@ -142,7 +150,12 @@ watch(
   () => [store.lineLimit, store.displayedLines.length],
   async (_new, old) => {
     // 仅在收缩场景校正（行数变少）；增量追加由 logVersion 吸底逻辑处理
-    if (old && store.displayedLines.length >= old[1] && store.lineLimit >= old[0]) return;
+    if (
+      old &&
+      store.displayedLines.length >= old[1] &&
+      store.lineLimit >= old[0]
+    )
+      return;
     await nextTick();
     await recoverScrollWindow();
   },
@@ -168,9 +181,12 @@ onBeforeUnmount(() => {
 // ---------- 溢出菜单 ----------
 const isMenuOpen = ref(false);
 
-watch(() => props.isOpen && props.isActive, (active) => {
-  if (!active) isMenuOpen.value = false;
-});
+watch(
+  () => props.isOpen && props.isActive,
+  (active) => {
+    if (!active) isMenuOpen.value = false;
+  },
+);
 
 function onLineLimitChange(event: Event): void {
   const target = event.target;
@@ -182,27 +198,27 @@ function onLineLimitChange(event: Event): void {
 const LIMIT_OPTIONS = [100, 300, 500, 1000, 3000];
 
 async function copyVisible(): Promise<void> {
-  const text = store.displayedLines.join('\n');
+  const text = store.displayedLines.join("\n");
   if (!text) {
-    toast('info', '当前没有可复制的日志');
+    toast("info", "当前没有可复制的日志");
     return;
   }
   try {
     await navigator.clipboard.writeText(text);
-    toast('success', `已复制 ${store.displayedLines.length} 行可见日志`);
+    toast("success", `已复制 ${store.displayedLines.length} 行可见日志`);
   } catch {
     // 剪贴板 API 失败时的降级：隐藏 textarea + execCommand
-    const helper = document.createElement('textarea');
+    const helper = document.createElement("textarea");
     helper.value = text;
-    helper.style.position = 'fixed';
-    helper.style.opacity = '0';
+    helper.style.position = "fixed";
+    helper.style.opacity = "0";
     document.body.appendChild(helper);
     helper.select();
     try {
-      if (!document.execCommand('copy')) throw new Error('copy failed');
-      toast('success', `已复制 ${store.displayedLines.length} 行可见日志`);
+      if (!document.execCommand("copy")) throw new Error("copy failed");
+      toast("success", `已复制 ${store.displayedLines.length} 行可见日志`);
     } catch {
-      toast('error', '复制失败，请检查剪贴板权限');
+      toast("error", "复制失败，请检查剪贴板权限");
     } finally {
       helper.remove();
     }
@@ -211,11 +227,11 @@ async function copyVisible(): Promise<void> {
 
 const menuActions = computed<ActionItem[]>(() => [
   {
-    label: store.autoScroll ? '关闭自动滚动' : '开启自动滚动',
+    label: store.autoScroll ? "关闭自动滚动" : "开启自动滚动",
     handler: () => store.toggleAutoScroll(),
   },
   {
-    label: '复制可见日志',
+    label: "复制可见日志",
     handler: () => {
       void copyVisible();
     },
@@ -224,21 +240,21 @@ const menuActions = computed<ActionItem[]>(() => [
 
 // ---------- 状态条 ----------
 const stateLabel = computed(() => {
-  if (store.error) return '连接失败';
-  if (store.isPaused) return '已暂停';
-  if (store.isLoading) return '拉取中';
-  if (store.isPolling) return '监听中';
-  return '待机';
+  if (store.error) return "连接失败";
+  if (store.isPaused) return "已暂停";
+  if (store.isLoading) return "拉取中";
+  if (store.isPolling) return "监听中";
+  return "待机";
 });
 
 const stateClass = computed(() => ({
-  'is-error': !!store.error,
-  'is-paused': store.isPaused && !store.error,
+  "is-error": !!store.error,
+  "is-paused": store.isPaused && !store.error,
 }));
 
 const fileSizeLabel = computed(() => {
   const size = store.fileSize;
-  if (!size) return '—';
+  if (!size) return "—";
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(2)} MB`;
@@ -249,7 +265,7 @@ const statusLine = computed(() => {
   if (store.filterText.trim()) {
     return `仅搜索已加载的 ${store.totalBuffered} 行缓冲`;
   }
-  return store.logPath || '等待首次拉取…';
+  return store.logPath || "等待首次拉取…";
 });
 </script>
 
@@ -258,12 +274,19 @@ const statusLine = computed(() => {
     <div class="log-center">
       <!-- 顶栏 -->
       <header class="log-header">
-        <button type="button" class="log-icon-btn" aria-label="返回" @click="emit('close')">
+        <button
+          type="button"
+          class="log-icon-btn"
+          aria-label="返回"
+          @click="emit('close')"
+        >
           <ArrowLeft :size="20" />
         </button>
         <div class="log-title-block">
           <span class="log-title">日志中心</span>
-          <span class="text-[10px] opacity-60">{{ store.sourceLabel }} · 只读</span>
+          <span class="text-[10px] opacity-60"
+            >{{ store.sourceLabel }} · 只读</span
+          >
           <span class="log-state" :class="stateClass">
             <span class="log-state-dot" />{{ stateLabel }}
           </span>
@@ -332,23 +355,28 @@ const statusLine = computed(() => {
 
       <!-- 统计条 -->
       <div class="log-stats" aria-live="polite">
-        <span class="log-stat">缓冲 <strong>{{ store.totalBuffered }}</strong></span>
-        <span class="log-stat">显示 <strong>{{ store.displayedLines.length }}</strong></span>
+        <span class="log-stat"
+          >缓冲 <strong>{{ store.totalBuffered }}</strong></span
+        >
+        <span class="log-stat"
+          >显示 <strong>{{ store.displayedLines.length }}</strong></span
+        >
         <span v-if="store.filterText.trim()" class="log-stat">
           匹配 <strong>{{ store.matchedCount }}</strong>
         </span>
-        <span class="log-stat">文件 <strong>{{ fileSizeLabel }}</strong></span>
+        <span class="log-stat"
+          >文件 <strong>{{ fileSizeLabel }}</strong></span
+        >
       </div>
 
       <!-- 日志主体 -->
       <div class="log-body">
-        <div
-          v-if="store.displayedLines.length === 0"
-          class="log-empty"
-        >
+        <div v-if="store.displayedLines.length === 0" class="log-empty">
           <p v-if="store.error" class="log-empty-error">{{ store.error }}</p>
           <p v-else-if="store.isLoading">正在拉取日志…</p>
-          <p v-else-if="store.filterText.trim()">没有匹配「{{ store.filterText.trim() }}」的日志行</p>
+          <p v-else-if="store.filterText.trim()">
+            没有匹配「{{ store.filterText.trim() }}」的日志行
+          </p>
           <p v-else>暂无日志</p>
           <button
             v-if="store.error"
@@ -377,9 +405,14 @@ const statusLine = computed(() => {
             >
               <span class="log-row-text">
                 <template
-                  v-for="(part, partIndex) in splitByKeyword(row.data, store.filterText)"
+                  v-for="(part, partIndex) in splitByKeyword(
+                    row.data,
+                    store.filterText,
+                  )"
                   :key="partIndex"
-                ><mark v-if="part.hit" class="log-hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template>
+                  ><mark v-if="part.hit" class="log-hit">{{ part.text }}</mark
+                  ><template v-else>{{ part.text }}</template></template
+                >
               </span>
             </div>
           </div>
@@ -397,17 +430,23 @@ const statusLine = computed(() => {
           >
             <ArrowDownToLine :size="17" />
             <span v-if="store.newLineCount > 0" class="log-jump-badge">
-              {{ store.newLineCount > 99 ? '99+' : store.newLineCount }}
+              {{ store.newLineCount > 99 ? "99+" : store.newLineCount }}
             </span>
           </button>
         </Transition>
       </div>
 
       <!-- 底部状态行 -->
-      <footer class="log-footer" :title="store.logPath">{{ statusLine }}</footer>
+      <footer class="log-footer" :title="store.logPath">
+        {{ statusLine }}
+      </footer>
 
       <!-- 溢出菜单 -->
-      <BottomSheet v-model="isMenuOpen" title="日志选项" :actions="menuActions" />
+      <BottomSheet
+        v-model="isMenuOpen"
+        title="日志选项"
+        :actions="menuActions"
+      />
     </div>
   </SlidePage>
 </template>

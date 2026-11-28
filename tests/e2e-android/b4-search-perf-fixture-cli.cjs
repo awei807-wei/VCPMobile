@@ -5,9 +5,7 @@ const os = require("os");
 const path = require("path");
 const { randomBytes } = require("crypto");
 const { spawnSync } = require("child_process");
-const {
-  REQUIRED_CORPUS,
-} = require("./b4-search-perf-fixture.cjs");
+const { REQUIRED_CORPUS } = require("./b4-search-perf-fixture.cjs");
 const device = require("./b4-search-perf-device.cjs");
 
 const FIXTURE_SCHEMA = "vcp.android.b4.search-fixture.v1";
@@ -15,7 +13,9 @@ const FIXTURE_SCRIPT = path.join(__dirname, "scripts", "b4_fixture.py");
 
 function errorText(error) {
   const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/\s+/g, " ").trim().slice(0, 500) || "fixture 命令失败";
+  return (
+    message.replace(/\s+/g, " ").trim().slice(0, 500) || "fixture 命令失败"
+  );
 }
 
 function fixturePath(value, flag = "--fixture-path") {
@@ -83,7 +83,10 @@ function runPython(command, args, dependencies = {}) {
     );
   }
   if (payload.schema !== FIXTURE_SCHEMA) {
-    throw fixtureOperationError(`fixture schema 不匹配: ${payload.schema || "empty"}`, payload);
+    throw fixtureOperationError(
+      `fixture schema 不匹配: ${payload.schema || "empty"}`,
+      payload,
+    );
   }
   return payload;
 }
@@ -91,7 +94,8 @@ function runPython(command, args, dependencies = {}) {
 function sizeArgs(options = {}) {
   const corpus = options.corpus || {};
   const topics = corpus.topics ?? options.topics ?? REQUIRED_CORPUS.topics;
-  const messages = corpus.messages ?? options.messages ?? REQUIRED_CORPUS.messages;
+  const messages =
+    corpus.messages ?? options.messages ?? REQUIRED_CORPUS.messages;
   const minBytes =
     corpus.minDecodedContentBytes ??
     options.minContentBytes ??
@@ -114,12 +118,16 @@ function appendSizeArgs(args, options) {
 
 function runFixturePython(command, options = {}, dependencies = {}) {
   const args = [];
-  if (command === "prepare") args.push("--output", fixturePath(options.fixturePath));
-  else if (command === "verify") args.push("--input", fixturePath(options.fixturePath));
-  else if (command === "cleanup") args.push("--input", fixturePath(options.fixturePath));
+  if (command === "prepare")
+    args.push("--output", fixturePath(options.fixturePath));
+  else if (command === "verify")
+    args.push("--input", fixturePath(options.fixturePath));
+  else if (command === "cleanup")
+    args.push("--input", fixturePath(options.fixturePath));
   else throw new Error(`不支持 fixture 命令: ${command}`);
   if (command !== "cleanup") appendSizeArgs(args, options);
-  if (command === "prepare" && options.overwrite === true) args.push("--overwrite");
+  if (command === "prepare" && options.overwrite === true)
+    args.push("--overwrite");
   return runPython(command, args, dependencies);
 }
 
@@ -132,7 +140,8 @@ function cleanupLocalFixture(fixturePathname, dependencies = {}) {
 }
 
 function mustFixturePath(options = {}) {
-  if (!options.fixturePath) throw new Error("该 fixture 命令需要 --fixture-path");
+  if (!options.fixturePath)
+    throw new Error("该 fixture 命令需要 --fixture-path");
   return fixturePath(options.fixturePath);
 }
 
@@ -182,38 +191,49 @@ async function cleanupFixture(options = {}, dependencies = {}) {
   const failures = [];
   if (options.fixturePath) {
     try {
-      reports.push(await cleanupLocalFixture(mustFixturePath(options), dependencies));
+      reports.push(
+        await cleanupLocalFixture(mustFixturePath(options), dependencies),
+      );
     } catch (error) {
-      failures.push({ phase: "local", message: errorText(error), payload: error.fixturePayload });
+      failures.push({
+        phase: "local",
+        message: errorText(error),
+        payload: error.fixturePayload,
+      });
     }
   }
   if (options.device === true) {
     try {
-      reports.push(await device.cleanupDebugFixture({ ...options, ...dependencies }));
+      reports.push(
+        await device.cleanupDebugFixture({ ...options, ...dependencies }),
+      );
     } catch (error) {
-      failures.push({ phase: "device", message: errorText(error), payload: error.fixturePayload });
+      failures.push({
+        phase: "device",
+        message: errorText(error),
+        payload: error.fixturePayload,
+      });
     }
   }
   if (failures.length) {
-    const error = fixtureOperationError(
-      "fixture cleanup 失败",
-      {
-        schema: FIXTURE_SCHEMA,
-        ok: false,
-        command: "cleanup",
-        failures: failures.map(({ phase, message }) => ({ phase, message })),
-        residualPaths: failures.flatMap((failure) =>
-          Array.isArray(failure.payload?.residualPaths)
-            ? failure.payload.residualPaths
-            : [],
-        ),
-        reports: reports.map((report) => ({
-          command: report?.command,
-          ok: report?.ok === true,
-          residualPaths: Array.isArray(report?.residualPaths) ? report.residualPaths : [],
-        })),
-      },
-    );
+    const error = fixtureOperationError("fixture cleanup 失败", {
+      schema: FIXTURE_SCHEMA,
+      ok: false,
+      command: "cleanup",
+      failures: failures.map(({ phase, message }) => ({ phase, message })),
+      residualPaths: failures.flatMap((failure) =>
+        Array.isArray(failure.payload?.residualPaths)
+          ? failure.payload.residualPaths
+          : [],
+      ),
+      reports: reports.map((report) => ({
+        command: report?.command,
+        ok: report?.ok === true,
+        residualPaths: Array.isArray(report?.residualPaths)
+          ? report.residualPaths
+          : [],
+      })),
+    });
     error.cleanupFailures = failures;
     throw error;
   }

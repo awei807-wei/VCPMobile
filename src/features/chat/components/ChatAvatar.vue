@@ -18,12 +18,12 @@ const ownerInfo = computed(() => {
   }
 
   // 2. 尝试解析 imageUrl (兼容旧代码)
-  if (props.imageUrl && props.imageUrl.startsWith('vcp-avatar://')) {
-    const parts = props.imageUrl.replace('vcp-avatar://', '').split('/');
+  if (props.imageUrl && props.imageUrl.startsWith("vcp-avatar://")) {
+    const parts = props.imageUrl.replace("vcp-avatar://", "").split("/");
     if (parts.length >= 2) {
-      return { 
-        type: parts[0] as "user" | "agent" | "group", 
-        id: parts[1].split('?')[0] 
+      return {
+        type: parts[0] as "user" | "agent" | "group",
+        id: parts[1].split("?")[0],
       };
     }
   }
@@ -43,16 +43,19 @@ const ownerInfo = computed(() => {
       rounded="rounded-full"
       :dominant-color="dominantColor"
     />
-    <div v-else class="w-full h-full rounded-full overflow-hidden border transition-all duration-500 shadow-sm flex items-center justify-center text-xs font-bold text-white"
-      :class="isUser ? 'bg-primary border-primary' : 'bg-white dark:bg-gray-800'"
+    <div
+      v-else
+      class="w-full h-full rounded-full overflow-hidden border transition-all duration-500 shadow-sm flex items-center justify-center text-xs font-bold text-white"
+      :class="
+        isUser ? 'bg-primary border-primary' : 'bg-white dark:bg-gray-800'
+      "
       :style="[
         !isUser && dominantColor ? { borderColor: dominantColor } : {},
         {
-          backgroundColor: isUser
-            ? 'var(--primary)'
-            : '#374151',
-        }
-      ]">
+          backgroundColor: isUser ? 'var(--primary)' : '#374151',
+        },
+      ]"
+    >
       {{ fallbackText.charAt(0).toUpperCase() }}
     </div>
   </div>

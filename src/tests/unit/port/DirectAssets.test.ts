@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { extractMentionedMemberIds, scanMentionHits, splitMentionSegments } from "../../../core/utils/mention";
+import {
+  extractMentionedMemberIds,
+  scanMentionHits,
+  splitMentionSegments,
+} from "../../../core/utils/mention";
 import { nameHue, nameInitial } from "../../../core/utils/nameHue";
 import {
   levelOf,
@@ -42,10 +46,11 @@ describe("T01 原样工具资产", () => {
     const content = "前 @Alice 和＠Bob，尾";
     const segments = splitMentionSegments(content, ["Alice", "Bob"]);
     expect(segments.map((segment) => segment.text).join("")).toBe(content);
-    expect(segments.filter((segment) => segment.mention).map((segment) => segment.text)).toEqual([
-      "@Alice",
-      "＠Bob",
-    ]);
+    expect(
+      segments
+        .filter((segment) => segment.mention)
+        .map((segment) => segment.text),
+    ).toEqual(["@Alice", "＠Bob"]);
   });
 
   it("日志分块拼接 carry 并保留末尾半行", () => {

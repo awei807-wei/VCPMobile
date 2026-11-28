@@ -78,8 +78,14 @@ test("B4 报告明确记录冷重启策略、原因和边界", () => {
     { device: null, failures: [] },
   );
   assert.equal(report.configuration.coldRestartStrategy, COLD_RESTART_STRATEGY);
-  assert.equal(report.configuration.coldRestartStrategyReason, COLD_RESTART_STRATEGY_REASON);
-  assert.equal(report.configuration.coldRestartStrategyBoundary, COLD_RESTART_STRATEGY_BOUNDARY);
+  assert.equal(
+    report.configuration.coldRestartStrategyReason,
+    COLD_RESTART_STRATEGY_REASON,
+  );
+  assert.equal(
+    report.configuration.coldRestartStrategyBoundary,
+    COLD_RESTART_STRATEGY_BOUNDARY,
+  );
   assert.match(report.configuration.coldRestartStrategyReason, /force-stop/);
   assert.match(report.configuration.coldRestartStrategyBoundary, /debug/);
 });
@@ -141,7 +147,10 @@ test("冷查询每轮都先等 READY，restartMs 包含等待而 durationMs 不�
   const result = await coldSearch(runtime, ["needle", "body"], 2, {
     now: () => clock,
     restart: async () => {
-      calls.push(["restart", calls.filter((call) => call[0] === "restart").length + 1]);
+      calls.push([
+        "restart",
+        calls.filter((call) => call[0] === "restart").length + 1,
+      ]);
       clock += 25;
       return {
         processRestarted: true,
@@ -173,13 +182,26 @@ test("冷查询每轮都先等 READY，restartMs 包含等待而 durationMs 不�
 
   assert.equal(result.samples.length, 2);
   assert.deepEqual(
-    result.samples.map((sample) => [sample.query, sample.restartMs, sample.durationMs]),
-    [["needle", 225, 17], ["body", 225, 17]],
+    result.samples.map((sample) => [
+      sample.query,
+      sample.restartMs,
+      sample.durationMs,
+    ]),
+    [
+      ["needle", 225, 17],
+      ["body", 225, 17],
+    ],
   );
   assert.ok(result.samples.every((sample) => sample.processRestarted));
   assert.ok(result.samples.every((sample) => sample.foregrounded));
-  assert.ok(result.samples.every((sample) =>
-    sample.previousPid === 7_000 && sample.nextPid === 7_001 && sample.cdpPid === 7_001));
+  assert.ok(
+    result.samples.every(
+      (sample) =>
+        sample.previousPid === 7_000 &&
+        sample.nextPid === 7_001 &&
+        sample.cdpPid === 7_001,
+    ),
+  );
   assert.deepEqual(calls, [
     ["restart", 1],
     ["ready", cdp],

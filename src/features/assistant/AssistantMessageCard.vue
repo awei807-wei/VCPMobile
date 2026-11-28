@@ -40,7 +40,7 @@ watch(
   (content) => {
     renderedHtml.value = renderMarkdown(content || "");
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 // Lazy KaTeX rendering for math formulas
@@ -49,7 +49,7 @@ watch(renderedHtml, async () => {
   if (!contentRef.value) return;
 
   const mathElements = contentRef.value.querySelectorAll(
-    ".katex-inline, .katex-block"
+    ".katex-inline, .katex-block",
   );
   if (mathElements.length > 0) {
     try {
@@ -119,7 +119,8 @@ watch(renderedHtml, async () => {
       <pre
         v-else-if="message.content"
         class="font-sans whitespace-pre-wrap break-all m-0 select-text"
-      >{{ message.content }}</pre>
+        >{{ message.content }}</pre
+      >
     </div>
 
     <!-- Timestamp -->
@@ -127,12 +128,14 @@ watch(renderedHtml, async () => {
       class="text-[9px] mt-1.5 px-1 opacity-40 font-mono tracking-tighter w-full"
       :class="message.role === 'user' ? 'text-right' : 'text-left'"
     >
-      {{ new Date(message.timestamp).toLocaleString("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      }) }}
+      {{
+        new Date(message.timestamp).toLocaleString("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      }}
     </div>
   </div>
 </template>

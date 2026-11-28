@@ -25,9 +25,7 @@ test("runAdbResult 暴露 status/stdout/stderr，并保留 runAdb 兼容返回�
   try {
     delete require.cache[adbEnvPath];
     const adbEnv = require("./adb-env.cjs");
-    const result = adbEnv.runAdbResult([
-      "adb-out",
-    ]);
+    const result = adbEnv.runAdbResult(["adb-out"]);
     assert.deepEqual(result, {
       status: 0,
       stdout: "adb-out\n",
@@ -51,14 +49,19 @@ test("runAdbResult 暴露 status/stdout/stderr，并保留 runAdb 兼容返回�
 
 test("runAdbToFile 通过 stdout 文件描述符传输超过 32MiB 的二进制输出", () => {
   const previous = process.env.ADB;
-  const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "adb-output-test-"));
+  const outputDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "adb-output-test-"),
+  );
   const outputPath = path.join(outputDirectory, "fixture.db");
   const stub = executableAdb("dd if=/dev/zero bs=1048576 count=33 2>/dev/null");
   process.env.ADB = stub.pathname;
   try {
     delete require.cache[adbEnvPath];
     const adbEnv = require("./adb-env.cjs");
-    const result = adbEnv.runAdbToFile(["exec-out", "run-as", "com.vcp.avatar.debug", "cat", "staged"], outputPath);
+    const result = adbEnv.runAdbToFile(
+      ["exec-out", "run-as", "com.vcp.avatar.debug", "cat", "staged"],
+      outputPath,
+    );
     assert.equal(result.status, 0);
     assert.equal(result.bytesWritten, 33 * 1024 * 1024);
     assert.equal(fs.statSync(outputPath).size, 33 * 1024 * 1024);
@@ -81,16 +84,24 @@ test("runAdbToFile 通过 stdout 文件描述符传输超过 32MiB 的二进制�
 
 test("二进制 adb 失败不解码或泄露 stdout，只报告状态、字节数和受限 stderr", () => {
   const previous = process.env.ADB;
-  const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "adb-failure-test-"));
+  const outputDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "adb-failure-test-"),
+  );
   const outputPath = path.join(outputDirectory, "fixture.db");
   const secret = "SQLITE_BINARY_SECRET_DO_NOT_PRINT";
-  const stub = executableAdb(`printf '%s' '${secret}'\nprintf '%s' 'transfer failed\\n' >&2\nexit 7`);
+  const stub = executableAdb(
+    `printf '%s' '${secret}'\nprintf '%s' 'transfer failed\\n' >&2\nexit 7`,
+  );
   process.env.ADB = stub.pathname;
   try {
     delete require.cache[adbEnvPath];
     const adbEnv = require("./adb-env.cjs");
     assert.throws(
-      () => adbEnv.runAdbToFile(["exec-out", "run-as", "com.vcp.avatar.debug", "cat", "staged"], outputPath),
+      () =>
+        adbEnv.runAdbToFile(
+          ["exec-out", "run-as", "com.vcp.avatar.debug", "cat", "staged"],
+          outputPath,
+        ),
       (error) => {
         assert.match(error.message, /status=7/);
         assert.match(error.message, /bytes=/);
@@ -101,7 +112,14 @@ test("二进制 adb 失败不解码或泄露 stdout，只报告状态、字节�
       },
     );
     assert.throws(
-      () => adbEnv.runAdbBuffer(["exec-out", "run-as", "com.vcp.avatar.debug", "cat", "staged"]),
+      () =>
+        adbEnv.runAdbBuffer([
+          "exec-out",
+          "run-as",
+          "com.vcp.avatar.debug",
+          "cat",
+          "staged",
+        ]),
       (error) => {
         assert.equal(error.message.includes(secret), false);
         assert.equal(error.stdoutOmitted, true);

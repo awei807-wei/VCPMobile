@@ -11,7 +11,7 @@
 /** 剥除 ANSI 转义序列（日志可能含彩色控制码，防止污染布局）。 */
 export function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
-  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 }
 
 export interface LogChunk {
@@ -25,34 +25,34 @@ export interface LogChunk {
  * 把一段日志文本切分为行，分离末尾半行。
  * `carry` 为上一次切分的 trailing（半行拼接核心）。
  */
-export function splitLogChunk(content: string, carry = ''): LogChunk {
-  const normalized = content.replace(/\r\n/g, '\n');
+export function splitLogChunk(content: string, carry = ""): LogChunk {
+  const normalized = content.replace(/\r\n/g, "\n");
   const combined = `${carry}${normalized}`;
-  const segments = combined.split('\n');
-  const endsWithNewline = combined.endsWith('\n');
+  const segments = combined.split("\n");
+  const endsWithNewline = combined.endsWith("\n");
 
-  if (endsWithNewline && segments[segments.length - 1] === '') {
+  if (endsWithNewline && segments[segments.length - 1] === "") {
     segments.pop();
   }
 
-  const trailing = endsWithNewline ? '' : (segments.pop() ?? '');
+  const trailing = endsWithNewline ? "" : (segments.pop() ?? "");
   const lines = trailing ? [...segments, trailing] : segments;
   return { lines, trailing };
 }
 
-export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'normal';
+export type LogLevel = "error" | "warn" | "info" | "debug" | "normal";
 
 const LEVEL_PATTERN = /\[(LOG|INFO|WARN|WARNING|ERROR|FATAL|DEBUG)\]/i;
 
 /** 判定日志行级别（用于 2px accent bar 着色）。 */
 export function levelOf(line: string): LogLevel {
   const match = LEVEL_PATTERN.exec(line);
-  if (!match) return 'normal';
+  if (!match) return "normal";
   const tag = match[1].toUpperCase();
-  if (tag === 'ERROR' || tag === 'FATAL') return 'error';
-  if (tag === 'WARN' || tag === 'WARNING') return 'warn';
-  if (tag === 'LOG' || tag === 'INFO') return 'info';
-  return 'debug';
+  if (tag === "ERROR" || tag === "FATAL") return "error";
+  if (tag === "WARN" || tag === "WARNING") return "warn";
+  if (tag === "LOG" || tag === "INFO") return "info";
+  return "debug";
 }
 
 /** 行数限制合法区间（移动端默认 500，见 05 篇决策 2）。 */
@@ -82,10 +82,12 @@ export function splitByKeyword(
   for (;;) {
     const found = lower.indexOf(needle, cursor);
     if (found === -1) break;
-    if (found > cursor) parts.push({ text: line.slice(cursor, found), hit: false });
+    if (found > cursor)
+      parts.push({ text: line.slice(cursor, found), hit: false });
     parts.push({ text: line.slice(found, found + needle.length), hit: true });
     cursor = found + needle.length;
   }
-  if (cursor < line.length) parts.push({ text: line.slice(cursor), hit: false });
+  if (cursor < line.length)
+    parts.push({ text: line.slice(cursor), hit: false });
   return parts.length ? parts : [{ text: line, hit: false }];
 }

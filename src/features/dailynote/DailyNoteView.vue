@@ -32,7 +32,9 @@ const frameReady = ref(false);
 const shouldRenderFrame = ref(false);
 const authStatus = ref("正在读取全局管理员鉴权…");
 const frameRef = ref<HTMLIFrameElement | null>(null);
-const currentAuthPayload = ref<{ username: string; token: string } | null>(null);
+const currentAuthPayload = ref<{ username: string; token: string } | null>(
+  null,
+);
 const currentDailyNoteApiBase = ref("");
 const currentAppliedConfigKey = ref("");
 let reloadRequestId = 0;
@@ -75,7 +77,9 @@ const buildDailyNoteApiBase = (serverUrl?: string | null) => {
   if (!rawUrl) return "";
 
   try {
-    const parsed = new URL(/^[a-z][a-z\d+\-.]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`);
+    const parsed = new URL(
+      /^[a-z][a-z\d+\-.]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`,
+    );
     const normalizedPath = parsed.pathname.replace(/\/+$/, "");
     const dailynoteIndex = normalizedPath
       .toLowerCase()
@@ -92,7 +96,10 @@ const buildDailyNoteApiBase = (serverUrl?: string | null) => {
 
     return parsed.toString().replace(/\/+$/, "");
   } catch (error) {
-    console.warn("[DailyNoteView] Invalid VCP server URL for DailyNote API:", error);
+    console.warn(
+      "[DailyNoteView] Invalid VCP server URL for DailyNote API:",
+      error,
+    );
     return "";
   }
 };
@@ -181,7 +188,8 @@ const handleFrameLoad = () => {
 
 const handleAuthStorageChange = (event: StorageEvent) => {
   if (!props.isOpen) return;
-  if (event.key !== AUTH_STORAGE_KEY && event.key !== AUTH_USERNAME_STORAGE_KEY) return;
+  if (event.key !== AUTH_STORAGE_KEY && event.key !== AUTH_USERNAME_STORAGE_KEY)
+    return;
 
   // iframe 内手动清空或改写鉴权后，重新以 VCPMobile 全局管理员账号密码为准。
   void injectGlobalAdminAuth().then(postConfigToFrame);
@@ -201,17 +209,15 @@ watch(
   { immediate: true },
 );
 
-watch(
-  dailyNoteConfigKey,
-  (newKey, oldKey) => {
-    if (!props.isOpen || suppressSettingsWatcher || !shouldRenderFrame.value) return;
-    if (!oldKey || newKey === oldKey) return;
-    if (newKey === currentAppliedConfigKey.value) return;
+watch(dailyNoteConfigKey, (newKey, oldKey) => {
+  if (!props.isOpen || suppressSettingsWatcher || !shouldRenderFrame.value)
+    return;
+  if (!oldKey || newKey === oldKey) return;
+  if (newKey === currentAppliedConfigKey.value) return;
 
-    authStatus.value = "检测到线路或管理员配置变化，正在刷新日记面板…";
-    void reloadPanel();
-  },
-);
+  authStatus.value = "检测到线路或管理员配置变化，正在刷新日记面板…";
+  void reloadPanel();
+});
 
 onMounted(() => {
   window.addEventListener("storage", handleAuthStorageChange);
@@ -225,7 +231,9 @@ onUnmounted(() => {
 
 <template>
   <SlidePage :is-open="props.isOpen" :z-index="props.zIndex">
-    <section class="daily-note-view pointer-events-auto flex h-full w-full flex-col bg-secondary-bg text-primary-text">
+    <section
+      class="daily-note-view pointer-events-auto flex h-full w-full flex-col bg-secondary-bg text-primary-text"
+    >
       <header class="daily-note-view__header">
         <div class="min-w-0">
           <div class="flex items-center gap-2">
@@ -237,7 +245,11 @@ onUnmounted(() => {
           </p>
         </div>
         <div class="flex shrink-0 items-center gap-2">
-          <button class="daily-note-view__ghost-button" type="button" @click="reloadPanel">
+          <button
+            class="daily-note-view__ghost-button"
+            type="button"
+            @click="reloadPanel"
+          >
             刷新
           </button>
           <button
@@ -246,8 +258,19 @@ onUnmounted(() => {
             aria-label="关闭日记流"
             @click="emit('close')"
           >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M18 6 6 18M6 6l12 12"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+              />
             </svg>
           </button>
         </div>
@@ -280,9 +303,14 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   padding: calc(var(--vcp-safe-top, 24px) + 12px) 16px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--primary-text) 8%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--primary-text) 8%, transparent);
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--highlight-text) 16%, transparent), transparent 34%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in srgb, var(--highlight-text) 16%, transparent),
+      transparent 34%
+    ),
     color-mix(in srgb, var(--secondary-bg) 97%, transparent);
 }
 
@@ -306,7 +334,10 @@ onUnmounted(() => {
   border-radius: 14px;
   background: color-mix(in srgb, var(--primary-text) 5%, transparent);
   color: var(--primary-text);
-  transition: transform 0.18s ease, opacity 0.18s ease, background 0.18s ease;
+  transition:
+    transform 0.18s ease,
+    opacity 0.18s ease,
+    background 0.18s ease;
 }
 
 .daily-note-view__ghost-button {

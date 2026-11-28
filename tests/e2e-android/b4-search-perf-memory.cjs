@@ -27,7 +27,10 @@ function pidMatches(reading, expectedPid) {
 
 function memoryDelta(before, after, limitBytes, options = {}) {
   const requireSamePid = options.requireSamePid === true;
-  const hasExpected = Object.prototype.hasOwnProperty.call(options, "expectedPid");
+  const hasExpected = Object.prototype.hasOwnProperty.call(
+    options,
+    "expectedPid",
+  );
   const expectedPid = resolveExpectedPid(before, options);
   const validRss = isRssReading(before) && isRssReading(after);
   const pidConsistent =
@@ -62,7 +65,8 @@ function memoryDelta(before, after, limitBytes, options = {}) {
     deltaBytes,
     positiveDeltaBytes: Math.max(0, deltaBytes),
     gatePassed: deltaBytes <= limitBytes,
-    reason: deltaBytes <= limitBytes ? null : `RSS 前后差值超过 ${limitBytes} 字节。`,
+    reason:
+      deltaBytes <= limitBytes ? null : `RSS 前后差值超过 ${limitBytes} 字节。`,
   };
 }
 
@@ -150,8 +154,13 @@ function peakFailure(context, before, peak) {
 
 function memoryPeakDelta(before, peak, samples, limitBytes, options = {}) {
   const context = peakGateContext(before, peak, samples, options);
-  const { duringSamples, baselineValid, afterValid, allSamplesValid, peakValid } =
-    context;
+  const {
+    duringSamples,
+    baselineValid,
+    afterValid,
+    allSamplesValid,
+    peakValid,
+  } = context;
   const valid =
     baselineValid &&
     afterValid &&

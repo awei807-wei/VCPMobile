@@ -7,6 +7,7 @@ pub mod context_injection;
 pub mod context_sanitizer;
 pub mod daily_note;
 pub mod emoticon_manager;
+pub mod hosted_tool_call;
 pub mod jev_tool_use;
 pub mod message_service;
 pub mod pre_renderer;

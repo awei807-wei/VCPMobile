@@ -29,6 +29,15 @@ pub enum ContentBlock {
         /// JEV 卡片上的展示名（引号内工具名优先，其次 {能力}）。
         #[serde(default)]
         jev_display_name: String,
+        /// 是否为服务端转发的原生 Function Call（`<<<[HOSTED_TOOL_CALL]>>>`）。
+        #[serde(default)]
+        is_hosted_fc: bool,
+        /// 原生 Function Call 的 `function.name`，展示名缺失时兜底。
+        #[serde(default)]
+        fc_function_name: String,
+        /// 原生 Function Call 的 `id`。
+        #[serde(default)]
+        tool_call_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         hash: Option<u64>,
     },
@@ -166,6 +175,29 @@ impl ContentBlock {
             is_complete,
             is_jev,
             jev_display_name,
+            is_hosted_fc: false,
+            fc_function_name: String::new(),
+            tool_call_id: String::new(),
+            hash: None,
+        }
+    }
+
+    /// 服务端托管 Function Call 的展示卡片（只展示，不执行）。
+    pub fn hosted_tool_use(
+        display_name: String,
+        details: String,
+        tool_call_id: String,
+        fc_function_name: String,
+    ) -> Self {
+        Self::ToolUse {
+            tool_name: display_name,
+            content: details,
+            is_complete: true,
+            is_jev: false,
+            jev_display_name: String::new(),
+            is_hosted_fc: true,
+            fc_function_name,
+            tool_call_id,
             hash: None,
         }
     }
@@ -318,6 +350,7 @@ impl ContentBlock {
 #[derive(Debug, PartialEq)]
 pub(crate) enum BlockType {
     Tool,
+    HostedToolCall,
     Thought,
     Think,
     ToolResult,
@@ -345,6 +378,10 @@ lazy_static! {
     pub(crate) static ref TOOL_START: Regex = Regex::new(r"(?im)^[ \t]*<<<\[TOOL_REQUEST\]>>>").unwrap();
     pub(crate) static ref TOOL_END: Regex = Regex::new(r"(?im)^[ \t]*<<<\[END_TOOL_REQUEST\]>>>").unwrap();
     pub(crate) static ref TOOL_NAME: Regex = Regex::new(r"<tool_name>([\s\S]*?)</tool_name>|tool_name:\s*「始(?:exp)?」([^「」]*)「末(?:exp)?」").unwrap();
+
+    // 服务端转发的原生 Function Call 展示块（行首锚定，避免正文示例误匹配）
+    pub(crate) static ref HOSTED_TOOL_CALL_START: Regex = Regex::new(r"(?im)^[ \t]*<<<\[HOSTED_TOOL_CALL\]>>>").unwrap();
+    pub(crate) static ref HOSTED_TOOL_CALL_END: Regex = Regex::new(r"(?im)^[ \t]*<<<\[END_HOSTED_TOOL_CALL\]>>>").unwrap();
 
     pub(crate) static ref THOUGHT_START: Regex = Regex::new(r"(?im)^[ \t]*\[--- VCP元思考链(?::\s*([^\]]*?))?\s*---\]").unwrap();
     pub(crate) static ref THOUGHT_END: Regex = Regex::new(r"(?im)^[ \t]*\[--- 元思考链结束 ---\]").unwrap();
@@ -531,7 +568,8 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
             r"(^[ \t]*`{3,}[a-zA-Z0-9-]*[ \t]*$)|",                    // 10
             r"(^[ \t]*<(div|section|article|header|footer|main|aside|figure|figcaption)\b[^>]*>)|", // 11
             r"(^[ \t]*\[本轮工具调用摘要:\])|",                         // 13
-            "(", tool_batch_boundary_pattern!(), ")"                   // 14
+            "(", tool_batch_boundary_pattern!(), ")|",                  // 14
+            r"(^[ \t]*<<<\[HOSTED_TOOL_CALL\]>>>)"                     // 15
         )).unwrap();
     }
 
@@ -587,6 +625,8 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                 BlockType::CodeFence
             } else if caps.get(13).is_some() {
                 BlockType::ToolCallSummary
+            } else if caps.get(15).is_some() {
+                BlockType::HostedToolCall
             } else {
                 container_tag = caps.get(12).unwrap().as_str().to_lowercase();
                 BlockType::HtmlContainer
@@ -622,6 +662,11 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                         (Some(m.start()), Some(m.end()), true)
                     }),
                 BlockType::ToolCallSummary => TOOL_CALL_SUMMARY_END
+                    .find(search_area)
+                    .map_or((None, None, false), |m| {
+                        (Some(m.start()), Some(m.end()), true)
+                    }),
+                BlockType::HostedToolCall => HOSTED_TOOL_CALL_END
                     .find(search_area)
                     .map_or((None, None, false), |m| {
                         (Some(m.start()), Some(m.end()), true)
@@ -695,6 +740,21 @@ pub fn parse_content(raw_text: &str) -> Vec<ContentBlock> {
                             inner_content.to_string(),
                             is_complete,
                             jev,
+                        )
+                    }
+                }
+                BlockType::HostedToolCall => {
+                    let view = crate::vcp_modules::chat::hosted_tool_call::parse_hosted_tool_call(
+                        inner_content,
+                    );
+                    if let Some(details) = view.daily_note {
+                        ContentBlock::daily_note(details)
+                    } else {
+                        ContentBlock::hosted_tool_use(
+                            view.display_name,
+                            view.details,
+                            view.call_id,
+                            view.function_name,
                         )
                     }
                 }

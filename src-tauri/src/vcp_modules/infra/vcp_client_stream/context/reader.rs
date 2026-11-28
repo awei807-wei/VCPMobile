@@ -216,19 +216,45 @@ fn handle_sse_line<R: Runtime>(session: &mut StreamSession<R>, line: &str) -> bo
 }
 
 fn process_payload<R: Runtime>(session: &mut StreamSession<R>, payload: &Value) {
+    // 顶层 finish_reason 仅为兼容旧代理，缺少 choices 时也要保留。
     if let Some(reason) = payload.get("finish_reason").and_then(Value::as_str) {
         session.last_finish_reason = Some(reason.to_string());
     }
-    let Some(delta) = payload
+    let Some(choice) = payload
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("delta"))
-        .and_then(|delta| delta.get("content"))
-        .and_then(Value::as_str)
     else {
         return;
     };
+    // 标准位置是 choices[0].finish_reason。
+    if let Some(reason) = crate::vcp_modules::infra::native_tool_call::choice_finish_reason(choice)
+    {
+        session.last_finish_reason = Some(reason.to_string());
+    }
+
+    // 1. 原生 tool_calls：只组装成展示协议块，绝不重复执行工具。
+    session.tool_call_assembler.ingest(choice);
+
+    let delta = choice
+        .get("delta")
+        .and_then(|delta| delta.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let has_content = !delta.is_empty();
+
+    // 2. 硬边界：正文继续输出 / 完整态 tool_calls / finish_reason=tool_calls|stop。
+    if session
+        .tool_call_assembler
+        .should_flush(choice, has_content)
+    {
+        session.flush_native_tool_calls();
+    }
+
+    if !has_content {
+        return;
+    }
+
     session.pending_aurora_chunk.push_str(delta);
     let (stable_changed, tail_changed) = session.flush_aurora_parse(false);
     let has_mutations = !session.aurora_buffer.pending_mutations.is_empty();

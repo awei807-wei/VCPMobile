@@ -52,6 +52,18 @@ impl<R: Runtime> StreamSession<R> {
         self.aurora_buffer.process_queue()
     }
 
+    /// 把已完整组装的原生 tool_calls 注入流缓冲并立刻推送，
+    /// 让手机端在流式过程中就出现 `函数调用 · xxx` 卡片，无需等整轮结束。
+    pub(super) fn flush_native_tool_calls(&mut self) -> bool {
+        let Some(marker) = self.tool_call_assembler.take_marker() else {
+            return false;
+        };
+        self.pending_aurora_chunk.push_str(&marker);
+        let (stable_changed, tail_changed) = self.flush_aurora_parse(true);
+        self.send_aurora_update(stable_changed, tail_changed, None, None);
+        true
+    }
+
     pub(super) fn send_aurora_update(
         &mut self,
         stable_changed: bool,
@@ -87,6 +99,8 @@ impl<R: Runtime> StreamSession<R> {
     }
 
     pub(super) fn finish_success(&mut self) -> StreamControl {
+        // 流结束时兜底 flush 未成批的原生 tool_calls，避免末帧丢失卡片。
+        self.flush_native_tool_calls();
         let _ = self.flush_aurora_parse(true);
         self.aurora_buffer.finalize();
         self.send_aurora_update(true, true, self.last_finish_reason.clone(), None);

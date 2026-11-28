@@ -74,6 +74,8 @@ pub(super) struct StreamSession<R: Runtime> {
     pub(super) last_received_index: Option<i64>,
     pub(super) aurora_buffer: AuroraBuffer,
     pub(super) pending_aurora_chunk: String,
+    pub(super) tool_call_assembler:
+        crate::vcp_modules::infra::native_tool_call::NativeToolCallAssembler,
     pub(super) last_aurora_parse: Instant,
     pub(super) retry_count: u32,
     pub(super) backoff: Duration,
@@ -144,6 +146,8 @@ impl<R: Runtime> StreamSession<R> {
             last_received_index: last_event_index,
             aurora_buffer: AuroraBuffer::new(),
             pending_aurora_chunk: String::new(),
+            tool_call_assembler:
+                crate::vcp_modules::infra::native_tool_call::NativeToolCallAssembler::new(),
             last_aurora_parse: Instant::now() - Duration::from_millis(33),
             retry_count: 0,
             backoff: Duration::from_millis(500),

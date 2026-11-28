@@ -192,7 +192,13 @@ fn build_non_stream_success(
     context: Option<Value>,
     stream_channel: &Option<Channel<StreamEvent>>,
 ) -> (Value, bool) {
-    let (full_content, finish_reason) = extract_non_stream_content(&vcp_response);
+    let (mut full_content, finish_reason) = extract_non_stream_content(&vcp_response);
+    if let Some(marker) = extract_non_stream_tool_calls(&vcp_response) {
+        if !full_content.is_empty() && !full_content.ends_with('\n') {
+            full_content.push('\n');
+        }
+        full_content.push_str(&marker);
+    }
     send_stream_event(
         stream_channel,
         StreamEvent::aurora(
@@ -241,6 +247,14 @@ fn extract_non_stream_content(response: &Value) -> (String, Option<String>) {
             }
         });
     (content, finish_reason)
+}
+
+/// 非流式响应里的原生 tool_calls 同样落成展示协议块（只展示，绝不执行）。
+fn extract_non_stream_tool_calls(response: &Value) -> Option<String> {
+    let choice = response["choices"].as_array()?.first()?;
+    let mut assembler = crate::vcp_modules::infra::native_tool_call::NativeToolCallAssembler::new();
+    assembler.ingest(choice);
+    assembler.take_marker()
 }
 
 fn send_stream_event(channel: &Option<Channel<StreamEvent>>, event: StreamEvent) {

@@ -4,9 +4,9 @@ use crate::vcp_modules::chat::daily_note::{self, DailyNoteDetails};
 use crate::vcp_modules::content_parser::{
     find_matching_fence_end, BlockType, ToolCallSummaryItem, ToolResultDetail,
     BUTTON_CLICK, /* extraction helpers */
-    DIARY_END, DIARY_START, GENERIC_CODE_FENCE_START, HTML_DOC_END, HTML_DOC_START,
-    HTML_FENCE_START, KV_REGEX, ROLE_DIVIDER, STYLE_TAG_END, STYLE_TAG_START, THINK_END,
-    THINK_START, THOUGHT_END, THOUGHT_START, TOOL_END, TOOL_NAME, TOOL_RESULT_END,
+    DIARY_END, DIARY_START, GENERIC_CODE_FENCE_START, HOSTED_TOOL_CALL_END, HTML_DOC_END,
+    HTML_DOC_START, HTML_FENCE_START, KV_REGEX, ROLE_DIVIDER, STYLE_TAG_END, STYLE_TAG_START,
+    THINK_END, THINK_START, THOUGHT_END, THOUGHT_START, TOOL_END, TOOL_NAME, TOOL_RESULT_END,
     TOOL_RESULT_START, TOOL_START,
 };
 use crate::vcp_modules::pre_renderer::MarkdownNode;
@@ -42,6 +42,13 @@ pub enum StreamBlock {
         /// JEV 卡片上的展示名（引号内工具名优先，其次 {能力}）。
         #[serde(default)]
         jev_display_name: String,
+        /// 是否为服务端转发的原生 Function Call（`<<<[HOSTED_TOOL_CALL]>>>`）。
+        #[serde(default)]
+        is_hosted_fc: bool,
+        #[serde(default)]
+        fc_function_name: String,
+        #[serde(default)]
+        tool_call_id: String,
         hash: String,
     },
     #[serde(rename = "tool-result")]
@@ -152,6 +159,29 @@ impl StreamBlock {
             content,
             is_jev,
             jev_display_name,
+            is_hosted_fc: false,
+            fc_function_name: String::new(),
+            tool_call_id: String::new(),
+            hash,
+        }
+    }
+
+    /// 服务端托管 Function Call 的展示卡片（只展示，不执行）。
+    pub fn hosted_tool(
+        display_name: String,
+        details: String,
+        tool_call_id: String,
+        fc_function_name: String,
+        hash: String,
+    ) -> Self {
+        Self::Tool {
+            tool_name: display_name,
+            content: details,
+            is_jev: false,
+            jev_display_name: String::new(),
+            is_hosted_fc: true,
+            fc_function_name,
+            tool_call_id,
             hash,
         }
     }
@@ -380,8 +410,12 @@ impl StreamBlockParser {
 /// 在文本中寻找最早出现的特种块起始标记
 /// 返回 (start_offset, end_offset, BlockType)
 fn find_earliest_start_marker(text: &str) -> Option<(usize, usize, Option<BlockType>)> {
-    let checks: [(&regex::Regex, BlockType); 12] = [
+    let checks: [(&regex::Regex, BlockType); 13] = [
         (&TOOL_START, BlockType::Tool),
+        (
+            &crate::vcp_modules::content_parser::HOSTED_TOOL_CALL_START,
+            BlockType::HostedToolCall,
+        ),
         (&THOUGHT_START, BlockType::Thought),
         (&THINK_START, BlockType::Think),
         (&TOOL_RESULT_START, BlockType::ToolResult),
@@ -445,6 +479,7 @@ fn find_end_marker(
 
     let m = match block_type {
         BlockType::Tool => TOOL_END.find(search_area),
+        BlockType::HostedToolCall => HOSTED_TOOL_CALL_END.find(search_area),
         BlockType::Thought => THOUGHT_END.find(search_area),
         BlockType::Think => THINK_END.find(search_area),
         BlockType::ToolResult => TOOL_RESULT_END.find(search_area),
@@ -494,6 +529,25 @@ fn build_stream_block(
                 ));
                 let jev = crate::vcp_modules::chat::jev_tool_use::detect_jev_use(inner_content);
                 StreamBlock::tool(tool_name, inner_content.to_string(), hash, jev)
+            }
+        }
+        BlockType::HostedToolCall => {
+            let view =
+                crate::vcp_modules::chat::hosted_tool_call::parse_hosted_tool_call(inner_content);
+            let hash = HashAggregator::compute_content_hash(&format!(
+                "{}:{}:{}",
+                view.display_name, view.details, view.call_id
+            ));
+            if let Some(details) = view.daily_note {
+                StreamBlock::daily_note(details, hash)
+            } else {
+                StreamBlock::hosted_tool(
+                    view.display_name,
+                    view.details,
+                    view.call_id,
+                    view.function_name,
+                    hash,
+                )
             }
         }
         BlockType::Thought => {

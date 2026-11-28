@@ -66,14 +66,22 @@ const isHidden = computed(
 /** 是否为 JEV（自然语言）工具请求，使用独立的 JEVToolUse 卡片外观。 */
 const isJev = computed(() => props.type === 'tool-use' && !!props.block.is_jev);
 
-/** 卡片角标文字：JEV 请求不叫 VCP-ToolUse，单独标识协议身份。 */
+/** 是否为服务端转发的原生 Function Call，渲染为 `</> 函数调用 · xxx` 卡片。 */
+const isHostedFc = computed(
+  () => props.type === 'tool-use' && !!props.block.is_hosted_fc
+);
+
+/** 卡片角标文字：JEV / 托管 FC 各自标识协议身份。 */
 const toolLabel = computed(() => {
   if (props.type === 'tool-result') return 'VCP-ToolResult';
+  if (isHostedFc.value) return '函数调用 ·';
   return isJev.value ? 'JEVToolUse' : 'VCP-ToolUse';
 });
 
 /** 卡片展示名：JEV 优先用解析出的展示名，缺失时整行不渲染。 */
 const toolDisplayName = computed(() => {
+  if (isHostedFc.value)
+    return props.block.tool_name || props.block.fc_function_name || '未命名';
   if (isJev.value) return props.block.jev_display_name || '';
   return props.block.tool_name || 'Unknown Tool';
 });
@@ -206,7 +214,8 @@ const isImageValue = (key: string, value: string): boolean => {
     type === 'tool-use' ? 'is-tool-use' : 'is-tool-result tool-bubble',
     isExpanded ? 'shadow-md' : 'shadow-sm',
     isHidden ? 'is-hidden' : '',
-    isJev ? 'is-jev' : ''
+    isJev ? 'is-jev' : '',
+    isHostedFc ? 'is-hosted-fc' : ''
   ]">
     <!-- Header -->
     <div class="tool-header-content flex items-center justify-between p-3 cursor-pointer select-none"
@@ -216,8 +225,14 @@ const isImageValue = (key: string, value: string): boolean => {
           <Settings v-if="type === 'tool-use'" :size="14" />
           <span v-else class="text-lg leading-none">📊</span>
         </div>
-        <div class="min-w-0">
-          <span class="tool-label text-[10px] font-bold block leading-none mb-1 flex items-center gap-1">
+        <div
+          class="min-w-0"
+          :class="isHostedFc ? 'flex flex-wrap items-center gap-1.5' : ''"
+        >
+          <span
+            class="tool-label text-[10px] font-bold leading-none flex items-center gap-1"
+            :class="isHostedFc ? '' : 'block mb-1'"
+          >
             {{ toolLabel }}
             <Loader2 v-if="type === 'tool-use' && !block.is_complete" :size="10" class="custom-spin" />
           </span>

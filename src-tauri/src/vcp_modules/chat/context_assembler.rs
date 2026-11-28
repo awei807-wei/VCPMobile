@@ -1,3 +1,4 @@
+use crate::vcp_modules::chat::hosted_tool_call::strip_hosted_tool_calls;
 use crate::vcp_modules::chat::tool_result_visibility::strip_hidden_tool_results;
 use crate::vcp_modules::chat_manager::{Attachment, ChatMessage};
 use serde_json::{json, Value};
@@ -191,9 +192,13 @@ pub fn assemble_history_for_vcp(
         }
 
         // 3. 核心消息正文
-        // 被用户手动隐藏的工具结果（插件回调）不参与上下文装配，
+        // 服务端托管 Function Call 的展示块只服务于 UI：模型续轮依赖服务端保留的
+        // 上下文与 `[[VCP调用结果信息汇总: ...]]`，展示标记必须剥离干净。
+        // 被用户手动隐藏的工具结果（插件回调）同样不参与上下文装配，
         // 效果等价于物理删除，但原始消息仍然完整保留、可随时恢复注入。
-        combined_text.push_str(&strip_hidden_tool_results(&msg.content));
+        combined_text.push_str(&strip_hidden_tool_results(&strip_hosted_tool_calls(
+            &msg.content,
+        )));
 
         let mut content_parts = Vec::new();
 
@@ -433,6 +438,25 @@ mod tests {
 
         assert!(text.contains("[附加文件: archive.zip]"));
         assert!(!text.contains("/private/app/files"));
+    }
+
+    #[test]
+    fn hosted_tool_call_blocks_are_not_injected_into_context() {
+        let content = concat!(
+            "提问\n\n",
+            "<<<[HOSTED_TOOL_CALL]>>>\n",
+            r#"{"id":"call_1","type":"function","function":{"name":"GitSearch","arguments":"{\"query\":\"fn main\"}"}}"#,
+            "\n<<<[END_HOSTED_TOOL_CALL]>>>\n\n后续"
+        );
+        let history = vec![user_message(content, vec![])];
+
+        let messages = assemble_history_for_vcp(&history, false, false);
+        let text = messages[0]["content"].as_str().expect("text content");
+
+        assert!(text.contains("提问"));
+        assert!(text.contains("后续"));
+        assert!(!text.contains("HOSTED_TOOL_CALL"));
+        assert!(!text.contains("GitSearch"));
     }
 
     #[test]

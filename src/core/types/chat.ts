@@ -89,6 +89,12 @@ export interface ContentBlock {
   is_jev?: boolean;
   /** JEV 卡片展示名（引号内工具名优先，其次 {能力}） */
   jev_display_name?: string;
+  /** 是否为服务端转发的原生 Function Call（`<<<[HOSTED_TOOL_CALL]>>>`） */
+  is_hosted_fc?: boolean;
+  /** 原生 Function Call 的 function.name，展示名缺失时兜底 */
+  fc_function_name?: string;
+  /** 原生 Function Call 的 id */
+  tool_call_id?: string;
   status?: string;
   details?: Array<{ key: string; value: string }>;
   footer?: string;
@@ -241,6 +247,10 @@ export interface StreamBlock {
   tool_name?: string;
   is_jev?: boolean;
   jev_display_name?: string;
+  /** 是否为服务端转发的原生 Function Call */
+  is_hosted_fc?: boolean;
+  fc_function_name?: string;
+  tool_call_id?: string;
   status?: string;
   details?: Array<{ key: string; value: string }>;
   footer?: string;
